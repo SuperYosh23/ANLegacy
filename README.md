@@ -48,6 +48,11 @@ The resulting package installs as `com.legacymusic.app` (display name **AN Legac
 - `Makefile` — Theos build configuration
 - `control` — package metadata for the deb
 
+## License
+
+This project is licensed under the **GNU General Public License v3.0 or later**. See
+[LICENSE](LICENSE) for the full text.
+
 ## Disclaimer
 
 This project uses unofficial Google/YouTube APIs and is provided as-is. See
