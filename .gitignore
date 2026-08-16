@@ -1,0 +1,19 @@
+# Theos build output
+.theos/
+
+# Built packages
+packages/
+*.deb
+
+# Xcode
+build/
+*.xcworkspace
+xcuserdata/
+
+# macOS
+.DS_Store
+
+# Object / derived files
+*.o
+*.a
+*.log

@@ -1,0 +1,8 @@
+Package: com.legacymusic.app
+Name: LegacyMusic
+Version: 0.1.0
+Architecture: iphoneos-arm
+Description: YouTube Music client for legacy iOS devices
+Maintainer: superyosh23
+Author: superyosh23
+Section: Multimedia

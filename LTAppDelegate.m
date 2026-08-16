@@ -1,0 +1,107 @@
+#import "LTAppDelegate.h"
+#import "LTSearchViewController.h"
+#import "LTHomeViewController.h"
+#import "LTPopularViewController.h"
+#import "LTSettingsViewController.h"
+#import "LTPlayerController.h"
+#import "LTTabBarController.h"
+#import "LTGraphics.h"
+#import "LTLog.h"
+#import <AVFoundation/AVFoundation.h>
+
+@implementation LTAppDelegate
+
+- (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
+    AVAudioSession *session = [AVAudioSession sharedInstance];
+    [session setCategory:AVAudioSessionCategoryPlayback error:NULL];
+    [session setActive:YES error:NULL];
+    LTLog(@"APP didFinishLaunching");
+    [[UIApplication sharedApplication] beginReceivingRemoteControlEvents];
+    [self becomeFirstResponder];
+
+    self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
+
+    NSMutableArray *controllers = [NSMutableArray array];
+
+    LTHomeViewController *home = [[LTHomeViewController alloc] init];
+    home.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Home" image:[LTGraphics homeIcon] tag:0];
+    UINavigationController *homeNav = [[UINavigationController alloc] initWithRootViewController:home];
+    [controllers addObject:homeNav];
+
+    LTSearchViewController *search = [[LTSearchViewController alloc] initWithType:@"songs"];
+    search.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Search" image:[LTGraphics searchIcon] tag:0];
+    UINavigationController *searchNav = [[UINavigationController alloc] initWithRootViewController:search];
+    [controllers addObject:searchNav];
+
+    LTPopularViewController *popular = [[LTPopularViewController alloc] init];
+    popular.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Popular" image:[LTGraphics popularIcon] tag:0];
+    UINavigationController *popularNav = [[UINavigationController alloc] initWithRootViewController:popular];
+    [controllers addObject:popularNav];
+
+    LTSearchViewController *playlists = [[LTSearchViewController alloc] initWithType:@"playlists"];
+    playlists.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Playlists" image:[UIImage imageNamed:@"TabPlaylists"] tag:0];
+    UINavigationController *playlistsNav = [[UINavigationController alloc] initWithRootViewController:playlists];
+    [controllers addObject:playlistsNav];
+
+    LTSettingsViewController *settings = [[LTSettingsViewController alloc] init];
+    settings.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Settings" image:[LTGraphics settingsIcon] tag:0];
+    UINavigationController *settingsNav = [[UINavigationController alloc] initWithRootViewController:settings];
+    [controllers addObject:settingsNav];
+
+    UITabBarController *tabBar = [[LTTabBarController alloc] init];
+    tabBar.viewControllers = controllers;
+    self.window.rootViewController = tabBar;
+    [self.window makeKeyAndVisible];
+    return YES;
+}
+
+- (void)applicationWillResignActive:(UIApplication *)application {
+    LTLog(@"APP willResignActive");
+    [[AVAudioSession sharedInstance] setActive:YES error:NULL];
+}
+
+- (void)applicationDidEnterBackground:(UIApplication *)application {
+    LTLog(@"APP didEnterBackground");
+    AVAudioSession *session = [AVAudioSession sharedInstance];
+    [session setActive:YES error:NULL];
+}
+
+- (void)applicationDidBecomeActive:(UIApplication *)application {
+    LTLog(@"APP didBecomeActive");
+    [self becomeFirstResponder];
+}
+
+- (BOOL)canBecomeFirstResponder {
+    return YES;
+}
+
+- (void)remoteControlReceivedWithEvent:(UIEvent *)event {
+    LTPlayerController *controller = [LTPlayerController sharedController];
+    switch (event.subtype) {
+        case UIEventSubtypeRemoteControlPlay:
+        case UIEventSubtypeRemoteControlStop:
+            [controller playMovie];
+            break;
+        case UIEventSubtypeRemoteControlPause:
+            [controller pausePlayback];
+            break;
+        case UIEventSubtypeRemoteControlTogglePlayPause:
+            [controller togglePlayPause];
+            break;
+        case UIEventSubtypeRemoteControlNextTrack:
+            [controller nextTrack];
+            break;
+        case UIEventSubtypeRemoteControlPreviousTrack:
+            [controller previousTrack];
+            break;
+        case UIEventSubtypeRemoteControlBeginSeekingForward:
+        case UIEventSubtypeRemoteControlEndSeekingForward:
+        case UIEventSubtypeRemoteControlBeginSeekingBackward:
+        case UIEventSubtypeRemoteControlEndSeekingBackward:
+            break;
+        default:
+            break;
+    }
+}
+
+@end

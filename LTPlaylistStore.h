@@ -1,0 +1,34 @@
+#import <Foundation/Foundation.h>
+#import "LTModel.h"
+
+extern NSString *const LTPlaylistsDidChangeNotification;
+extern NSString *const LTPlaylistTrackDidChangeNotification;
+extern NSString *const LTPlaylistDownloadProgressNotification;
+extern NSString *const LTRecentsDidChangeNotification;
+
+@interface LTPlaylistStore : NSObject
+
++ (instancetype)sharedStore;
+
+@property (nonatomic, readonly) NSArray *playlists;
+@property (nonatomic, readonly) NSArray *recentTracks;
+
+- (NSString *)baseDirectory;
+- (NSString *)audioDirectory;
+
+- (LTLocalPlaylist *)createPlaylistWithName:(NSString *)name;
+- (void)deletePlaylist:(LTLocalPlaylist *)playlist;
+- (void)renamePlaylist:(LTLocalPlaylist *)playlist name:(NSString *)name;
+- (void)addTrack:(LTTrack *)track toPlaylist:(LTLocalPlaylist *)playlist;
+- (void)removeTrackAtIndex:(NSInteger)index fromPlaylist:(LTLocalPlaylist *)playlist;
+
+- (void)recordRecentTrack:(LTTrack *)track;
+- (NSInteger)offlineFileCount;
+
+- (NSString *)localFilePathForVideoId:(NSString *)videoId;
+- (BOOL)isTrackDownloaded:(LTTrack *)track;
+- (BOOL)isDownloading;
+
+- (void)downloadTracks:(NSArray *)tracks completion:(void (^)(void))completion;
+
+@end

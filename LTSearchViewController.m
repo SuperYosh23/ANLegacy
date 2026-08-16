@@ -1,0 +1,459 @@
+#import "LTSearchViewController.h"
+#import "LTYouTubeClient.h"
+#import "LTModel.h"
+#import "LTMediaCell.h"
+#import "LTTrackListViewController.h"
+#import "LTArtistViewController.h"
+#import "LTPlayerViewController.h"
+#import "LTPlayerController.h"
+#import "LTPlaylistStore.h"
+#import "LTLocalPlaylistDetailViewController.h"
+#import <QuartzCore/QuartzCore.h>
+
+@interface LTSearchViewController () <UISearchBarDelegate, UITableViewDataSource, UITableViewDelegate,
+                                       UIActionSheetDelegate, UIAlertViewDelegate>
+@property (nonatomic, strong) UISearchBar *searchBar;
+@property (nonatomic, strong) UISegmentedControl *segControl;
+@property (nonatomic, strong) UITableView *tableView;
+@property (nonatomic, strong) NSMutableArray *results;
+@property (nonatomic, copy) NSString *currentQuery;
+@property (nonatomic, assign) BOOL loading;
+@property (nonatomic, strong) LTTrack *pendingTrack;
+@property (nonatomic, strong) UILabel *emptyLabel;
+@end
+
+@implementation LTSearchViewController
+
+- (id)init {
+    return [self initWithType:@"songs"];
+}
+
+- (id)initWithType:(NSString *)type {
+    self = [super init];
+    if (self) {
+        _type = [type copy] ?: @"songs";
+        _results = [NSMutableArray array];
+    }
+    return self;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.view.backgroundColor = [UIColor whiteColor];
+
+    CGRect bounds = self.view.bounds;
+    CGFloat tableY = 0;
+
+    if (![self isPlaylistsMode]) {
+        self.title = @"Search";
+        self.searchBar = [[UISearchBar alloc] initWithFrame:CGRectMake(0, 0, bounds.size.width, 44)];
+        self.searchBar.placeholder = @"Search YouTube Music";
+        self.searchBar.delegate = self;
+        self.searchBar.showsCancelButton = YES;
+        self.searchBar.autocorrectionType = UITextAutocorrectionTypeNo;
+        self.searchBar.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        [self.view addSubview:self.searchBar];
+
+        NSArray *types = @[@"songs", @"albums", @"artists"];
+        NSUInteger defaultIndex = [types indexOfObject:self.type];
+        if (defaultIndex == NSNotFound) defaultIndex = 0;
+        self.segControl = [[UISegmentedControl alloc] initWithItems:@[@"Songs", @"Albums", @"Artists"]];
+        self.segControl.selectedSegmentIndex = (NSInteger)defaultIndex;
+        [self.segControl addTarget:self action:@selector(segmentChanged:) forControlEvents:UIControlEventValueChanged];
+        self.segControl.frame = CGRectMake(8, 50, bounds.size.width - 16, 32);
+        [self.view addSubview:self.segControl];
+
+        tableY = 88;
+    } else {
+        self.title = @"Playlists";
+    }
+
+    self.tableView = [[UITableView alloc] initWithFrame:CGRectMake(0, tableY, bounds.size.width, bounds.size.height - tableY)
+                                                  style:UITableViewStylePlain];
+    self.tableView.dataSource = self;
+    self.tableView.delegate = self;
+    self.tableView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [self.view addSubview:self.tableView];
+
+    self.emptyLabel = [[UILabel alloc] initWithFrame:CGRectMake(24, 120, bounds.size.width - 48, 60)];
+    self.emptyLabel.textAlignment = NSTextAlignmentCenter;
+    self.emptyLabel.font = [UIFont systemFontOfSize:15];
+    self.emptyLabel.textColor = [UIColor grayColor];
+    self.emptyLabel.numberOfLines = 0;
+    self.emptyLabel.hidden = YES;
+    [self.view addSubview:self.emptyLabel];
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(playlistsDidChange:)
+                                                 name:LTPlaylistsDidChangeNotification
+                                               object:nil];
+    if ([self isPlaylistsMode]) {
+        [self showLocalPlaylists];
+    } else if (self.currentQuery.length && !self.results.count && !self.loading) {
+        [self performSearch];
+    }
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (BOOL)isPlaylistsMode {
+    return [self.type isEqualToString:@"playlists"];
+}
+
+- (NSString *)currentType {
+    return self.type;
+}
+
+#pragma mark - Segmented control
+
+- (void)segmentChanged:(id)sender {
+    NSArray *types = @[@"songs", @"albums", @"artists"];
+    NSInteger idx = self.segControl.selectedSegmentIndex;
+    if (idx < 0 || idx >= (NSInteger)types.count) return;
+    NSString *newType = [types objectAtIndex:(NSUInteger)idx];
+    if ([newType isEqualToString:self.type]) return;
+    self.type = newType;
+    self.currentQuery = nil;
+    [self.results removeAllObjects];
+    [self.tableView reloadData];
+    self.emptyLabel.hidden = YES;
+    NSString *query = [self.searchBar.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (query.length) {
+        [self performSearch];
+    }
+}
+
+#pragma mark - Actions
+
+- (void)showLocalPlaylists {
+    [self.results removeAllObjects];
+    NSArray *playlists = [[LTPlaylistStore sharedStore] playlists];
+    [self.results addObjectsFromArray:playlists];
+    [self.tableView reloadData];
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAdd
+                                                                                           target:self
+                                                                                           action:@selector(newPlaylistTapped:)];
+    if (!playlists.count) {
+        self.emptyLabel.text = @"No playlists yet.\nTap + to create one.";
+        self.emptyLabel.hidden = NO;
+    } else {
+        self.emptyLabel.hidden = YES;
+    }
+}
+
+- (void)newPlaylistTapped:(id)sender {
+    [self promptForPlaylistNameWithTrack:nil];
+}
+
+- (void)performSearch {
+    if ([self isPlaylistsMode]) {
+        [self showLocalPlaylists];
+        return;
+    }
+    [self.searchBar resignFirstResponder];
+    NSString *query = self.searchBar.text;
+    query = [query stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (!query.length) return;
+    self.currentQuery = query;
+    self.loading = YES;
+    [self showSpinner:YES];
+
+    NSString *type = [self currentType];
+    __weak LTSearchViewController *weakSelf = self;
+    [[LTYouTubeClient sharedClient] searchWithQuery:query type:type completion:^(NSArray *items, NSError *error) {
+        LTSearchViewController *strongSelf = weakSelf;
+        if (!strongSelf) return;
+        strongSelf.loading = NO;
+        [strongSelf showSpinner:NO];
+        if (error) {
+            UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"Search Failed"
+                                                            message:error.localizedDescription
+                                                           delegate:nil
+                                                  cancelButtonTitle:@"OK"
+                                                  otherButtonTitles:nil];
+            [alert show];
+            return;
+        }
+        [strongSelf.results removeAllObjects];
+        [strongSelf.results addObjectsFromArray:items];
+        [strongSelf.tableView reloadData];
+        strongSelf.emptyLabel.hidden = YES;
+    }];
+}
+
+- (void)showSpinner:(BOOL)show {
+    if (show) {
+        UIActivityIndicatorView *spinner = [[UIActivityIndicatorView alloc]
+                                            initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleWhite];
+        spinner.hidesWhenStopped = YES;
+        [spinner startAnimating];
+        self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithCustomView:spinner];
+    } else {
+        self.navigationItem.rightBarButtonItem = nil;
+    }
+}
+
+- (void)showToast:(NSString *)text {
+    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 220, 36)];
+    label.center = CGPointMake(self.view.bounds.size.width / 2.0f, self.view.bounds.size.height - 80);
+    label.backgroundColor = [UIColor colorWithWhite:0 alpha:0.75f];
+    label.textColor = [UIColor whiteColor];
+    label.textAlignment = NSTextAlignmentCenter;
+    label.font = [UIFont systemFontOfSize:13];
+    label.layer.cornerRadius = 6.0f;
+    label.clipsToBounds = YES;
+    label.text = text;
+    [self.view addSubview:label];
+    [UIView animateWithDuration:1.4 delay:1.0 options:UIViewAnimationOptionCurveEaseIn
+                     animations:^{ label.alpha = 0.0f; }
+                     completion:^(BOOL finished) { [label removeFromSuperview]; }];
+}
+
+#pragma mark - Add to playlist / queue
+
+- (void)showSongOptionsForTrack:(LTTrack *)track {
+    self.pendingTrack = track;
+    UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:track.title
+                                                       delegate:self
+                                              cancelButtonTitle:@"Cancel"
+                                         destructiveButtonTitle:nil
+                                              otherButtonTitles:@"Add to Queue", @"Add to Playlist...", nil];
+    sheet.tag = 10;
+    [sheet showInView:self.view];
+}
+
+- (void)showPlaylistPickerForTrack:(LTTrack *)track {
+    self.pendingTrack = track;
+    UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:@"Add to Playlist"
+                                                       delegate:self
+                                              cancelButtonTitle:@"Cancel"
+                                         destructiveButtonTitle:nil
+                                              otherButtonTitles:@"New Playlist...", nil];
+    sheet.tag = 11;
+    for (LTLocalPlaylist *playlist in [[LTPlaylistStore sharedStore] playlists]) {
+        [sheet addButtonWithTitle:playlist.name];
+    }
+    [sheet showInView:self.view];
+}
+
+- (void)promptForPlaylistNameWithTrack:(LTTrack *)track {
+    self.pendingTrack = track;
+    UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"New Playlist"
+                                                    message:@"Enter a name for the playlist."
+                                                   delegate:self
+                                          cancelButtonTitle:@"Cancel"
+                                          otherButtonTitles:@"Create", nil];
+    alert.tag = 200;
+    alert.alertViewStyle = UIAlertViewStylePlainTextInput;
+    [alert show];
+}
+
+#pragma mark - UIActionSheetDelegate
+
+- (void)actionSheet:(UIActionSheet *)actionSheet clickedButtonAtIndex:(NSInteger)buttonIndex {
+    if (actionSheet.tag == 10) {
+        if (buttonIndex == 0) {
+            [[LTPlayerController sharedController] enqueueTracks:@[self.pendingTrack]];
+            [self showToast:@"Added to queue"];
+            self.pendingTrack = nil;
+        } else if (buttonIndex == 1) {
+            [self showPlaylistPickerForTrack:self.pendingTrack];
+        }
+    } else if (actionSheet.tag == 11) {
+        if (buttonIndex < 0) return;
+        NSString *title = [actionSheet buttonTitleAtIndex:buttonIndex];
+        if (!title.length) {
+            self.pendingTrack = nil;
+            return;
+        }
+        if ([title isEqualToString:@"New Playlist..."]) {
+            [self promptForPlaylistNameWithTrack:self.pendingTrack];
+            return;
+        }
+        for (LTLocalPlaylist *playlist in [[LTPlaylistStore sharedStore] playlists]) {
+            if ([playlist.name isEqualToString:title]) {
+                [[LTPlaylistStore sharedStore] addTrack:self.pendingTrack toPlaylist:playlist];
+                [self showToast:[NSString stringWithFormat:@"Added to %@", playlist.name]];
+                break;
+            }
+        }
+        self.pendingTrack = nil;
+    }
+}
+
+#pragma mark - UIAlertViewDelegate
+
+- (void)alertView:(UIAlertView *)alertView clickedButtonAtIndex:(NSInteger)buttonIndex {
+    if (alertView.tag == 200 && buttonIndex == 1) {
+        NSString *name = [[alertView textFieldAtIndex:0] text];
+        LTLocalPlaylist *playlist = [[LTPlaylistStore sharedStore] createPlaylistWithName:name];
+        if (playlist) {
+            if (self.pendingTrack) {
+                [[LTPlaylistStore sharedStore] addTrack:self.pendingTrack toPlaylist:playlist];
+                [self showToast:[NSString stringWithFormat:@"Added to %@", playlist.name]];
+            } else {
+                [self showLocalPlaylists];
+                [self showToast:@"Playlist created"];
+            }
+        }
+    }
+    self.pendingTrack = nil;
+}
+
+#pragma mark - Notifications
+
+- (void)playlistsDidChange:(NSNotification *)notification {
+    if ([self isPlaylistsMode]) {
+        [self showLocalPlaylists];
+    }
+}
+
+#pragma mark - UISearchBarDelegate
+
+- (void)searchBarSearchButtonClicked:(UISearchBar *)searchBar {
+    [self performSearch];
+}
+
+- (void)searchBarCancelButtonClicked:(UISearchBar *)searchBar {
+    [searchBar resignFirstResponder];
+    searchBar.text = @"";
+    self.currentQuery = nil;
+    [self.results removeAllObjects];
+    [self.tableView reloadData];
+    self.emptyLabel.hidden = YES;
+}
+
+- (void)searchBarTextDidBeginEditing:(UISearchBar *)searchBar {
+    searchBar.showsCancelButton = YES;
+}
+
+#pragma mark - UITableViewDataSource
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
+    return 1;
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return (NSInteger)self.results.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    static NSString *CellId = @"LTMediaCell";
+    LTMediaCell *cell = [tableView dequeueReusableCellWithIdentifier:CellId];
+    if (!cell) {
+        cell = [[LTMediaCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:CellId];
+        cell.textLabel.font = [UIFont boldSystemFontOfSize:15];
+        cell.detailTextLabel.font = [UIFont systemFontOfSize:12];
+        cell.detailTextLabel.textColor = [UIColor grayColor];
+    }
+    id item = [self.results objectAtIndex:(NSUInteger)indexPath.row];
+    if ([item isKindOfClass:[LTTrack class]]) {
+        LTTrack *track = item;
+        cell.textLabel.text = track.title;
+        NSMutableString *detail = [NSMutableString string];
+        if (track.artist.length) [detail appendString:track.artist];
+        if (track.album.length) {
+            if (detail.length) [detail appendString:@"  •  "];
+            [detail appendString:track.album];
+        }
+        cell.detailTextLabel.text = detail;
+        UIButton *plus = [UIButton buttonWithType:UIButtonTypeContactAdd];
+        plus.tag = (NSInteger)indexPath.row;
+        [plus addTarget:self action:@selector(songPlusTapped:) forControlEvents:UIControlEventTouchUpInside];
+        cell.accessoryView = plus;
+        [cell setImageFromURL:track.thumbnailURL];
+    } else if ([item isKindOfClass:[LTBrowseItem class]]) {
+        LTBrowseItem *bi = item;
+        cell.textLabel.text = bi.title;
+        cell.detailTextLabel.text = bi.subtitle;
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        [cell setImageFromURL:bi.thumbnailURL];
+    } else if ([item isKindOfClass:[LTLocalPlaylist class]]) {
+        LTLocalPlaylist *playlist = item;
+        cell.textLabel.text = playlist.name;
+        cell.detailTextLabel.text = [NSString stringWithFormat:@"%d tracks", (int)playlist.tracks.count];
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        cell.imageView.image = nil;
+    }
+    return cell;
+}
+
+#pragma mark - UITableViewDelegate
+
+- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
+    return 60.0f;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    id item = [self.results objectAtIndex:(NSUInteger)indexPath.row];
+    if ([item isKindOfClass:[LTTrack class]]) {
+        NSArray *tracks = [self tracksFromResults];
+        NSInteger index = 0;
+        for (NSUInteger i = 0; i < tracks.count; i++) {
+            if ([[tracks objectAtIndex:i] isEqual:item]) { index = (NSInteger)i; break; }
+        }
+        [[LTPlayerController sharedController] playQueue:tracks atIndex:index];
+        LTPlayerViewController *player = [[LTPlayerViewController alloc] init];
+        [self.navigationController pushViewController:player animated:YES];
+    } else if ([item isKindOfClass:[LTBrowseItem class]]) {
+        LTBrowseItem *bi = item;
+        UIViewController *detail = nil;
+        switch (bi.kind) {
+            case LTBrowseKindAlbum:
+                detail = [[LTTrackListViewController alloc] initWithBrowseId:bi.browseId
+                                                                       kind:LTBrowseKindAlbum
+                                                                      title:bi.title];
+                break;
+            case LTBrowseKindPlaylist:
+                detail = [[LTTrackListViewController alloc] initWithBrowseId:bi.browseId
+                                                                       kind:LTBrowseKindPlaylist
+                                                                      title:bi.title];
+                break;
+            case LTBrowseKindArtist:
+            default:
+                detail = [[LTArtistViewController alloc] initWithBrowseId:bi.browseId
+                                                                   title:bi.title];
+                break;
+        }
+        if (detail) [self.navigationController pushViewController:detail animated:YES];
+    } else if ([item isKindOfClass:[LTLocalPlaylist class]]) {
+        LTLocalPlaylist *playlist = item;
+        LTLocalPlaylistDetailViewController *detail = [[LTLocalPlaylistDetailViewController alloc] initWithPlaylist:playlist];
+        [self.navigationController pushViewController:detail animated:YES];
+    }
+}
+
+- (void)tableView:(UITableView *)tableView accessoryButtonTappedForRowWithIndexPath:(NSIndexPath *)indexPath {
+    [self showSongOptionsAtIndex:(NSInteger)indexPath.row];
+}
+
+- (void)songPlusTapped:(UIButton *)button {
+    [self showSongOptionsAtIndex:(NSInteger)button.tag];
+}
+
+- (void)showSongOptionsAtIndex:(NSInteger)row {
+    if (row < 0 || row >= (NSInteger)self.results.count) return;
+    id item = [self.results objectAtIndex:(NSUInteger)row];
+    if ([item isKindOfClass:[LTTrack class]]) {
+        [self showSongOptionsForTrack:item];
+    }
+}
+
+- (NSArray *)tracksFromResults {
+    NSMutableArray *tracks = [NSMutableArray array];
+    for (id item in self.results) {
+        if ([item isKindOfClass:[LTTrack class]]) {
+            [tracks addObject:item];
+        }
+    }
+    return tracks;
+}
+
+@end
