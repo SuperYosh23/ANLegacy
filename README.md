@@ -25,6 +25,7 @@ stream music without needing a modern OS.
 - [Theos](https://theos.dev) on a macOS/Linux host
 - A jailbroken iPhone (armv7, iOS 6.0 or newer)
 - iOS 6.0 deployment target (set in the `Makefile`)
+- [TLSFix](https://github.com/nfzerox/TLSFix) installed and enabled for **AN Legacy** (legacy iOS versions ship outdated TLS that fails against modern HTTPS endpoints)
 
 ## Building
 
