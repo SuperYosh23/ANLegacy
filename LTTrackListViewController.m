@@ -3,9 +3,10 @@
 #import "LTYouTubeClient.h"
 #import "LTMediaCell.h"
 #import "LTHeaderView.h"
-#import "LTPlayerViewController.h"
+#import "LTTabBarController.h"
 #import "LTPlayerController.h"
 #import "LTPlaylistStore.h"
+#import "LTPlaylistPicker.h"
 #import <QuartzCore/QuartzCore.h>
 
 @interface LTTrackListViewController () <UITableViewDataSource, UITableViewDelegate,
@@ -66,50 +67,15 @@
 
 - (void)saveTapped:(id)sender {
     if (!self.tracks.count) return;
-    UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:@"Add to Playlist"
-                                                       delegate:self
-                                              cancelButtonTitle:@"Cancel"
-                                         destructiveButtonTitle:nil
-                                              otherButtonTitles:nil];
-    sheet.tag = 30;
-    [sheet addButtonWithTitle:@"New Playlist..."];
-    for (LTLocalPlaylist *playlist in [[LTPlaylistStore sharedStore] playlists]) {
-        [sheet addButtonWithTitle:playlist.name];
-    }
-    [sheet showInView:self.view];
-}
-
-#pragma mark - UIActionSheetDelegate
-
-- (void)actionSheet:(UIActionSheet *)actionSheet clickedButtonAtIndex:(NSInteger)buttonIndex {
-    if (actionSheet.tag != 30) return;
-    if (buttonIndex == 0) {
-        UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"New Playlist"
-                                                        message:@"Enter a name for the playlist."
-                                                       delegate:self
-                                              cancelButtonTitle:@"Cancel"
-                                              otherButtonTitles:@"Create", nil];
-        alert.tag = 300;
-        alert.alertViewStyle = UIAlertViewStylePlainTextInput;
-        [alert show];
-    } else if (buttonIndex > 0) {
-        NSInteger idx = buttonIndex - 1;
-        NSArray *playlists = [[LTPlaylistStore sharedStore] playlists];
-        if (idx < (NSInteger)playlists.count) {
-            LTLocalPlaylist *playlist = [playlists objectAtIndex:(NSUInteger)idx];
-            for (LTTrack *track in self.tracks) {
-                [[LTPlaylistStore sharedStore] addTrack:track toPlaylist:playlist];
-            }
-            [self showToast:[NSString stringWithFormat:@"Added %d to %@", (int)self.tracks.count, playlist.name]];
+    NSString *subtitle = [NSString stringWithFormat:@"%d tracks", (int)self.tracks.count];
+    [LTPlaylistPicker presentFromViewController:self
+                                     panelTitle:subtitle
+                                      onPicked:^(LTLocalPlaylist *playlist) {
+        for (LTTrack *track in self.tracks) {
+            [[LTPlaylistStore sharedStore] addTrack:track toPlaylist:playlist];
         }
-    }
-}
-
-#pragma mark - UIAlertViewDelegate
-
-- (void)alertView:(UIAlertView *)alertView clickedButtonAtIndex:(NSInteger)buttonIndex {
-    if (alertView.tag == 300 && buttonIndex == 1) {
-        NSString *name = [[alertView textFieldAtIndex:0] text];
+        [self showToast:[NSString stringWithFormat:@"Added %d to %@", (int)self.tracks.count, playlist.name]];
+    } onCreateNew:^(NSString *name) {
         LTLocalPlaylist *playlist = [[LTPlaylistStore sharedStore] createPlaylistWithName:name];
         if (playlist) {
             for (LTTrack *track in self.tracks) {
@@ -117,8 +83,9 @@
             }
             [self showToast:[NSString stringWithFormat:@"Added %d to %@", (int)self.tracks.count, playlist.name]];
         }
-    }
+    }];
 }
+
 
 - (void)showToast:(NSString *)text {
     UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 220, 36)];
@@ -230,8 +197,7 @@
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     [[LTPlayerController sharedController] playQueue:self.tracks atIndex:indexPath.row];
-    LTPlayerViewController *player = [[LTPlayerViewController alloc] init];
-    [self.navigationController pushViewController:player animated:YES];
+    [(LTTabBarController *)self.tabBarController showNowPlaying];
 }
 
 @end

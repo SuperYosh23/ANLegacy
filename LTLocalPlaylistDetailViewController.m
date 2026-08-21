@@ -1,7 +1,7 @@
 #import "LTLocalPlaylistDetailViewController.h"
 #import "LTPlaylistStore.h"
 #import "LTPlayerController.h"
-#import "LTPlayerViewController.h"
+#import "LTTabBarController.h"
 #import "LTLog.h"
 
 @interface LTLocalPlaylistDetailViewController () <UITableViewDataSource, UITableViewDelegate>
@@ -84,8 +84,7 @@
 - (void)playAllTapped:(id)sender {
     if (!self.playlist.tracks.count) return;
     [[LTPlayerController sharedController] playQueue:self.playlist.tracks atIndex:0];
-    LTPlayerViewController *player = [[LTPlayerViewController alloc] init];
-    [self.navigationController pushViewController:player animated:YES];
+    [(LTTabBarController *)self.tabBarController showNowPlaying];
 }
 
 - (void)downloadTapped:(id)sender {
@@ -213,8 +212,7 @@
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     [[LTPlayerController sharedController] playQueue:self.playlist.tracks atIndex:indexPath.row];
-    LTPlayerViewController *player = [[LTPlayerViewController alloc] init];
-    [self.navigationController pushViewController:player animated:YES];
+    [(LTTabBarController *)self.tabBarController showNowPlaying];
 }
 
 - (UITableViewCellEditingStyle)tableView:(UITableView *)tableView editingStyleForRowAtIndexPath:(NSIndexPath *)indexPath {

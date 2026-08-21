@@ -1,8 +1,8 @@
 #import "LTAppDelegate.h"
 #import "LTSearchViewController.h"
 #import "LTHomeViewController.h"
-#import "LTPopularViewController.h"
 #import "LTSettingsViewController.h"
+#import "LTPlayerViewController.h"
 #import "LTPlayerController.h"
 #import "LTTabBarController.h"
 #import "LTGraphics.h"
@@ -33,11 +33,6 @@
     UINavigationController *searchNav = [[UINavigationController alloc] initWithRootViewController:search];
     [controllers addObject:searchNav];
 
-    LTPopularViewController *popular = [[LTPopularViewController alloc] init];
-    popular.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Popular" image:[LTGraphics popularIcon] tag:0];
-    UINavigationController *popularNav = [[UINavigationController alloc] initWithRootViewController:popular];
-    [controllers addObject:popularNav];
-
     LTSearchViewController *playlists = [[LTSearchViewController alloc] initWithType:@"playlists"];
     playlists.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Playlists" image:[UIImage imageNamed:@"TabPlaylists"] tag:0];
     UINavigationController *playlistsNav = [[UINavigationController alloc] initWithRootViewController:playlists];
@@ -47,6 +42,11 @@
     settings.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Settings" image:[LTGraphics settingsIcon] tag:0];
     UINavigationController *settingsNav = [[UINavigationController alloc] initWithRootViewController:settings];
     [controllers addObject:settingsNav];
+
+    LTPlayerViewController *nowPlaying = [[LTPlayerViewController alloc] init];
+    nowPlaying.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Now Playing" image:[UIImage imageNamed:@"IcoPlay"] tag:0];
+    UINavigationController *nowPlayingNav = [[UINavigationController alloc] initWithRootViewController:nowPlaying];
+    [controllers addObject:nowPlayingNav];
 
     UITabBarController *tabBar = [[LTTabBarController alloc] init];
     tabBar.viewControllers = controllers;

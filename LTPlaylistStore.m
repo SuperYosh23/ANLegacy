@@ -205,7 +205,7 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
         if ([old.videoId isEqualToString:track.videoId]) continue;
         [plist addObject:[old dictionaryRepresentation]];
         count += 1;
-        if (count >= 20) break;
+        if (count >= 3) break;
     }
     [plist writeToFile:[self recentsFilePath] atomically:YES];
     [[NSNotificationCenter defaultCenter] postNotificationName:LTRecentsDidChangeNotification object:self];
@@ -274,9 +274,10 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
 
 - (void)startDownloadURL:(NSString *)urlString videoId:(NSString *)videoId {
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlString]
-                                                           cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
-                                                       timeoutInterval:120.0];
+                                                            cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
+                                                        timeoutInterval:120.0];
     [request setValue:@"bytes=0-" forHTTPHeaderField:@"Range"];
+    [request setValue:LTBrowserUserAgent forHTTPHeaderField:@"User-Agent"];
     self.downloadData = [NSMutableData data];
     self.downloadHTTPStatus = 0;
     self.downloadConnection = [[NSURLConnection alloc] initWithRequest:request delegate:self startImmediately:YES];

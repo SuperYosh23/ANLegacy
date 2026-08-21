@@ -9,9 +9,7 @@ LegacyMusic_FILES = main.m \
 	LTModel.m \
 	LTYouTubeClient.m \
 	LTTabBarController.m \
-	LTMiniPlayerView.m \
 	LTHomeViewController.m \
-	LTPopularViewController.m \
 	LTSettingsViewController.m \
 	LTGraphics.m \
 	LTSearchViewController.m \
@@ -21,6 +19,7 @@ LegacyMusic_FILES = main.m \
 	LTPlayerController.m \
 	LTQueueViewController.m \
 	LTPlaylistStore.m \
+	LTPlaylistPicker.m \
 	LTLocalPlaylistDetailViewController.m \
 	LTMediaCell.m \
 	LTHeaderView.m

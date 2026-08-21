@@ -1,109 +1,98 @@
 #import "LTTabBarController.h"
-#import "LTMiniPlayerView.h"
-#import "LTPlayerViewController.h"
+#import "LTPlayerController.h"
+#import <QuartzCore/QuartzCore.h>
 
-static const CGFloat LTMiniPlayerHeight = 48.0f;
-
-@interface LTTabBarController () <UITabBarControllerDelegate, UINavigationControllerDelegate>
-@property (nonatomic, strong, readwrite) LTMiniPlayerView *miniPlayerView;
+@interface LTTabBarController () <UITabBarControllerDelegate>
+@property (nonatomic, strong) UIImageView *transitionSnapshot;
 @end
 
 @implementation LTTabBarController
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-
-    self.miniPlayerView = [[LTMiniPlayerView alloc] initWithFrame:CGRectZero];
-    self.miniPlayerView.hidden = YES;
-    __weak LTTabBarController *weakSelf = self;
-    self.miniPlayerView.onOpenPlayer = ^{
-        [weakSelf openPlayer];
-    };
-    [self.view addSubview:self.miniPlayerView];
-
     self.delegate = self;
-    for (UIViewController *vc in self.viewControllers) {
-        if ([vc isKindOfClass:[UINavigationController class]]) {
-            ((UINavigationController *)vc).delegate = self;
-        }
-    }
-
     [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(miniPlayerVisibilityChanged:)
-                                                 name:LTMiniPlayerVisibilityDidChangeNotification
-                                               object:self.miniPlayerView];
+                                             selector:@selector(playerStateChanged:)
+                                                 name:LTPlayerTrackDidChangeNotification
+                                               object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(playerStateChanged:)
+                                                 name:LTPlayerStateDidChangeNotification
+                                               object:nil];
+    [self refreshNowPlayingIcon];
 }
 
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
-- (void)viewDidLayoutSubviews {
-    [super viewDidLayoutSubviews];
-    CGFloat width = self.view.bounds.size.width;
-    CGFloat tabTop = self.tabBar.frame.origin.y;
-    self.miniPlayerView.frame = CGRectMake(0.0f, tabTop - LTMiniPlayerHeight, width, LTMiniPlayerHeight);
-    [self.miniPlayerView refresh];
-    [self applyMiniPlayerInset];
+#pragma mark - Now Playing indicator
+
+- (UITabBarItem *)nowPlayingItem {
+    UINavigationController *nav = [self.viewControllers lastObject];
+    if (![nav isKindOfClass:[UINavigationController class]]) return nil;
+    return [nav.viewControllers firstObject].tabBarItem;
 }
 
-- (void)miniPlayerVisibilityChanged:(NSNotification *)notification {
-    [self applyMiniPlayerInset];
+- (void)refreshNowPlayingIcon {
+    UITabBarItem *item = [self nowPlayingItem];
+    if (!item) return;
+    BOOL playing = [[LTPlayerController sharedController] isPlaying];
+    // Plain .image is stencil-rendered gray by iOS 6 unless the tab is
+    // selected, so supply finished images that render verbatim instead.
+    UIImage *blue = [UIImage imageNamed:@"IcoPlayBlue"];
+    UIImage *gray = [UIImage imageNamed:@"IcoPlay"];
+    [item setFinishedSelectedImage:blue withFinishedUnselectedImage:(playing ? blue : gray)];
 }
 
-- (void)applyMiniPlayerInset {
-    CGFloat inset = self.miniPlayerView.hidden ? 0.0f : LTMiniPlayerHeight;
-    UIScrollView *scrollView = [self visibleScrollView];
-    if (!scrollView) return;
-    if (scrollView.contentInset.bottom != inset) {
-        scrollView.contentInset = UIEdgeInsetsMake(scrollView.contentInset.top,
-                                                   scrollView.contentInset.left,
-                                                   inset,
-                                                   scrollView.contentInset.right);
-    }
-    scrollView.scrollIndicatorInsets = UIEdgeInsetsMake(scrollView.scrollIndicatorInsets.top,
-                                                        scrollView.scrollIndicatorInsets.left,
-                                                        inset,
-                                                        scrollView.scrollIndicatorInsets.right);
-}
-
-- (UIScrollView *)visibleScrollView {
-    UIViewController *top = self.selectedViewController;
-    if ([top isKindOfClass:[UINavigationController class]]) {
-        top = [(UINavigationController *)top topViewController];
-    }
-    if (![top isViewLoaded]) return nil;
-    return [self scrollViewInView:top.view];
-}
-
-- (UIScrollView *)scrollViewInView:(UIView *)view {
-    if ([view isKindOfClass:[UITableView class]]) return (UITableView *)view;
-    if ([view isKindOfClass:[UISearchBar class]]) return nil;
-    if ([view isKindOfClass:[UIScrollView class]]) return (UIScrollView *)view;
-    for (UIView *sub in view.subviews) {
-        UIScrollView *found = [self scrollViewInView:sub];
-        if (found) return found;
-    }
-    return nil;
+- (void)playerStateChanged:(NSNotification *)notification {
+    [self refreshNowPlayingIcon];
 }
 
 #pragma mark - UITabBarControllerDelegate
 
+// Snapshot the outgoing page so didSelect can cross-fade it away.
+- (BOOL)tabBarController:(UITabBarController *)tabBarController shouldSelectViewController:(UIViewController *)viewController {
+    if (viewController == tabBarController.selectedViewController || self.transitionSnapshot) return NO;
+    UIView *fromView = tabBarController.selectedViewController.view;
+    if (!fromView || !fromView.window) return YES;
+
+    UIGraphicsBeginImageContextWithOptions(fromView.bounds.size, YES, 0.0f);
+    [fromView.layer renderInContext:UIGraphicsGetCurrentContext()];
+    UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+
+    self.transitionSnapshot = [[UIImageView alloc] initWithImage:image];
+    self.transitionSnapshot.frame = fromView.frame;
+    return YES;
+}
+
 - (void)tabBarController:(UITabBarController *)tabBarController didSelectViewController:(UIViewController *)viewController {
-    [self applyMiniPlayerInset];
+    UIImageView *snapshot = self.transitionSnapshot;
+    self.transitionSnapshot = nil;
+    if (!snapshot) return;
+
+    [tabBarController.view addSubview:snapshot];
+    viewController.view.alpha = 0.0f;
+    [UIView animateWithDuration:0.15f
+        delay:0.0f
+        options:UIViewAnimationOptionCurveEaseOut
+        animations:^{
+            viewController.view.alpha = 1.0f;
+            snapshot.alpha = 0.0f;
+        }
+        completion:^(BOOL finished) {
+            [snapshot removeFromSuperview];
+        }];
 }
 
-#pragma mark - UINavigationControllerDelegate
+#pragma mark - Navigation
 
-- (void)navigationController:(UINavigationController *)navigationController didShowViewController:(UIViewController *)viewController animated:(BOOL)animated {
-    [self applyMiniPlayerInset];
-}
-
-- (void)openPlayer {
-    UINavigationController *nav = (UINavigationController *)self.selectedViewController;
-    if (![nav isKindOfClass:[UINavigationController class]]) return;
-    LTPlayerViewController *player = [[LTPlayerViewController alloc] init];
-    [nav pushViewController:player animated:YES];
+- (void)showNowPlaying {
+    NSInteger index = (NSInteger)self.viewControllers.count - 1;
+    if (self.selectedIndex != index) {
+        self.selectedIndex = index;
+    }
 }
 
 @end

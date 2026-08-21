@@ -4,7 +4,7 @@
 #import "LTMediaCell.h"
 #import "LTHeaderView.h"
 #import "LTTrackListViewController.h"
-#import "LTPlayerViewController.h"
+#import "LTTabBarController.h"
 #import "LTPlayerController.h"
 
 @interface LTArtistViewController ()
@@ -125,8 +125,7 @@
     BOOL isSongs = (indexPath.section == 0 && self.topSongs.count);
     if (isSongs) {
         [[LTPlayerController sharedController] playQueue:self.topSongs atIndex:indexPath.row];
-        LTPlayerViewController *player = [[LTPlayerViewController alloc] init];
-        [self.navigationController pushViewController:player animated:YES];
+        [(LTTabBarController *)self.tabBarController showNowPlaying];
     } else {
         LTBrowseItem *album = [self.albums objectAtIndex:(NSUInteger)indexPath.row];
         LTTrackListViewController *vc = [[LTTrackListViewController alloc] initWithBrowseId:album.browseId

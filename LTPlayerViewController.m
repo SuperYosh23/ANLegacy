@@ -3,7 +3,6 @@
 #import "LTPlayerController.h"
 #import "LTQueueViewController.h"
 #import "LTYouTubeClient.h"
-#import "LTMiniPlayerView.h"
 #import "LTLog.h"
 
 @interface LTPlayerViewController ()
@@ -172,12 +171,10 @@
                                                object:nil];
     [self refreshTrack];
     [self startTimer];
-    [[NSNotificationCenter defaultCenter] postNotificationName:LTNowPlayingDidAppearNotification object:self];
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
-    [[NSNotificationCenter defaultCenter] postNotificationName:LTNowPlayingDidDisappearNotification object:self];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     [self stopTimer];
 }

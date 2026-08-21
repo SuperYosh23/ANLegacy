@@ -4,9 +4,10 @@
 #import "LTMediaCell.h"
 #import "LTTrackListViewController.h"
 #import "LTArtistViewController.h"
-#import "LTPlayerViewController.h"
+#import "LTTabBarController.h"
 #import "LTPlayerController.h"
 #import "LTPlaylistStore.h"
+#import "LTPlaylistPicker.h"
 #import "LTLocalPlaylistDetailViewController.h"
 #import <QuartzCore/QuartzCore.h>
 
@@ -229,17 +230,20 @@
 }
 
 - (void)showPlaylistPickerForTrack:(LTTrack *)track {
-    self.pendingTrack = track;
-    UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:@"Add to Playlist"
-                                                       delegate:self
-                                              cancelButtonTitle:@"Cancel"
-                                         destructiveButtonTitle:nil
-                                              otherButtonTitles:@"New Playlist...", nil];
-    sheet.tag = 11;
-    for (LTLocalPlaylist *playlist in [[LTPlaylistStore sharedStore] playlists]) {
-        [sheet addButtonWithTitle:playlist.name];
-    }
-    [sheet showInView:self.view];
+    [LTPlaylistPicker presentFromViewController:self
+                                     panelTitle:track.title
+                                      onPicked:^(LTLocalPlaylist *playlist) {
+        [[LTPlaylistStore sharedStore] addTrack:self.pendingTrack toPlaylist:playlist];
+        [self showToast:[NSString stringWithFormat:@"Added to %@", playlist.name]];
+        self.pendingTrack = nil;
+    } onCreateNew:^(NSString *name) {
+        LTLocalPlaylist *playlist = [[LTPlaylistStore sharedStore] createPlaylistWithName:name];
+        if (playlist && self.pendingTrack) {
+            [[LTPlaylistStore sharedStore] addTrack:self.pendingTrack toPlaylist:playlist];
+            [self showToast:[NSString stringWithFormat:@"Added to %@", playlist.name]];
+        }
+        self.pendingTrack = nil;
+    }];
 }
 
 - (void)promptForPlaylistNameWithTrack:(LTTrack *)track {
@@ -266,24 +270,7 @@
             [self showPlaylistPickerForTrack:self.pendingTrack];
         }
     } else if (actionSheet.tag == 11) {
-        if (buttonIndex < 0) return;
-        NSString *title = [actionSheet buttonTitleAtIndex:buttonIndex];
-        if (!title.length) {
-            self.pendingTrack = nil;
-            return;
-        }
-        if ([title isEqualToString:@"New Playlist..."]) {
-            [self promptForPlaylistNameWithTrack:self.pendingTrack];
-            return;
-        }
-        for (LTLocalPlaylist *playlist in [[LTPlaylistStore sharedStore] playlists]) {
-            if ([playlist.name isEqualToString:title]) {
-                [[LTPlaylistStore sharedStore] addTrack:self.pendingTrack toPlaylist:playlist];
-                [self showToast:[NSString stringWithFormat:@"Added to %@", playlist.name]];
-                break;
-            }
-        }
-        self.pendingTrack = nil;
+        // Handled by LTPlaylistPicker now.
     }
 }
 
@@ -400,8 +387,7 @@
             if ([[tracks objectAtIndex:i] isEqual:item]) { index = (NSInteger)i; break; }
         }
         [[LTPlayerController sharedController] playQueue:tracks atIndex:index];
-        LTPlayerViewController *player = [[LTPlayerViewController alloc] init];
-        [self.navigationController pushViewController:player animated:YES];
+        [(LTTabBarController *)self.tabBarController showNowPlaying];
     } else if ([item isKindOfClass:[LTBrowseItem class]]) {
         LTBrowseItem *bi = item;
         UIViewController *detail = nil;

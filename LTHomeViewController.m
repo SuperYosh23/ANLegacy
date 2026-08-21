@@ -1,7 +1,7 @@
 #import "LTHomeViewController.h"
 #import "LTPlaylistStore.h"
 #import "LTPlayerController.h"
-#import "LTPlayerViewController.h"
+#import "LTTabBarController.h"
 #import "LTLocalPlaylistDetailViewController.h"
 #import "LTMediaCell.h"
 #import "LTModel.h"
@@ -150,8 +150,7 @@
     id item = [self itemForIndexPath:indexPath];
     if ([item isKindOfClass:[LTTrack class]]) {
         [[LTPlayerController sharedController] playQueue:[NSArray arrayWithObject:item] atIndex:0];
-        LTPlayerViewController *player = [[LTPlayerViewController alloc] init];
-        [self.navigationController pushViewController:player animated:YES];
+        [(LTTabBarController *)self.tabBarController showNowPlaying];
     } else if ([item isKindOfClass:[LTLocalPlaylist class]]) {
         LTLocalPlaylistDetailViewController *detail = [[LTLocalPlaylistDetailViewController alloc] initWithPlaylist:item];
         [self.navigationController pushViewController:detail animated:YES];

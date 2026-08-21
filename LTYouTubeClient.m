@@ -545,33 +545,36 @@ static id LTPath(id root, id key, ...) {
         return;
     }
     __weak LTYouTubeClient *weakSelf = self;
-    [self fetchStreamURLWithContext:[self androidVRContext]
-                             clientName:@"ANDROID_VR"
-                                videoId:videoId
-                             completion:^(NSString *streamURL, BOOL muxed, NSError *vrError) {
+    // ANDROID first: it is the only client whose stream URLs googlevideo
+    // still accepts (ANDROID_VR URLs now 403 from PO-token enforcement, and
+    // IOS only returns URL-less SABR formats). VR stays as a later fallback.
+    [self fetchStreamURLWithContext:[self androidContext]
+                         clientName:@"ANDROID"
+                            videoId:videoId
+                         completion:^(NSString *streamURL, BOOL muxed, NSError *androidError) {
         if (streamURL.length) {
             if (completion) completion(streamURL, muxed, nil);
             return;
         }
-        LTLog(@"STREAM falling back to IOS client for %@", videoId);
-        [weakSelf fetchStreamURLWithContext:[weakSelf iosContext]
-                                 clientName:@"IOS"
+        LTLog(@"STREAM falling back to ANDROID_VR client for %@", videoId);
+        [weakSelf fetchStreamURLWithContext:[weakSelf androidVRContext]
+                                 clientName:@"ANDROID_VR"
                                     videoId:videoId
-                                 completion:^(NSString *iosURL, BOOL iosMuxed, NSError *iosError) {
-            if (iosURL.length) {
-                if (completion) completion(iosURL, iosMuxed, nil);
+                                 completion:^(NSString *vrURL, BOOL vrMuxed, NSError *vrError) {
+            if (vrURL.length) {
+                if (completion) completion(vrURL, vrMuxed, nil);
                 return;
             }
-            LTLog(@"STREAM falling back to ANDROID client for %@", videoId);
-            [weakSelf fetchStreamURLWithContext:[weakSelf androidContext]
-                                     clientName:@"ANDROID"
+            LTLog(@"STREAM falling back to IOS client for %@", videoId);
+            [weakSelf fetchStreamURLWithContext:[weakSelf iosContext]
+                                     clientName:@"IOS"
                                         videoId:videoId
-                                     completion:^(NSString *androidURL, BOOL androidMuxed, NSError *androidError) {
-                if (androidURL.length) {
-                    if (completion) completion(androidURL, androidMuxed, nil);
+                                     completion:^(NSString *iosURL, BOOL iosMuxed, NSError *iosError) {
+                if (iosURL.length) {
+                    if (completion) completion(iosURL, iosMuxed, nil);
                     return;
                 }
-                NSError *last = androidError ?: iosError ?: vrError;
+                NSError *last = iosError ?: vrError ?: androidError;
                 NSString *msg = [NSString stringWithFormat:@"All playback sources failed.\nLast error: %@",
                                  last.localizedDescription ?: @"unknown"];
                 if (completion) completion(nil, NO, [weakSelf errorWithCode:2 message:msg]);
