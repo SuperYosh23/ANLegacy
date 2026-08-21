@@ -26,6 +26,7 @@ extern NSString *const LTRecentsDidChangeNotification;
 - (NSInteger)offlineFileCount;
 
 - (NSString *)localFilePathForVideoId:(NSString *)videoId;
+- (NSString *)existingLocalFilePathForVideoId:(NSString *)videoId;
 - (BOOL)isTrackDownloaded:(LTTrack *)track;
 - (BOOL)isDownloading;
 

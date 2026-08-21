@@ -11,6 +11,8 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
 
 @interface LTPlayerController () <NSURLConnectionDataDelegate, AVAudioPlayerDelegate>
 @property (nonatomic, strong) AVAudioPlayer *audioPlayer;
+@property (nonatomic, strong) AVPlayer *moviePlayer;
+@property (nonatomic, assign) BOOL pendingMuxed;
 @property (nonatomic, copy) NSArray *queue;
 @property (nonatomic, copy) NSArray *sourceQueue;
 @property (nonatomic, assign) NSInteger currentIndex;
@@ -24,6 +26,7 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
 @property (nonatomic, strong) NSURLConnection *streamConnection;
 @property (nonatomic, strong) NSMutableData *streamData;
 @property (nonatomic, copy) NSString *streamVideoId;
+@property (nonatomic, assign) NSInteger streamHTTPStatus;
 @end
 
 @implementation LTPlayerController
@@ -63,6 +66,52 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
+- (BOOL)hasActivePlayer {
+    return self.audioPlayer != nil || self.moviePlayer != nil;
+}
+
+- (BOOL)playerIsPlaying {
+    if (self.moviePlayer) return self.moviePlayer.rate != 0.0;
+    return self.audioPlayer.isPlaying;
+}
+
+- (NSTimeInterval)playerDuration {
+    if (self.moviePlayer) {
+        CMTime t = self.moviePlayer.currentItem.duration;
+        return CMTIME_IS_NUMERIC(t) ? CMTimeGetSeconds(t) : 0.0;
+    }
+    return self.audioPlayer.duration;
+}
+
+- (NSTimeInterval)playerCurrentTime {
+    if (self.moviePlayer) return CMTimeGetSeconds(self.moviePlayer.currentTime);
+    return self.audioPlayer.currentTime;
+}
+
+- (void)playerSeekToTime:(NSTimeInterval)time {
+    if (self.moviePlayer) {
+        [self.moviePlayer seekToTime:CMTimeMakeWithSeconds(time, NSEC_PER_SEC)];
+        return;
+    }
+    self.audioPlayer.currentTime = time;
+}
+
+- (void)startActivePlayer {
+    if (self.moviePlayer) {
+        [self.moviePlayer play];
+    } else {
+        [self.audioPlayer play];
+    }
+}
+
+- (void)pauseActivePlayer {
+    if (self.moviePlayer) {
+        [self.moviePlayer pause];
+    } else {
+        [self.audioPlayer pause];
+    }
+}
+
 - (void)configureAudioSession {
     AVAudioSession *session = [AVAudioSession sharedInstance];
     NSError *error = nil;
@@ -79,7 +128,7 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
 }
 
 - (void)appDidEnterBackground:(NSNotification *)notification {
-    if (self.audioPlayer && !self.userPaused && !self.audioPlayer.isPlaying) {
+    if ([self hasActivePlayer] && !self.userPaused && ![self playerIsPlaying]) {
         LTLog(@"PLAYER auto-resume in background");
         [self playMovie];
     }
@@ -89,8 +138,8 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
     NSNumber *type = [[notification userInfo] objectForKey:AVAudioSessionInterruptionTypeKey];
     LTLog(@"AUDIO interruption type=%d", [type intValue]);
     if ([type intValue] == AVAudioSessionInterruptionTypeBegan) {
-        self.resumeAfterInterruption = self.audioPlayer.isPlaying;
-        [self.audioPlayer pause];
+        self.resumeAfterInterruption = [self playerIsPlaying];
+        [self pauseActivePlayer];
     } else if ([type intValue] == AVAudioSessionInterruptionTypeEnded) {
         [self configureAudioSession];
         if (self.resumeAfterInterruption) {
@@ -104,7 +153,7 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
     [self configureAudioSession];
     self.isLoading = NO;
     self.userPaused = NO;
-    [self.audioPlayer play];
+    [self startActivePlayer];
     [self updateNowPlayingInfo];
     BOOL keepAwake = [[NSUserDefaults standardUserDefaults] boolForKey:@"LTKeepAwake"];
     [[UIApplication sharedApplication] setIdleTimerDisabled:keepAwake];
@@ -112,7 +161,7 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
 }
 
 - (void)pausePlayback {
-    [self.audioPlayer pause];
+    [self pauseActivePlayer];
     [self updateNowPlayingInfo];
     [[UIApplication sharedApplication] setIdleTimerDisabled:NO];
     [[NSNotificationCenter defaultCenter] postNotificationName:LTPlayerStateDidChangeNotification object:self];
@@ -128,11 +177,12 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
     if (track.title.length) [info setObject:track.title forKey:MPMediaItemPropertyTitle];
     if (track.artist.length) [info setObject:track.artist forKey:MPMediaItemPropertyArtist];
     if (track.album.length) [info setObject:track.album forKey:MPMediaItemPropertyAlbumTitle];
-    if (self.audioPlayer.duration > 0) {
-        [info setObject:@(self.audioPlayer.duration) forKey:MPMediaItemPropertyPlaybackDuration];
+    NSTimeInterval dur = [self playerDuration];
+    if (dur > 0) {
+        [info setObject:@(dur) forKey:MPMediaItemPropertyPlaybackDuration];
     }
-    [info setObject:@(self.audioPlayer.currentTime) forKey:MPNowPlayingInfoPropertyElapsedPlaybackTime];
-    [info setObject:@(self.audioPlayer.isPlaying ? 1.0 : 0.0) forKey:MPNowPlayingInfoPropertyPlaybackRate];
+    [info setObject:@([self playerCurrentTime]) forKey:MPNowPlayingInfoPropertyElapsedPlaybackTime];
+    [info setObject:@([self playerIsPlaying] ? 1.0 : 0.0) forKey:MPNowPlayingInfoPropertyPlaybackRate];
     [info setObject:@(self.currentIndex) forKey:MPNowPlayingInfoPropertyPlaybackQueueIndex];
     [info setObject:@((NSInteger)self.queue.count) forKey:MPNowPlayingInfoPropertyPlaybackQueueCount];
     if (self.nowPlayingArtwork) {
@@ -149,15 +199,15 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
 }
 
 - (BOOL)isPlaying {
-    return self.audioPlayer.isPlaying;
+    return [self playerIsPlaying];
 }
 
 - (NSTimeInterval)duration {
-    return self.audioPlayer.duration;
+    return [self playerDuration];
 }
 
 - (NSTimeInterval)currentTime {
-    return self.audioPlayer.currentTime;
+    return [self playerCurrentTime];
 }
 
 - (void)playQueue:(NSArray *)tracks atIndex:(NSInteger)index {
@@ -241,8 +291,8 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
         }];
     }
 
-    NSString *localPath = [[LTPlaylistStore sharedStore] localFilePathForVideoId:track.videoId];
-    if (localPath.length && [[NSFileManager defaultManager] fileExistsAtPath:localPath]) {
+    NSString *localPath = [[LTPlaylistStore sharedStore] existingLocalFilePathForVideoId:track.videoId];
+    if (localPath.length) {
         LTLog(@"OFFLINE playing videoId=%@ title=%@", track.videoId, track.title);
         self.isLoading = NO;
         [self loadLocalFileAtPath:localPath];
@@ -253,7 +303,7 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
     self.isLoading = YES;
     LTLog(@"LOAD videoId=%@ title=%@", track.videoId, track.title);
     __weak LTPlayerController *weakSelf = self;
-    [[LTYouTubeClient sharedClient] streamURLForVideo:track.videoId completion:^(NSString *streamURL, NSError *error) {
+    [[LTYouTubeClient sharedClient] streamURLForVideo:track.videoId completion:^(NSString *streamURL, BOOL muxedStream, NSError *error) {
         LTPlayerController *strongSelf = weakSelf;
         if (!strongSelf) return;
         if (![strongSelf.pendingVideoId isEqualToString:track.videoId]) return;
@@ -263,14 +313,21 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
             [strongSelf showError:error];
             return;
         }
-        LTLog(@"FETCH_OK downloading stream for %@", track.videoId);
+        strongSelf.pendingMuxed = muxedStream;
+        LTLog(@"FETCH_OK downloading stream for %@ muxed=%d", track.videoId, muxedStream);
         [strongSelf downloadAndPlayURL:streamURL videoId:track.videoId];
     }];
 }
 
 - (void)loadLocalFileAtPath:(NSString *)path {
+    NSURL *fileURL = [NSURL fileURLWithPath:path];
+    if ([[path pathExtension] caseInsensitiveCompare:@"mp4"] == NSOrderedSame) {
+        LTLog(@"MUXED playing via AVPlayer %@", path);
+        [self loadMuxedFileAtURL:fileURL];
+        return;
+    }
     NSError *error = nil;
-    AVAudioPlayer *player = [[AVAudioPlayer alloc] initWithContentsOfURL:[NSURL fileURLWithPath:path] error:&error];
+    AVAudioPlayer *player = [[AVAudioPlayer alloc] initWithContentsOfURL:fileURL error:&error];
     if (!player) {
         LTLog(@"AUDIOPLAYER init error: %@", error);
         self.isLoading = NO;
@@ -284,12 +341,32 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
     [self playMovie];
 }
 
+- (void)loadMuxedFileAtURL:(NSURL *)fileURL {
+    AVPlayerItem *item = [AVPlayerItem playerItemWithURL:fileURL];
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                    name:AVPlayerItemDidPlayToEndTimeNotification
+                                                  object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(playerItemDidEnd:)
+                                                 name:AVPlayerItemDidPlayToEndTimeNotification
+                                               object:item];
+    self.moviePlayer = [[AVPlayer alloc] initWithPlayerItem:item];
+    [self updateNowPlayingInfo];
+    [self playMovie];
+}
+
+- (void)playerItemDidEnd:(NSNotification *)notification {
+    LTLog(@"FINISH avplayer item end");
+    [self nextTrack];
+}
+
 - (void)downloadAndPlayURL:(NSString *)urlString videoId:(NSString *)videoId {
     self.streamVideoId = self.pendingVideoId;
+    self.streamHTTPStatus = 0;
     [self.streamConnection cancel];
     self.streamConnection = nil;
     self.streamData = [NSMutableData data];
-    NSString *path = @"/tmp/lt_track.m4a";
+    NSString *path = self.pendingMuxed ? @"/tmp/lt_track.mp4" : @"/tmp/lt_track.m4a";
     [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
 
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlString]
@@ -306,6 +383,7 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
 - (void)connection:(NSURLConnection *)connection didReceiveResponse:(NSURLResponse *)response {
     NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
     LTLog(@"DL_RESPONSE status=%d expected=%lld", (int)[http statusCode], [response expectedContentLength]);
+    self.streamHTTPStatus = [http statusCode];
     [self.streamData setLength:0];
 }
 
@@ -325,14 +403,23 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
 }
 
 - (void)connectionDidFinishLoading:(NSURLConnection *)connection {
-    LTLog(@"DL_FINISH bytes=%d", (int)self.streamData.length);
+    LTLog(@"DL_FINISH bytes=%d status=%d", (int)self.streamData.length, (int)self.streamHTTPStatus);
     self.streamConnection = nil;
     if (![self.streamVideoId isEqualToString:self.pendingVideoId]) {
         LTLog(@"DL_STALE ignoring");
         return;
     }
-    if (!self.streamData.length) return;
-    NSString *path = @"/tmp/lt_track.m4a";
+    if (self.streamHTTPStatus >= 400 || !self.streamData.length) {
+        self.isLoading = NO;
+        NSString *reason = self.streamHTTPStatus
+            ? [NSString stringWithFormat:@"Stream download failed (HTTP %d).\nThis usually clears after a few minutes.", (int)self.streamHTTPStatus]
+            : @"Stream download failed.\nThis usually clears after a few minutes.";
+        [self showError:[NSError errorWithDomain:NSURLErrorDomain code:self.streamHTTPStatus
+                                        userInfo:@{NSLocalizedDescriptionKey: reason}]];
+        [[NSNotificationCenter defaultCenter] postNotificationName:LTPlayerStateDidChangeNotification object:self];
+        return;
+    }
+    NSString *path = self.pendingMuxed ? @"/tmp/lt_track.mp4" : @"/tmp/lt_track.m4a";
     [self.streamData writeToFile:path atomically:YES];
     LTLog(@"WROTE file, playing %@", self.streamVideoId);
     [self loadLocalFileAtPath:path];
@@ -364,8 +451,8 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
         self.currentIndex -= 1;
         [self postQueueChanged];
         [self loadCurrentTrack];
-    } else if (self.audioPlayer.currentTime > 3.0) {
-        self.audioPlayer.currentTime = 0;
+    } else if ([self playerCurrentTime] > 3.0) {
+        [self playerSeekToTime:0];
     } else {
         [self loadCurrentTrack];
     }
@@ -421,8 +508,8 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
 }
 
 - (void)togglePlayPause {
-    if (!self.audioPlayer) return;
-    if (self.audioPlayer.isPlaying) {
+    if (![self hasActivePlayer]) return;
+    if ([self playerIsPlaying]) {
         self.userPaused = YES;
         [self pausePlayback];
     } else {
@@ -431,7 +518,7 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
 }
 
 - (void)seekToTime:(NSTimeInterval)time {
-    self.audioPlayer.currentTime = time;
+    [self playerSeekToTime:time];
     [self updateNowPlayingInfo];
 }
 

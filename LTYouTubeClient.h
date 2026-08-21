@@ -26,7 +26,7 @@ extern NSString *const LTBrowserUserAgent;
 - (void)fetchTrendingSongsWithCompletion:(void (^)(NSArray *tracks, NSError *error))completion;
 
 - (void)streamURLForVideo:(NSString *)videoId
-               completion:(void (^)(NSString *streamURL, NSError *error))completion;
+               completion:(void (^)(NSString *streamURL, BOOL muxedStream, NSError *error))completion;
 
 - (void)loadImageWithURL:(NSString *)urlString
               completion:(void (^)(UIImage *image))completion;

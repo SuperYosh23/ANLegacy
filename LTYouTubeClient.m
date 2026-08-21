@@ -131,6 +131,41 @@ static id LTPath(id root, id key, ...) {
     return @{@"client": client};
 }
 
+- (NSDictionary *)iosContext {
+    NSMutableDictionary *client = [NSMutableDictionary dictionaryWithDictionary:@{
+        @"clientName": @"IOS",
+        @"clientVersion": @"21.26.4",
+        @"gl": @"US",
+        @"hl": @"en",
+        @"deviceMake": @"Apple",
+        @"deviceModel": @"iPhone16,2",
+        @"osName": @"iPhone",
+        @"osVersion": @"18.3.2.22D82",
+        @"userAgent": @"com.google.ios.youtube/21.26.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)",
+    }];
+    if (self.visitorData.length) {
+        [client setObject:self.visitorData forKey:@"visitorData"];
+    }
+    return @{@"client": client};
+}
+
+- (NSDictionary *)androidContext {
+    NSMutableDictionary *client = [NSMutableDictionary dictionaryWithDictionary:@{
+        @"clientName": @"ANDROID",
+        @"clientVersion": @"21.26.364",
+        @"gl": @"US",
+        @"hl": @"en",
+        @"androidSdkVersion": @30,
+        @"osName": @"Android",
+        @"osVersion": @"11",
+        @"userAgent": @"com.google.android.youtube/21.26.364 (Linux; U; Android 11) gzip",
+    }];
+    if (self.visitorData.length) {
+        [client setObject:self.visitorData forKey:@"visitorData"];
+    }
+    return @{@"client": client};
+}
+
 #pragma mark - Search
 
 + (NSString *)searchParamsForType:(NSString *)type {
@@ -509,20 +544,64 @@ static id LTPath(id root, id key, ...) {
 #pragma mark - Player
 
 - (void)streamURLForVideo:(NSString *)videoId
-               completion:(void (^)(NSString *streamURL, NSError *error))completion {
+               completion:(void (^)(NSString *streamURL, BOOL muxedStream, NSError *error))completion {
     if (!videoId.length) {
-        if (completion) completion(nil, [self errorWithCode:1 message:@"Missing video id"]);
+        if (completion) completion(nil, NO, [self errorWithCode:1 message:@"Missing video id"]);
+        return;
+    }
+    __weak LTYouTubeClient *weakSelf = self;
+    [self fetchStreamURLWithContext:[self androidVRContext]
+                             clientName:@"ANDROID_VR"
+                                videoId:videoId
+                             completion:^(NSString *streamURL, BOOL muxed, NSError *vrError) {
+        if (streamURL.length) {
+            if (completion) completion(streamURL, muxed, nil);
+            return;
+        }
+        LTLog(@"STREAM falling back to IOS client for %@", videoId);
+        [weakSelf fetchStreamURLWithContext:[weakSelf iosContext]
+                                 clientName:@"IOS"
+                                    videoId:videoId
+                                 completion:^(NSString *iosURL, BOOL iosMuxed, NSError *iosError) {
+            if (iosURL.length) {
+                if (completion) completion(iosURL, iosMuxed, nil);
+                return;
+            }
+            LTLog(@"STREAM falling back to ANDROID client for %@", videoId);
+            [weakSelf fetchStreamURLWithContext:[weakSelf androidContext]
+                                     clientName:@"ANDROID"
+                                        videoId:videoId
+                                     completion:^(NSString *androidURL, BOOL androidMuxed, NSError *androidError) {
+                if (androidURL.length) {
+                    if (completion) completion(androidURL, androidMuxed, nil);
+                    return;
+                }
+                NSError *last = androidError ?: iosError ?: vrError;
+                NSString *msg = [NSString stringWithFormat:@"All playback sources failed.\nLast error: %@",
+                                 last.localizedDescription ?: @"unknown"];
+                if (completion) completion(nil, NO, [weakSelf errorWithCode:2 message:msg]);
+            }];
+        }];
+    }];
+}
+
+- (void)fetchStreamURLWithContext:(NSDictionary *)context
+                         clientName:(NSString *)clientName
+                            videoId:(NSString *)videoId
+                         completion:(void (^)(NSString *streamURL, BOOL muxedStream, NSError *error))completion {
+    if (!videoId.length) {
+        if (completion) completion(nil, NO, [self errorWithCode:1 message:@"Missing video id"]);
         return;
     }
     NSDictionary *body = @{
-        @"context": [self androidVRContext],
+        @"context": context,
         @"videoId": videoId,
         @"racyCheckOk": @YES,
         @"contentCheckOk": @YES,
     };
     [self postToHost:@"www.youtube.com" path:@"player" body:body completion:^(id json, NSError *error) {
         if (error || !json) {
-            if (completion) completion(nil, error);
+            if (completion) completion(nil, NO, error);
             return;
         }
         NSDictionary *playability = [json objectForKey:@"playabilityStatus"];
@@ -530,9 +609,9 @@ static id LTPath(id root, id key, ...) {
         if (![status isEqualToString:@"OK"]) {
             NSString *reason = [playability objectForKey:@"reason"];
             if (!reason.length) reason = @"Playback unavailable";
-            NSLog(@"LTYouTubeClient: player status=%@ reason=%@ for videoId=%@", status, reason, videoId);
-            LTLog(@"PLAYER status=%@ reason=%@ videoId=%@", status, reason, videoId);
-            if (completion) completion(nil, [self errorWithCode:2 message:reason]);
+            NSLog(@"LTYouTubeClient: player status=%@ reason=%@ for videoId=%@ client=%@", status, reason, videoId, clientName);
+            LTLog(@"PLAYER status=%@ reason=%@ videoId=%@ client=%@", status, reason, videoId, clientName);
+            if (completion) completion(nil, NO, [self errorWithCode:2 message:reason]);
             return;
         }
         NSDictionary *sd = [json objectForKey:@"streamingData"];
@@ -551,7 +630,10 @@ static id LTPath(id root, id key, ...) {
             NSArray *order = [orders objectAtIndex:(NSUInteger)quality];
             for (NSNumber *itagNum in order) {
                 for (NSDictionary *f in adaptive) {
-                    if ([[f objectForKey:@"itag"] intValue] == [itagNum intValue]) { best = f; break; }
+                    if ([[f objectForKey:@"itag"] intValue] == [itagNum intValue] && [[f objectForKey:@"url"] length]) {
+                        best = f;
+                        break;
+                    }
                 }
                 if (best) break;
             }
@@ -560,18 +642,23 @@ static id LTPath(id root, id key, ...) {
             NSArray *progressive = [sd objectForKey:@"formats"];
             if ([progressive isKindOfClass:[NSArray class]]) {
                 for (NSDictionary *f in progressive) {
-                    if ([[f objectForKey:@"itag"] intValue] == 18) { best = f; break; }
+                    if ([[f objectForKey:@"itag"] intValue] == 18 && [[f objectForKey:@"url"] length]) {
+                        best = f;
+                        break;
+                    }
                 }
             }
         }
         NSString *url = [best objectForKey:@"url"];
         if (best && url.length) {
+            NSString *mime = [best objectForKey:@"mimeType"] ?: @"";
+            BOOL muxed = ([mime rangeOfString:@"video/"].location != NSNotFound);
             BOOL hasN = ([url rangeOfString:@"&n="].location != NSNotFound || [url rangeOfString:@"?n="].location != NSNotFound);
-            LTLog(@"STREAM itag=%d videoId=%@ hasN=%d fullurl=%@", [[best objectForKey:@"itag"] intValue], videoId, hasN, url);
-            if (completion) completion(url, nil);
+            LTLog(@"STREAM client=%@ itag=%d muxed=%d videoId=%@ hasN=%d fullurl=%@", clientName, [[best objectForKey:@"itag"] intValue], muxed, videoId, hasN, url);
+            if (completion) completion(url, muxed, nil);
         } else {
             NSLog(@"LTYouTubeClient: no playable stream found for videoId=%@", videoId);
-            if (completion) completion(nil, [self errorWithCode:3 message:@"No playable stream found"]);
+            if (completion) completion(nil, NO, [self errorWithCode:3 message:@"No playable stream found"]);
         }
     }];
 }

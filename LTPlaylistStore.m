@@ -13,6 +13,8 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
 @property (nonatomic, strong) NSURLConnection *downloadConnection;
 @property (nonatomic, strong) NSMutableData *downloadData;
 @property (nonatomic, copy) NSString *downloadingVideoId;
+@property (nonatomic, assign) BOOL downloadingMuxed;
+@property (nonatomic, assign) NSInteger downloadHTTPStatus;
 @property (nonatomic, assign) NSInteger downloadTotal;
 @property (nonatomic, assign) NSInteger downloadIndex;
 @property (nonatomic, copy) void (^downloadCompletion)(void);
@@ -150,9 +152,18 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     return [[self audioDirectory] stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.m4a", videoId]];
 }
 
+- (NSString *)existingLocalFilePathForVideoId:(NSString *)videoId {
+    NSString *m4a = [self localFilePathForVideoId:videoId];
+    if (m4a.length && [[NSFileManager defaultManager] fileExistsAtPath:m4a]) return m4a;
+    if (!videoId.length) return nil;
+    NSString *mp4 = [[self audioDirectory] stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.mp4", videoId]];
+    if ([[NSFileManager defaultManager] fileExistsAtPath:mp4]) return mp4;
+    return nil;
+}
+
 - (BOOL)isTrackDownloaded:(LTTrack *)track {
-    NSString *path = [self localFilePathForVideoId:track.videoId];
-    return path.length && [[NSFileManager defaultManager] fileExistsAtPath:path];
+    NSString *path = [self existingLocalFilePathForVideoId:track.videoId];
+    return path.length > 0;
 }
 
 - (BOOL)isDownloading {
@@ -197,7 +208,7 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     if (![files isKindOfClass:[NSArray class]]) return 0;
     NSInteger count = 0;
     for (NSString *name in files) {
-        if ([name hasSuffix:@".m4a"]) count += 1;
+        if ([name hasSuffix:@".m4a"] || [name hasSuffix:@".mp4"]) count += 1;
     }
     return count;
 }
@@ -237,7 +248,7 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     self.downloadingVideoId = track.videoId;
     [self postProgressStatus:@"fetching"];
     __weak LTPlaylistStore *weakSelf = self;
-    [[LTYouTubeClient sharedClient] streamURLForVideo:track.videoId completion:^(NSString *streamURL, NSError *error) {
+    [[LTYouTubeClient sharedClient] streamURLForVideo:track.videoId completion:^(NSString *streamURL, BOOL muxedStream, NSError *error) {
         LTPlaylistStore *strongSelf = weakSelf;
         if (!strongSelf) return;
         if (error || !streamURL.length) {
@@ -248,6 +259,7 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
             [strongSelf startNextDownload];
             return;
         }
+        strongSelf.downloadingMuxed = muxedStream;
         [strongSelf startDownloadURL:streamURL videoId:track.videoId];
     }];
 }
@@ -258,6 +270,7 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
                                                        timeoutInterval:120.0];
     [request setValue:@"bytes=0-" forHTTPHeaderField:@"Range"];
     self.downloadData = [NSMutableData data];
+    self.downloadHTTPStatus = 0;
     self.downloadConnection = [[NSURLConnection alloc] initWithRequest:request delegate:self startImmediately:YES];
     LTLog(@"STORE DL start %@", videoId);
 }
@@ -291,6 +304,7 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     [self.downloadData setLength:0];
     NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
     LTLog(@"STORE DL_RESPONSE status=%d expected=%lld", (int)[http statusCode], [response expectedContentLength]);
+    self.downloadHTTPStatus = [http statusCode];
 }
 
 - (void)connection:(NSURLConnection *)connection didReceiveData:(NSData *)data {
@@ -307,17 +321,22 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
 }
 
 - (void)connectionDidFinishLoading:(NSURLConnection *)connection {
-    LTLog(@"STORE DL_FINISH bytes=%d for %@", (int)self.downloadData.length, self.downloadingVideoId);
+    LTLog(@"STORE DL_FINISH bytes=%d status=%d for %@", (int)self.downloadData.length, (int)self.downloadHTTPStatus, self.downloadingVideoId);
     NSString *videoId = self.downloadingVideoId;
-    if (videoId.length && self.downloadData.length) {
-        NSString *path = [self localFilePathForVideoId:videoId];
-        BOOL ok = [self.downloadData writeToFile:path atomically:YES];
-        LTLog(@"STORE saved offline %@ ok=%d", videoId, ok);
+    BOOL ok = (videoId.length && self.downloadData.length && self.downloadHTTPStatus < 400);
+    if (ok) {
+        NSString *path = self.downloadingMuxed
+            ? [[self audioDirectory] stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.mp4", videoId]]
+            : [self localFilePathForVideoId:videoId];
+        BOOL wrote = [self.downloadData writeToFile:path atomically:YES];
+        LTLog(@"STORE saved offline %@ muxed=%d ok=%d", videoId, self.downloadingMuxed, wrote);
         [self postTrackChanged:videoId];
+    } else {
+        LTLog(@"STORE DL_FAILED status=%d bytes=%d for %@", (int)self.downloadHTTPStatus, (int)self.downloadData.length, videoId);
     }
     self.downloadingVideoId = nil;
     self.downloadIndex += 1;
-    [self postProgressStatus:@"downloaded"];
+    [self postProgressStatus: ok ? @"downloaded" : @"error"];
     [self startNextDownload];
 }
 

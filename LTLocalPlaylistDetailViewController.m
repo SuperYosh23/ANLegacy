@@ -8,6 +8,9 @@
 @property (nonatomic, strong) LTLocalPlaylist *playlist;
 @property (nonatomic, strong) UITableView *tableView;
 @property (nonatomic, strong) UILabel *headerLabel;
+@property (nonatomic, strong) UIBarButtonItem *playAllItem;
+@property (nonatomic, strong) UIBarButtonItem *downloadItem;
+@property (nonatomic, assign) NSInteger downloadFailures;
 @end
 
 @implementation LTLocalPlaylistDetailViewController
@@ -38,16 +41,15 @@
     self.tableView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [self.view addSubview:self.tableView];
 
-    self.navigationItem.rightBarButtonItems = @[
-        [[UIBarButtonItem alloc] initWithTitle:@"Play All"
-                                         style:UIBarButtonItemStyleBordered
-                                        target:self
-                                        action:@selector(playAllTapped:)],
-        [[UIBarButtonItem alloc] initWithTitle:@"Download"
-                                         style:UIBarButtonItemStyleBordered
-                                        target:self
-                                        action:@selector(downloadTapped:)],
-    ];
+    self.playAllItem = [[UIBarButtonItem alloc] initWithTitle:@"Play All"
+                                                        style:UIBarButtonItemStyleBordered
+                                                       target:self
+                                                       action:@selector(playAllTapped:)];
+    self.downloadItem = [[UIBarButtonItem alloc] initWithTitle:@"Download"
+                                                         style:UIBarButtonItemStyleBordered
+                                                        target:self
+                                                        action:@selector(downloadTapped:)];
+    self.navigationItem.rightBarButtonItems = @[self.playAllItem, self.downloadItem];
     [self refreshHeader];
 }
 
@@ -104,10 +106,18 @@
         return;
     }
     LTLog(@"PLAYLIST download %d tracks", (int)missing.count);
+    self.downloadFailures = 0;
     [self setDownloadingUI:YES];
     [[LTPlaylistStore sharedStore] downloadTracks:missing completion:^{
         [self setDownloadingUI:NO];
-        [self.tableView reloadData];
+        if (self.downloadFailures > 0) {
+            UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"Download Failed"
+                                                            message:[NSString stringWithFormat:@"%d track(s) could not be downloaded.\nCheck your connection and try again.", (int)self.downloadFailures]
+                                                           delegate:nil
+                                                  cancelButtonTitle:@"OK"
+                                                  otherButtonTitles:nil];
+            [alert show];
+        }
     }];
 }
 
@@ -117,12 +127,11 @@
                                             initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleGray];
         spinner.hidesWhenStopped = YES;
         [spinner startAnimating];
-        self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithCustomView:spinner];
+        self.navigationItem.rightBarButtonItems = @[self.playAllItem,
+                                                    [[UIBarButtonItem alloc] initWithCustomView:spinner]];
     } else {
-        self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Download"
-                                                                                  style:UIBarButtonItemStyleBordered
-                                                                                 target:self
-                                                                                 action:@selector(downloadTapped:)];
+        self.navigationItem.rightBarButtonItems = @[self.playAllItem, self.downloadItem];
+        [self refreshHeader];
         [self.tableView reloadData];
     }
 }
@@ -140,6 +149,12 @@
 
 - (void)downloadProgress:(NSNotification *)notification {
     NSDictionary *info = [notification userInfo];
+    NSString *status = info[@"status"];
+    if ([status isEqualToString:@"started"]) {
+        self.downloadFailures = 0;
+    } else if ([status isEqualToString:@"error"]) {
+        self.downloadFailures += 1;
+    }
     NSInteger index = [info[@"index"] integerValue];
     NSInteger total = [info[@"total"] integerValue];
     if (total > 0) {
