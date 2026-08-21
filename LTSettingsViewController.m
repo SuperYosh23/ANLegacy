@@ -13,6 +13,8 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
 @property (nonatomic, strong) UITableView *tableView;
 @property (nonatomic, strong) UISegmentedControl *qualityControl;
 @property (nonatomic, strong) UISwitch *awakeSwitch;
+@property (nonatomic, strong) UIAlertView *progressAlert;
+@property (nonatomic, assign) BOOL refreshingMetadata;
 @end
 
 @implementation LTSettingsViewController
@@ -88,7 +90,7 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
     NSArray *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:[store audioDirectory] error:&error];
     if ([files isKindOfClass:[NSArray class]]) {
         for (NSString *name in files) {
-            if (![name hasSuffix:@".m4a"]) continue;
+            if (![name hasSuffix:@".m4a"] && ![name hasSuffix:@".mp4"]) continue;
             NSString *path = [[store audioDirectory] stringByAppendingPathComponent:name];
             [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
         }
@@ -97,11 +99,72 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
     [self.tableView reloadData];
 }
 
+#pragma mark - Metadata refresh
+
+- (void)refreshMetadataTapped {
+    if (self.refreshingMetadata) return;
+    NSInteger count = [[LTPlaylistStore sharedStore] offlineTrackCount];
+    if (!count) {
+        UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"No Offline Songs"
+                                                        message:@"Download some tracks to a playlist first."
+                                                       delegate:nil
+                                              cancelButtonTitle:@"OK"
+                                              otherButtonTitles:nil];
+        [alert show];
+        return;
+    }
+    UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"Refresh Metadata"
+                                                    message:[NSString stringWithFormat:@"Re-fetch titles, artists, durations and full-res album art for %d offline track(s)?", (int)count]
+                                                   delegate:self
+                                          cancelButtonTitle:@"Cancel"
+                                          otherButtonTitles:@"Refresh", nil];
+    alert.tag = 901;
+    [alert show];
+}
+
+- (void)startMetadataRefresh {
+    self.refreshingMetadata = YES;
+    LTPlaylistStore *store = [LTPlaylistStore sharedStore];
+    NSInteger total = [store offlineTrackCount];
+    __weak LTSettingsViewController *weakSelf = self;
+    [store refreshOfflineMetadataWithProgress:^(NSInteger done, NSInteger totalItems) {
+        LTSettingsViewController *strongSelf = weakSelf;
+        if (!strongSelf || !strongSelf.progressAlert) return;
+        strongSelf.progressAlert.message = [NSString stringWithFormat:@"Updating %d of %d…", (int)done, (int)totalItems];
+    } completion:^(NSInteger updated, NSInteger failed) {
+        LTSettingsViewController *strongSelf = weakSelf;
+        if (!strongSelf) return;
+        strongSelf.refreshingMetadata = NO;
+        [strongSelf.progressAlert dismissWithClickedButtonIndex:0 animated:NO];
+        strongSelf.progressAlert = nil;
+        [strongSelf.tableView reloadData];
+        NSString *message = failed
+            ? [NSString stringWithFormat:@"Updated %d track(s). %d failed — try again later.", (int)updated, (int)failed]
+            : [NSString stringWithFormat:@"Updated %d track(s), including full-res album art.", (int)updated];
+        UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"Refresh Complete"
+                                                        message:message
+                                                       delegate:nil
+                                              cancelButtonTitle:@"OK"
+                                              otherButtonTitles:nil];
+        [alert show];
+    }];
+    UIAlertView *progress = [[UIAlertView alloc] initWithTitle:@"Refreshing"
+                                                       message:[NSString stringWithFormat:@"Updating 0 of %d…", (int)total]
+                                                      delegate:nil
+                                             cancelButtonTitle:nil
+                                             otherButtonTitles:nil];
+    [progress show];
+    self.progressAlert = progress;
+}
+
 #pragma mark - UIAlertViewDelegate
 
 - (void)alertView:(UIAlertView *)alertView clickedButtonAtIndex:(NSInteger)buttonIndex {
     if (alertView.tag == 900 && buttonIndex == 1) {
         [self clearOfflineFiles];
+    }
+    if (alertView.tag == 901 && buttonIndex == 1) {
+        [self startMetadataRefresh];
     }
 }
 
@@ -123,7 +186,7 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     switch (section) {
         case LTSettingsSectionPlayback: return 2;
-        case LTSettingsSectionStorage: return 2;
+        case LTSettingsSectionStorage: return 3;
         case LTSettingsSectionAbout: return 2;
         default: return 0;
     }
@@ -156,6 +219,9 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
             if (indexPath.row == 0) {
                 cell.textLabel.text = @"Offline Downloads";
                 cell.detailTextLabel.text = [NSString stringWithFormat:@"%d files", (int)[store offlineFileCount]];
+            } else if (indexPath.row == 1) {
+                cell.textLabel.text = @"Refresh Metadata & Artwork";
+                cell.selectionStyle = UITableViewCellSelectionStyleBlue;
             } else {
                 cell.textLabel.text = @"Clear Offline Downloads";
                 cell.textLabel.textColor = [UIColor redColor];
@@ -184,7 +250,10 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    if (indexPath.section == LTSettingsSectionStorage && indexPath.row == 1) {
+    if (indexPath.section != LTSettingsSectionStorage) return;
+    if (indexPath.row == 1) {
+        [self refreshMetadataTapped];
+    } else if (indexPath.row == 2) {
         [self clearDownloadsTapped];
     }
 }

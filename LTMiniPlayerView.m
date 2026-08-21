@@ -113,7 +113,8 @@ NSString *const LTMiniPlayerVisibilityDidChangeNotification = @"LTMiniPlayerVisi
 
     self.artworkView.image = nil;
     if (track.thumbnailURL.length) {
-        [[LTYouTubeClient sharedClient] loadImageWithURL:track.thumbnailURL completion:^(UIImage *image) {
+        NSString *artURL = [[LTYouTubeClient sharedClient] highResThumbnailURL:track.thumbnailURL];
+        [[LTYouTubeClient sharedClient] loadImageWithURL:artURL completion:^(UIImage *image) {
             if (image && [track.videoId isEqualToString:[[LTPlayerController sharedController] currentTrack].videoId]) {
                 self.artworkView.image = image;
             }

@@ -28,7 +28,12 @@ extern NSString *const LTBrowserUserAgent;
 - (void)streamURLForVideo:(NSString *)videoId
                completion:(void (^)(NSString *streamURL, BOOL muxedStream, NSError *error))completion;
 
+- (void)trackMetadataForVideoId:(NSString *)videoId
+                     completion:(void (^)(NSString *title, NSString *artist, NSTimeInterval duration, NSString *thumbnailURL, NSError *error))completion;
+
 - (void)loadImageWithURL:(NSString *)urlString
               completion:(void (^)(UIImage *image))completion;
+
+- (NSString *)highResThumbnailURL:(NSString *)urlString;
 
 @end

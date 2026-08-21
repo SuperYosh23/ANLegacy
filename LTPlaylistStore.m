@@ -51,6 +51,10 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     return [self.baseDirectory stringByAppendingPathComponent:@"audio"];
 }
 
+- (NSString *)artDirectory {
+    return [self.baseDirectory stringByAppendingPathComponent:@"art"];
+}
+
 - (void)ensureDirectories {
     NSError *error = nil;
     [[NSFileManager defaultManager] createDirectoryAtPath:[self baseDirectory]
@@ -60,6 +64,10 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     [[NSFileManager defaultManager] createDirectoryAtPath:[self audioDirectory]
                               withIntermediateDirectories:YES attributes:nil error:&error];
     if (error) LTLog(@"STORE mkdir audio error: %@", error);
+    error = nil;
+    [[NSFileManager defaultManager] createDirectoryAtPath:[self artDirectory]
+                              withIntermediateDirectories:YES attributes:nil error:&error];
+    if (error) LTLog(@"STORE mkdir art error: %@", error);
 }
 
 - (NSString *)playlistsFilePath {
@@ -284,6 +292,86 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     void (^completion)(void) = self.downloadCompletion;
     self.downloadCompletion = nil;
     if (completion) completion();
+}
+
+#pragma mark - Metadata refresh
+
+- (NSInteger)offlineTrackCount {
+    NSMutableSet *ids = [NSMutableSet set];
+    for (LTLocalPlaylist *playlist in self.playlists) {
+        for (LTTrack *track in playlist.tracks) {
+            if (!track.videoId.length) continue;
+            if (![self existingLocalFilePathForVideoId:track.videoId]) continue;
+            [ids addObject:track.videoId];
+        }
+    }
+    return (NSInteger)ids.count;
+}
+
+- (void)refreshOfflineMetadataWithProgress:(void (^)(NSInteger done, NSInteger total))progress
+                                completion:(void (^)(NSInteger updated, NSInteger failed))completion {
+    NSMutableDictionary *byVideoId = [NSMutableDictionary dictionary];
+    for (LTLocalPlaylist *playlist in self.playlists) {
+        for (LTTrack *track in playlist.tracks) {
+            if (!track.videoId.length) continue;
+            if (![self existingLocalFilePathForVideoId:track.videoId]) continue;
+            NSMutableArray *list = [byVideoId objectForKey:track.videoId];
+            if (!list) {
+                list = [NSMutableArray array];
+                [byVideoId setObject:list forKey:track.videoId];
+            }
+            [list addObject:track];
+        }
+    }
+    NSArray *videoIds = [byVideoId allKeys];
+    NSInteger total = (NSInteger)videoIds.count;
+    if (!total) {
+        if (completion) completion(0, 0);
+        return;
+    }
+
+    LTYouTubeClient *client = [LTYouTubeClient sharedClient];
+    __weak LTPlaylistStore *weakSelf = self;
+    __block NSInteger done = 0;
+    __block NSInteger updated = 0;
+    __block NSInteger failed = 0;
+    __block void (^nextStep)(void);
+    nextStep = ^{
+        if (done >= total) {
+            LTPlaylistStore *strongSelf = weakSelf;
+            nextStep = nil;
+            if (strongSelf) {
+                [strongSelf savePlaylists];
+                [strongSelf postPlaylistsChanged];
+            }
+            if (completion) completion(updated, failed);
+            return;
+        }
+        NSString *videoId = [videoIds objectAtIndex:(NSUInteger)done];
+        [client trackMetadataForVideoId:videoId
+                             completion:^(NSString *title, NSString *artist, NSTimeInterval duration, NSString *thumbnailURL, NSError *error) {
+            done += 1;
+            if (error || !title.length) {
+                failed += 1;
+                LTLog(@"META refresh failed %@ error=%@", videoId, error);
+            } else {
+                updated += 1;
+                for (LTTrack *track in [byVideoId objectForKey:videoId]) {
+                    if (title.length) track.title = title;
+                    if (artist.length) track.artist = artist;
+                    if (duration > 0) track.duration = duration;
+                    if (thumbnailURL.length) track.thumbnailURL = thumbnailURL;
+                }
+                NSString *artURL = [client highResThumbnailURL:thumbnailURL];
+                [client loadImageWithURL:artURL completion:^(UIImage *image) {
+                    if (image) LTLog(@"META art cached %dpx videoId=%@", (int)image.size.width, videoId);
+                }];
+            }
+            if (progress) progress(done, total);
+            nextStep();
+        }];
+    };
+    nextStep();
 }
 
 - (void)postProgressStatus:(NSString *)status {

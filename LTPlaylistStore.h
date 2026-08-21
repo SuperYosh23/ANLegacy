@@ -15,6 +15,7 @@ extern NSString *const LTRecentsDidChangeNotification;
 
 - (NSString *)baseDirectory;
 - (NSString *)audioDirectory;
+- (NSString *)artDirectory;
 
 - (LTLocalPlaylist *)createPlaylistWithName:(NSString *)name;
 - (void)deletePlaylist:(LTLocalPlaylist *)playlist;
@@ -31,5 +32,9 @@ extern NSString *const LTRecentsDidChangeNotification;
 - (BOOL)isDownloading;
 
 - (void)downloadTracks:(NSArray *)tracks completion:(void (^)(void))completion;
+
+- (NSInteger)offlineTrackCount;
+- (void)refreshOfflineMetadataWithProgress:(void (^)(NSInteger done, NSInteger total))progress
+                                completion:(void (^)(NSInteger updated, NSInteger failed))completion;
 
 @end

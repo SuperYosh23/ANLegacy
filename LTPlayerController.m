@@ -98,18 +98,30 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
 
 - (void)startActivePlayer {
     if (self.moviePlayer) {
+        [self.audioPlayer pause];
         [self.moviePlayer play];
     } else {
+        [self.moviePlayer pause];
         [self.audioPlayer play];
     }
 }
 
 - (void)pauseActivePlayer {
-    if (self.moviePlayer) {
-        [self.moviePlayer pause];
-    } else {
-        [self.audioPlayer pause];
-    }
+    [self.audioPlayer pause];
+    [self.moviePlayer pause];
+}
+
+- (void)stopAudioPlayer {
+    [self.audioPlayer stop];
+    self.audioPlayer = nil;
+}
+
+- (void)stopMoviePlayer {
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                    name:AVPlayerItemDidPlayToEndTimeNotification
+                                                  object:nil];
+    [self.moviePlayer pause];
+    self.moviePlayer = nil;
 }
 
 - (void)configureAudioSession {
@@ -283,7 +295,8 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
     self.nowPlayingArtwork = nil;
     if (track.thumbnailURL.length) {
         __weak LTPlayerController *weakSelf = self;
-        [[LTYouTubeClient sharedClient] loadImageWithURL:track.thumbnailURL completion:^(UIImage *image) {
+        NSString *artURL = [[LTYouTubeClient sharedClient] highResThumbnailURL:track.thumbnailURL];
+        [[LTYouTubeClient sharedClient] loadImageWithURL:artURL completion:^(UIImage *image) {
             LTPlayerController *strongSelf = weakSelf;
             if (!strongSelf || !image) return;
             strongSelf.nowPlayingArtwork = [[MPMediaItemArtwork alloc] initWithImage:image];
@@ -326,6 +339,7 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
         [self loadMuxedFileAtURL:fileURL];
         return;
     }
+    [self stopMoviePlayer];
     NSError *error = nil;
     AVAudioPlayer *player = [[AVAudioPlayer alloc] initWithContentsOfURL:fileURL error:&error];
     if (!player) {
@@ -342,6 +356,7 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
 }
 
 - (void)loadMuxedFileAtURL:(NSURL *)fileURL {
+    [self stopAudioPlayer];
     AVPlayerItem *item = [AVPlayerItem playerItemWithURL:fileURL];
     [[NSNotificationCenter defaultCenter] removeObserver:self
                                                     name:AVPlayerItemDidPlayToEndTimeNotification

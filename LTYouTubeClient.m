@@ -1,5 +1,7 @@
 #import "LTYouTubeClient.h"
+#import "LTPlaylistStore.h"
 #import "LTLog.h"
+#import <CommonCrypto/CommonDigest.h>
 
 NSString *const LTAPIKey = @"AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
 NSString *const LTBrowserUserAgent = @"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
@@ -400,12 +402,7 @@ static id LTPath(id root, id key, ...) {
 
 - (NSString *)thumbnailFromHeader:(NSDictionary *)header {
     NSArray *thumbs = LTPath(header, @"thumbnail", @"musicThumbnailRenderer", @"thumbnail", @"thumbnails", nil);
-    if (![thumbs isKindOfClass:[NSArray class]] || thumbs.count == 0) return nil;
-    id last = [thumbs lastObject];
-    if ([last isKindOfClass:[NSDictionary class]]) {
-        return [last objectForKey:@"url"];
-    }
-    return nil;
+    return [self largestThumbnailURLFromArray:thumbs];
 }
 
 #pragma mark - Track parsing
@@ -532,9 +529,7 @@ static id LTPath(id root, id key, ...) {
             bi.title = [self textFromRuns:[it objectForKey:@"title"][@"runs"]];
             bi.subtitle = [self textFromRuns:[it objectForKey:@"subtitle"][@"runs"]];
             NSArray *thumbs = LTPath(it, @"thumbnailRenderer", @"musicThumbnailRenderer", @"thumbnail", @"thumbnails", nil);
-            if ([thumbs isKindOfClass:[NSArray class]] && thumbs.count) {
-                bi.thumbnailURL = [[thumbs lastObject] objectForKey:@"url"];
-            }
+            bi.thumbnailURL = [self largestThumbnailURLFromArray:thumbs];
             [albums addObject:bi];
         }
     }];
@@ -663,7 +658,135 @@ static id LTPath(id root, id key, ...) {
     }];
 }
 
+#pragma mark - Metadata
+
+- (void)trackMetadataForVideoId:(NSString *)videoId
+                     completion:(void (^)(NSString *title, NSString *artist, NSTimeInterval duration, NSString *thumbnailURL, NSError *error))completion {
+    if (!videoId.length) {
+        if (completion) completion(nil, nil, 0, nil, [self errorWithCode:1 message:@"Missing video id"]);
+        return;
+    }
+    NSDictionary *body = @{
+        @"context": [self androidVRContext],
+        @"videoId": videoId,
+        @"racyCheckOk": @YES,
+        @"contentCheckOk": @YES,
+    };
+    __weak LTYouTubeClient *weakSelf = self;
+    [self postToHost:@"www.youtube.com" path:@"player" body:body completion:^(id json, NSError *error) {
+        if (error || !json) {
+            if (completion) completion(nil, nil, 0, nil, error);
+            return;
+        }
+        NSDictionary *details = [json objectForKey:@"videoDetails"];
+        if (![details isKindOfClass:[NSDictionary class]]) {
+            NSDictionary *playability = [json objectForKey:@"playabilityStatus"];
+            NSString *reason = [playability objectForKey:@"reason"];
+            if (!reason.length) reason = @"No metadata returned";
+            LTLog(@"META status=%@ reason=%@ videoId=%@", [playability objectForKey:@"status"], reason, videoId);
+            if (completion) completion(nil, nil, 0, nil, [weakSelf errorWithCode:2 message:reason]);
+            return;
+        }
+        NSString *title = [details objectForKey:@"title"];
+        NSString *author = [details objectForKey:@"author"];
+        if ([author isKindOfClass:[NSString class]] && [author hasSuffix:@" - Topic"] && author.length > 8) {
+            author = [author substringToIndex:(author.length - 8)];
+        }
+        NSTimeInterval duration = [[details objectForKey:@"lengthSeconds"] doubleValue];
+        NSArray *thumbs = LTPath(details, @"thumbnail", @"thumbnails", nil);
+        NSString *thumb = [weakSelf largestThumbnailURLFromArray:thumbs];
+        if (completion) completion(title, author, duration, thumb, nil);
+    }];
+}
+
 #pragma mark - Images
+
+static BOOL LTBorderRowUniform(const UInt8 *px, size_t W, size_t y,
+                               size_t x0, size_t x1, const UInt8 *ref) {
+    const UInt8 *row = px + y * W * 4;
+    for (size_t x = x0; x < x1; x++) {
+        const UInt8 *p = row + x * 4;
+        if (abs(p[0] - ref[0]) > 18 || abs(p[1] - ref[1]) > 18 || abs(p[2] - ref[2]) > 18) return NO;
+    }
+    return YES;
+}
+
+static BOOL LTBorderColUniform(const UInt8 *px, size_t W, size_t x,
+                               size_t y0, size_t y1, const UInt8 *ref) {
+    for (size_t y = y0; y < y1; y++) {
+        const UInt8 *p = px + (y * W + x) * 4;
+        if (abs(p[0] - ref[0]) > 18 || abs(p[1] - ref[1]) > 18 || abs(p[2] - ref[2]) > 18) return NO;
+    }
+    return YES;
+}
+
+// Removes uniform border padding YouTube pads onto some cover art so the
+// artwork always fills its square edge-to-edge. Topic-video thumbs are a
+// square cover centered on letterbox AND pillarbox bars of different colors,
+// so trimming re-references the corner color after each pass until stable.
+// For i.ytimg.com thumbs (allowCenterCrop) the cover is always centered, so
+// a final centered crop of the long edge removes any bars the border scan
+// could not classify.
+static UIImage *LTTrimmedArtworkImage(UIImage *image, BOOL allowCenterCrop) {
+    CGImageRef cg = image.CGImage;
+    if (!cg) return image;
+    size_t W = CGImageGetWidth(cg);
+    size_t H = CGImageGetHeight(cg);
+    if (W < 64 || H < 64) return image;
+
+    NSUInteger bpr = W * 4;
+    UInt8 *px = (UInt8 *)malloc(bpr * H);
+    if (!px) return image;
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGContextRef ctx = CGBitmapContextCreate(px, W, H, 8, bpr, cs,
+                                             kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+    CGColorSpaceRelease(cs);
+    if (!ctx) {
+        free(px);
+        return image;
+    }
+    CGContextDrawImage(ctx, CGRectMake(0, 0, W, H), cg);
+    CGContextRelease(ctx);
+
+    size_t top = 0, bottom = H, left = 0, right = W;
+    for (int pass = 0; pass < 4; pass++) {
+        const UInt8 *ref = px + (top * W + left) * 4;
+        size_t ot = top, ob = bottom, ol = left, orr = right;
+        while (top < bottom - 1 && LTBorderRowUniform(px, W, top, left, right, ref)) top++;
+        while (bottom > top + 1 && LTBorderRowUniform(px, W, bottom - 1, left, right, ref)) bottom--;
+        while (left < right - 1 && LTBorderColUniform(px, W, left, top, bottom, ref)) left++;
+        while (right > left + 1 && LTBorderColUniform(px, W, right - 1, top, bottom, ref)) right--;
+        if (top == ot && bottom == ob && left == ol && right == orr) break;
+        // Keep each stage only if it leaves a sane crop; later stages peel
+        // letterbox bars off a different color than earlier ones, but must
+        // never chew into the artwork itself.
+        size_t cw = right - left, ch = bottom - top;
+        if (cw < 32 || ch < 32 || cw * 2 < W || ch * 2 < H) {
+            top = ot; bottom = ob; left = ol; right = orr;
+            break;
+        }
+    }
+    free(px);
+
+    size_t cw = right - left;
+    size_t ch = bottom - top;
+    if (cw >= W && ch >= H) return image;
+    if (allowCenterCrop && cw != ch) {
+        if (cw > ch) {
+            left += (cw - ch) / 2;
+            cw = ch;
+        } else {
+            top += (ch - cw) / 2;
+            ch = cw;
+        }
+    }
+
+    CGImageRef sub = CGImageCreateWithImageInRect(cg, CGRectMake((CGFloat)left, (CGFloat)top, (CGFloat)cw, (CGFloat)ch));
+    if (!sub) return image;
+    UIImage *trimmed = [UIImage imageWithCGImage:sub scale:image.scale orientation:image.imageOrientation];
+    CGImageRelease(sub);
+    return trimmed ?: image;
+}
 
 - (void)loadImageWithURL:(NSString *)urlString
               completion:(void (^)(UIImage *image))completion {
@@ -676,20 +799,70 @@ static id LTPath(id root, id key, ...) {
         if (completion) completion(cached);
         return;
     }
+    NSString *diskPath = [self diskCachePathForURL:urlString];
+    UIImage *diskImage = [UIImage imageWithContentsOfFile:diskPath];
+    if (diskImage) {
+        diskImage = LTTrimmedArtworkImage(diskImage, [urlString rangeOfString:@"i.ytimg.com"].location != NSNotFound);
+        [self.imageCache setObject:diskImage forKey:urlString];
+        if (completion) completion(diskImage);
+        return;
+    }
+    NSString *fallback = nil;
+    if ([urlString hasSuffix:@"maxresdefault.jpg"]) {
+        fallback = [urlString stringByReplacingOccurrencesOfString:@"maxresdefault.jpg"
+                                                        withString:@"sddefault.jpg"];
+    }
+    [self fetchImageAtURL:urlString fallbackURL:fallback diskPath:diskPath cacheKey:urlString completion:completion];
+}
+
+- (void)fetchImageAtURL:(NSString *)urlString
+            fallbackURL:(NSString *)fallbackURL
+               diskPath:(NSString *)diskPath
+              cacheKey:(NSString *)cacheKey
+             completion:(void (^)(UIImage *image))completion {
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlString]
-                                                           cachePolicy:NSURLRequestReturnCacheDataElseLoad
-                                                       timeoutInterval:30.0];
+                                                            cachePolicy:NSURLRequestReturnCacheDataElseLoad
+                                                        timeoutInterval:30.0];
     [request setValue:LTBrowserUserAgent forHTTPHeaderField:@"User-Agent"];
     [NSURLConnection sendAsynchronousRequest:request queue:[NSOperationQueue mainQueue]
                            completionHandler:^(NSURLResponse *response, NSData *data, NSError *connectionError) {
-        if (connectionError || !data.length) {
+        UIImage *image = nil;
+        if (!connectionError && data.length) image = [UIImage imageWithData:data];
+        // Missing maxres thumbs come back as a tiny placeholder or an error.
+        BOOL usable = image && image.size.width >= 200;
+        LTLog(@"ART fetch url=%@ status=%d len=%lu decoded=%dx%d usable=%d err=%@",
+              urlString,
+              response ? (int)[(NSHTTPURLResponse *)response statusCode] : -1,
+              (unsigned long)data.length,
+              image ? (int)image.size.width : 0,
+              image ? (int)image.size.height : 0,
+              usable ? 1 : 0,
+              connectionError ? connectionError.localizedDescription : @"none");
+        if (!usable) {
+            if (fallbackURL.length) {
+                [self fetchImageAtURL:fallbackURL fallbackURL:nil diskPath:diskPath cacheKey:cacheKey completion:completion];
+                return;
+            }
             if (completion) completion(nil);
             return;
         }
-        UIImage *image = [UIImage imageWithData:data];
-        if (image) [self.imageCache setObject:image forKey:urlString];
+        image = LTTrimmedArtworkImage(image, [cacheKey rangeOfString:@"i.ytimg.com"].location != NSNotFound);
+        [self.imageCache setObject:image forKey:cacheKey];
+        NSData *encoded = UIImageJPEGRepresentation(image, 0.85);
+        if (encoded) [encoded writeToFile:diskPath atomically:YES];
         if (completion) completion(image);
     }];
+}
+
+- (NSString *)diskCachePathForURL:(NSString *)urlString {
+    NSString *dir = [[LTPlaylistStore sharedStore] artDirectory];
+    uint8_t digest[CC_MD5_DIGEST_LENGTH];
+    CC_MD5([urlString UTF8String], (CC_LONG)[urlString lengthOfBytesUsingEncoding:NSUTF8StringEncoding], digest);
+    NSMutableString *hex = [NSMutableString stringWithCapacity:(CC_MD5_DIGEST_LENGTH * 2)];
+    for (int i = 0; i < CC_MD5_DIGEST_LENGTH; i++) {
+        [hex appendFormat:@"%02x", digest[i]];
+    }
+    return [dir stringByAppendingPathComponent:[hex stringByAppendingString:@".jpg"]];
 }
 
 #pragma mark - Helpers
@@ -748,9 +921,45 @@ static id LTPath(id root, id key, ...) {
 }
 
 - (NSString *)thumbnailFromItem:(NSDictionary *)item {
-    id url = LTPath(item, @"thumbnail", @"musicThumbnailRenderer", @"thumbnail", @"thumbnails", @0, @"url", nil);
-    if ([url isKindOfClass:[NSString class]] && [(NSString *)url length]) return url;
-    return nil;
+    NSArray *thumbs = LTPath(item, @"thumbnail", @"musicThumbnailRenderer", @"thumbnail", @"thumbnails", nil);
+    return [self largestThumbnailURLFromArray:thumbs];
+}
+
+- (NSString *)largestThumbnailURLFromArray:(NSArray *)thumbs {
+    if (![thumbs isKindOfClass:[NSArray class]] || thumbs.count == 0) return nil;
+    NSDictionary *best = nil;
+    NSInteger bestWidth = -1;
+    for (id t in thumbs) {
+        if (![t isKindOfClass:[NSDictionary class]]) continue;
+        NSString *url = [t objectForKey:@"url"];
+        if (![url isKindOfClass:[NSString class]] || !url.length) continue;
+        NSInteger width = [[t objectForKey:@"width"] integerValue];
+        if (!best || width > bestWidth) {
+            best = t;
+            bestWidth = width;
+        }
+    }
+    NSString *url = [best objectForKey:@"url"];
+    return ([url isKindOfClass:[NSString class]] && url.length) ? url : nil;
+}
+
+- (NSString *)highResThumbnailURL:(NSString *)urlString {
+    if (![urlString isKindOfClass:[NSString class]] || urlString.length < 8) return urlString;
+    // i.ytimg.com paths are left alone: sddefault is already disk-cached from
+    // list browsing and trims to a clean square, while maxresdefault fetches
+    // proved unreliable on device.
+    NSMutableString *result = [urlString mutableCopy];
+    NSArray *patterns = @[
+        @[@"=w\\d+-h\\d+", @"=w1200-h1200"],
+        @[@"/w\\d+-h\\d+", @"/w1200-h1200"],
+    ];
+    for (NSArray *pair in patterns) {
+        NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:[pair objectAtIndex:0]
+                                                                               options:0 error:nil];
+        [regex replaceMatchesInString:result options:0 range:NSMakeRange(0, result.length)
+                         withTemplate:[pair objectAtIndex:1]];
+    }
+    return result;
 }
 
 - (LTBrowseKind)kindForBrowseId:(NSString *)browseId {
