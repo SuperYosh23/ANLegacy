@@ -9,14 +9,13 @@ stream music without needing a modern OS.
 ## Features
 
 - Search for songs, albums, and artists
-- Trending chart fetched straight from YouTube Music's charts page
 - Browse albums, playlists, and artist pages
 - Streaming playback via `AVAudioPlayer` with configurable quality (Low / Medium / High)
 - Download tracks for offline playback
-- Local playlists (create, rename, delete, add tracks)
-- Recently played history
-- Now Playing screen with full artwork, seek bar, repeat, and shuffle
-- Mini now-playing bar above the tab bar
+- Local playlists (create, rename, delete, add tracks via an in-app picker)
+- Recently played history (last 3 tracks)
+- Dedicated **Now Playing** tab with full artwork, seek bar, repeat, and shuffle
+- Smooth cross-fade transitions between tabs; the Now Playing tab icon lights up blue during playback
 - Queue view
 - Tab icons rendered from a bundled Font Awesome font
 
