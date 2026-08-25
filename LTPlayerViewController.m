@@ -27,6 +27,9 @@
 
 - (void)viewDidLoad {
     [super viewDidLoad];
+    if ([self respondsToSelector:@selector(setEdgesForExtendedLayout:)]) {
+        self.edgesForExtendedLayout = UIRectEdgeNone;
+    }
     self.title = @"Now Playing";
     self.view.backgroundColor = [UIColor colorWithWhite:0.15f alpha:1.0f];
     LTLog(@"PLAYER_VC bounds=%d x %d", (int)self.view.bounds.size.width, (int)self.view.bounds.size.height);

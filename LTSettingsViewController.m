@@ -21,6 +21,9 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
+    if ([self respondsToSelector:@selector(setEdgesForExtendedLayout:)]) {
+        self.edgesForExtendedLayout = UIRectEdgeNone;
+    }
     self.title = @"Settings";
     self.view.backgroundColor = [UIColor groupTableViewBackgroundColor];
 
