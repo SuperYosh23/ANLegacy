@@ -28,6 +28,7 @@ typedef NS_ENUM(NSInteger, LTBrowseKind) {
 @interface LTLocalPlaylist : NSObject
 @property (nonatomic, copy) NSString *identifier;
 @property (nonatomic, copy) NSString *name;
+@property (nonatomic, copy) NSString *coverPath;
 @property (nonatomic, strong) NSMutableArray *tracks;
 - (NSDictionary *)dictionaryRepresentation;
 + (instancetype)playlistWithDictionary:(NSDictionary *)dict;

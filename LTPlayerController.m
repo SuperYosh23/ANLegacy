@@ -17,7 +17,6 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
 @property (nonatomic, copy) NSArray *sourceQueue;
 @property (nonatomic, assign) NSInteger currentIndex;
 @property (nonatomic, assign) BOOL shuffleEnabled;
-@property (nonatomic, assign) LTRepeatMode repeatMode;
 @property (nonatomic, assign) BOOL isLoading;
 @property (nonatomic, assign) BOOL userPaused;
 @property (nonatomic, assign) BOOL resumeAfterInterruption;
@@ -515,6 +514,12 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
 - (void)cycleRepeatMode {
     self.repeatMode = (LTRepeatMode)((self.repeatMode + 1) % 3);
     LTLog(@"REPEAT mode=%d", (int)self.repeatMode);
+    [self postQueueChanged];
+}
+
+- (void)setRepeatMode:(LTRepeatMode)repeatMode {
+    _repeatMode = repeatMode;
+    LTLog(@"REPEAT mode=%d", (int)repeatMode);
     [self postQueueChanged];
 }
 

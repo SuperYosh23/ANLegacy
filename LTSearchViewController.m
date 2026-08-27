@@ -21,6 +21,7 @@
 @property (nonatomic, assign) BOOL loading;
 @property (nonatomic, strong) LTTrack *pendingTrack;
 @property (nonatomic, strong) UILabel *emptyLabel;
+@property (nonatomic, assign) BOOL ignorePlaylistChanges;
 @end
 
 @implementation LTSearchViewController
@@ -299,6 +300,7 @@
 #pragma mark - Notifications
 
 - (void)playlistsDidChange:(NSNotification *)notification {
+    if (self.ignorePlaylistChanges) return;
     if ([self isPlaylistsMode]) {
         [self showLocalPlaylists];
     }
@@ -378,6 +380,40 @@
 
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
     return 60.0f;
+}
+
+- (BOOL)tableView:(UITableView *)tableView canEditRowAtIndexPath:(NSIndexPath *)indexPath {
+    return [self isPlaylistsMode];
+}
+
+- (UITableViewCellEditingStyle)tableView:(UITableView *)tableView editingStyleForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (![self isPlaylistsMode]) return UITableViewCellEditingStyleNone;
+    if (indexPath.row >= (NSInteger)self.results.count) return UITableViewCellEditingStyleNone;
+    id item = [self.results objectAtIndex:(NSUInteger)indexPath.row];
+    return [item isKindOfClass:[LTLocalPlaylist class]] ? UITableViewCellEditingStyleDelete : UITableViewCellEditingStyleNone;
+}
+
+- (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle forRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (editingStyle != UITableViewCellEditingStyleDelete) return;
+    id item = [self.results objectAtIndex:(NSUInteger)indexPath.row];
+    if (![item isKindOfClass:[LTLocalPlaylist class]]) return;
+    LTLocalPlaylist *playlist = item;
+    self.ignorePlaylistChanges = YES;
+    [[LTPlaylistStore sharedStore] deletePlaylist:playlist];
+    [self.results removeObject:playlist];
+    [tableView deleteRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationAutomatic];
+    self.ignorePlaylistChanges = NO;
+    [self refreshEmptyState];
+}
+
+- (void)refreshEmptyState {
+    if (![self isPlaylistsMode]) return;
+    if (!self.results.count) {
+        self.emptyLabel.text = @"No playlists yet.\nTap + to create one.";
+        self.emptyLabel.hidden = NO;
+    } else {
+        self.emptyLabel.hidden = YES;
+    }
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {

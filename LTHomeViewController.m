@@ -92,10 +92,13 @@
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    BOOL isWidescreen = ([UIScreen mainScreen].bounds.size.height >= 568.0f);
+    NSInteger recentsLimit = isWidescreen ? 4 : 3;
     if (self.recentTracks.count && self.playlists.count) {
-        return section == 0 ? (NSInteger)self.recentTracks.count : (NSInteger)self.playlists.count;
+        if (section == 0) return MIN((NSInteger)self.recentTracks.count, recentsLimit);
+        return (NSInteger)self.playlists.count;
     }
-    if (self.recentTracks.count) return (NSInteger)self.recentTracks.count;
+    if (self.recentTracks.count) return MIN((NSInteger)self.recentTracks.count, recentsLimit);
     return (NSInteger)self.playlists.count;
 }
 
@@ -140,6 +143,23 @@
     }
     if (self.recentTracks.count) return [self.recentTracks objectAtIndex:(NSUInteger)indexPath.row];
     return [self.playlists objectAtIndex:(NSUInteger)indexPath.row];
+}
+
+#pragma mark - Editing (swipe to delete playlists)
+
+// Playlist rows live in the last section; recents (when present) take section 0.
+- (BOOL)tableView:(UITableView *)tableView canEditRowAtIndexPath:(NSIndexPath *)indexPath {
+    BOOL playlistSection = self.recentTracks.count ? indexPath.section == 1 : YES;
+    return playlistSection && self.playlists.count > 0;
+}
+
+- (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle forRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (editingStyle != UITableViewCellEditingStyleDelete) return;
+    BOOL playlistSection = self.recentTracks.count ? indexPath.section == 1 : YES;
+    if (!playlistSection) return;
+    LTLocalPlaylist *playlist = [self.playlists objectAtIndex:(NSUInteger)indexPath.row];
+    [[LTPlaylistStore sharedStore] deletePlaylist:playlist];
+    [self.tableView reloadData];
 }
 
 #pragma mark - UITableViewDelegate

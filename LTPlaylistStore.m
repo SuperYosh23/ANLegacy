@@ -135,6 +135,27 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     [self postPlaylistsChanged];
 }
 
+- (void)setCoverImage:(UIImage *)image forPlaylist:(LTLocalPlaylist *)playlist {
+    if (!playlist.identifier.length) return;
+    // Remove old cover if exists
+    if (playlist.coverPath.length) {
+        [[NSFileManager defaultManager] removeItemAtPath:playlist.coverPath error:nil];
+        playlist.coverPath = nil;
+    }
+    if (image) {
+        NSString *path = [[self artDirectory] stringByAppendingPathComponent:
+                          [NSString stringWithFormat:@"cover-%@.jpg", playlist.identifier]];
+        NSData *data = UIImageJPEGRepresentation(image, 0.85);
+        if (data) {
+            [data writeToFile:path atomically:YES];
+            playlist.coverPath = path;
+            LTLog(@"STORE saved cover for playlist %@ at %@", playlist.name, path);
+        }
+    }
+    [self savePlaylists];
+    [self postPlaylistsChanged];
+}
+
 - (void)addTrack:(LTTrack *)track toPlaylist:(LTLocalPlaylist *)playlist {
     if (!track.videoId.length) return;
     for (LTTrack *existing in playlist.tracks) {
@@ -205,7 +226,7 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
         if ([old.videoId isEqualToString:track.videoId]) continue;
         [plist addObject:[old dictionaryRepresentation]];
         count += 1;
-        if (count >= 3) break;
+        if (count >= 4) break;
     }
     [plist writeToFile:[self recentsFilePath] atomically:YES];
     [[NSNotificationCenter defaultCenter] postNotificationName:LTRecentsDidChangeNotification object:self];
@@ -427,6 +448,114 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     self.downloadIndex += 1;
     [self postProgressStatus: ok ? @"downloaded" : @"error"];
     [self startNextDownload];
+}
+
+- (NSArray *)syncArrayRepresentation {
+    NSMutableArray *exportArray = [NSMutableArray array];
+    for (LTLocalPlaylist *playlist in self.playlists) {
+        NSMutableArray *songs = [NSMutableArray array];
+        for (LTTrack *track in playlist.tracks) {
+            [songs addObject:@{
+                @"videoId": track.videoId,
+                @"title": track.title ?: @"",
+                @"artist": track.artist ?: @"",
+                @"album": track.album ?: @"",
+                @"thumbnailURL": track.thumbnailURL ?: @"",
+                @"duration": @(track.duration),
+            }];
+        }
+        [exportArray addObject:@{
+            @"id": playlist.identifier ?: @"",
+            @"name": playlist.name ?: @"",
+            @"description": @"",
+            @"songs": songs,
+            @"updatedAt": [NSDate date].description,
+        }];
+    }
+    return exportArray;
+}
+
+// Union-merge incoming playlists by id; tracks merge by videoId.
+- (NSInteger)mergeSyncArray:(NSArray *)incomingArray {
+    if (![incomingArray isKindOfClass:[NSArray class]]) return 0;
+    NSInteger merged = 0;
+    for (NSDictionary *playlistDict in incomingArray) {
+        NSString *playlistId = playlistDict[@"id"];
+        NSString *name = playlistDict[@"name"];
+        if (!playlistId.length || !name.length) continue;
+        LTLocalPlaylist *existing = nil;
+        for (LTLocalPlaylist *p in _playlists) {
+            if ([p.identifier isEqualToString:playlistId]) { existing = p; break; }
+        }
+        BOOL created = NO;
+        if (!existing) {
+            existing = [[LTLocalPlaylist alloc] init];
+            existing.identifier = playlistId;
+            existing.name = name;
+            [_playlists addObject:existing];
+            created = YES;
+        } else {
+            existing.name = name;
+        }
+        NSArray *songs = playlistDict[@"songs"];
+        if ([songs isKindOfClass:[NSArray class]]) {
+            for (NSDictionary *songDict in songs) {
+                NSString *videoId = songDict[@"videoId"];
+                if (!videoId.length) continue;
+                LTTrack *track = [LTTrack trackWithDictionary:songDict];
+                LTTrack *haveTrack = nil;
+                for (LTTrack *t in existing.tracks) {
+                    if ([t.videoId isEqualToString:videoId]) { haveTrack = t; break; }
+                }
+                if (!haveTrack) {
+                    [existing.tracks addObject:track];
+                } else {
+                    // Union semantics for metadata too: fill in whatever the
+                    // other device knows that this copy is missing.
+                    if (!haveTrack.title.length) haveTrack.title = track.title;
+                    if (!haveTrack.artist.length) haveTrack.artist = track.artist;
+                    if (!haveTrack.album.length) haveTrack.album = track.album;
+                    if (!haveTrack.thumbnailURL.length) haveTrack.thumbnailURL = track.thumbnailURL;
+                    if (haveTrack.duration <= 0 && track.duration > 0) haveTrack.duration = track.duration;
+                }
+            }
+        }
+        merged += 1;
+        LTLog(@"SYNC merged %@ playlist %@", created ? @"new" : @"existing", name);
+    }
+    [self savePlaylists];
+    [self postPlaylistsChanged];
+    return merged;
+}
+
+- (BOOL)exportPlaylistsToJSONFile:(NSString *)filePath error:(NSError **)error {
+    NSError *writeError = nil;
+    NSData *data = [NSJSONSerialization dataWithJSONObject:[self syncArrayRepresentation] options:NSJSONWritingPrettyPrinted error:&writeError];
+    if (!data) {
+        if (error) *error = writeError;
+        return NO;
+    }
+    BOOL ok = [data writeToFile:filePath atomically:YES];
+    if (!ok && error) *error = [NSError errorWithDomain:NSCocoaErrorDomain code:NSFileWriteUnknownError userInfo:nil];
+    LTLog(@"STORE exported %d playlists to %@", (int)self.playlists.count, filePath);
+    return ok;
+}
+
+- (BOOL)importPlaylistsFromJSONFile:(NSString *)filePath error:(NSError **)error {
+    NSData *data = [NSData dataWithContentsOfFile:filePath];
+    if (!data) {
+        if (error) *error = [NSError errorWithDomain:NSCocoaErrorDomain code:NSFileReadUnknownError userInfo:nil];
+        return NO;
+    }
+    NSError *parseError = nil;
+    NSArray *importArray = [NSJSONSerialization JSONObjectWithData:data options:0 error:&parseError];
+    if (!importArray) {
+        if (error) *error = parseError;
+        return NO;
+    }
+    NSInteger merged = [self mergeSyncArray:importArray];
+    LTLog(@"STORE imported/merged %ld playlists from %@", (long)merged, filePath);
+    return YES;
 }
 
 @end

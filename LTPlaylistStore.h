@@ -20,6 +20,7 @@ extern NSString *const LTRecentsDidChangeNotification;
 - (LTLocalPlaylist *)createPlaylistWithName:(NSString *)name;
 - (void)deletePlaylist:(LTLocalPlaylist *)playlist;
 - (void)renamePlaylist:(LTLocalPlaylist *)playlist name:(NSString *)name;
+- (void)setCoverImage:(UIImage *)image forPlaylist:(LTLocalPlaylist *)playlist;
 - (void)addTrack:(LTTrack *)track toPlaylist:(LTLocalPlaylist *)playlist;
 - (void)removeTrackAtIndex:(NSInteger)index fromPlaylist:(LTLocalPlaylist *)playlist;
 
@@ -35,6 +36,12 @@ extern NSString *const LTRecentsDidChangeNotification;
 
 - (NSInteger)offlineTrackCount;
 - (void)refreshOfflineMetadataWithProgress:(void (^)(NSInteger done, NSInteger total))progress
-                                completion:(void (^)(NSInteger updated, NSInteger failed))completion;
+                            completion:(void (^)(NSInteger updated, NSInteger failed))completion;
+
+- (BOOL)exportPlaylistsToJSONFile:(NSString *)filePath error:(NSError **)error;
+- (BOOL)importPlaylistsFromJSONFile:(NSString *)filePath error:(NSError **)error;
+
+- (NSArray *)syncArrayRepresentation;
+- (NSInteger)mergeSyncArray:(NSArray *)incomingArray;
 
 @end

@@ -1,17 +1,20 @@
 #import "LTSettingsViewController.h"
 #import "LTPlaylistStore.h"
 #import "LTPlayerController.h"
+#import "LTWirelessSync.h"
+#import "LTTransitionSettings.h"
+#import "LTTransitionSpeedViewController.h"
 #import "LTLog.h"
 
 typedef NS_ENUM(NSInteger, LTSettingsSection) {
     LTSettingsSectionPlayback = 0,
     LTSettingsSectionStorage,
+    LTSettingsSectionSync,
     LTSettingsSectionAbout,
 };
 
-@interface LTSettingsViewController ()
+@interface LTSettingsViewController () <UITableViewDataSource, UITableViewDelegate, UIAlertViewDelegate, UIActionSheetDelegate>
 @property (nonatomic, strong) UITableView *tableView;
-@property (nonatomic, strong) UISegmentedControl *qualityControl;
 @property (nonatomic, strong) UISwitch *awakeSwitch;
 @property (nonatomic, strong) UIAlertView *progressAlert;
 @property (nonatomic, assign) BOOL refreshingMetadata;
@@ -43,18 +46,6 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
 
 #pragma mark - Controls
 
-- (UISegmentedControl *)qualityControl {
-    if (!_qualityControl) {
-        _qualityControl = [[UISegmentedControl alloc] initWithItems:@[@"Low", @"Normal", @"High"]];
-        id stored = [[NSUserDefaults standardUserDefaults] objectForKey:@"LTStreamingQuality"];
-        NSInteger quality = stored ? [stored integerValue] : 2;
-        if (quality < 0 || quality > 2) quality = 2;
-        _qualityControl.selectedSegmentIndex = quality;
-        [_qualityControl addTarget:self action:@selector(qualityChanged:) forControlEvents:UIControlEventValueChanged];
-    }
-    return _qualityControl;
-}
-
 - (UISwitch *)awakeSwitch {
     if (!_awakeSwitch) {
         _awakeSwitch = [[UISwitch alloc] init];
@@ -64,9 +55,14 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
     return _awakeSwitch;
 }
 
-- (void)qualityChanged:(id)sender {
-    [[NSUserDefaults standardUserDefaults] setInteger:self.qualityControl.selectedSegmentIndex
-                                              forKey:@"LTStreamingQuality"];
+- (void)showQualityPicker:(id)sender {
+    UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:@"Streaming Quality"
+                                                      delegate:self
+                                             cancelButtonTitle:@"Cancel"
+                                        destructiveButtonTitle:nil
+                                             otherButtonTitles:@"Low", @"Normal", @"High", nil];
+    sheet.tag = 800;
+    [sheet showInView:self.view];
 }
 
 - (void)awakeChanged:(id)sender {
@@ -171,16 +167,39 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
     }
 }
 
+- (void)actionSheet:(UIActionSheet *)actionSheet clickedButtonAtIndex:(NSInteger)buttonIndex {
+    if (actionSheet.tag == 800 && buttonIndex >= 0 && buttonIndex <= 2) {
+        [[NSUserDefaults standardUserDefaults] setInteger:buttonIndex forKey:@"LTStreamingQuality"];
+        [self.tableView reloadData];
+    }
+}
+
+- (NSString *)qualityLabel {
+    NSInteger quality = [[NSUserDefaults standardUserDefaults] integerForKey:@"LTStreamingQuality"];
+    if (quality < 0 || quality > 2) quality = 2;
+    switch (quality) {
+        case 0: return @"Low";
+        case 1: return @"Normal";
+        default: return @"High";
+    }
+}
+
+- (NSString *)speedLabel {
+    CGFloat multiplier = [LTTransitionSettings speedMultiplier];
+    return [NSString stringWithFormat:@"%.1fx", multiplier];
+}
+
 #pragma mark - UITableViewDataSource
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return 3;
+    return 4;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
     switch (section) {
         case LTSettingsSectionPlayback: return @"Playback";
         case LTSettingsSectionStorage: return @"Storage";
+        case LTSettingsSectionSync: return @"Sync";
         case LTSettingsSectionAbout: return @"About";
         default: return @"";
     }
@@ -188,8 +207,9 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     switch (section) {
-        case LTSettingsSectionPlayback: return 2;
+        case LTSettingsSectionPlayback: return 3;
         case LTSettingsSectionStorage: return 3;
+        case LTSettingsSectionSync: return 1;
         case LTSettingsSectionAbout: return 2;
         default: return 0;
     }
@@ -210,10 +230,17 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
         case LTSettingsSectionPlayback: {
             if (indexPath.row == 0) {
                 cell.textLabel.text = @"Streaming Quality";
-                cell.accessoryView = [self qualityControl];
-            } else {
+                cell.detailTextLabel.text = [self qualityLabel];
+                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                cell.selectionStyle = UITableViewCellSelectionStyleBlue;
+            } else if (indexPath.row == 1) {
                 cell.textLabel.text = @"Keep Screen Awake";
                 cell.accessoryView = [self awakeSwitch];
+            } else {
+                cell.textLabel.text = @"Transition Speed";
+                cell.detailTextLabel.text = [self speedLabel];
+                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                cell.selectionStyle = UITableViewCellSelectionStyleBlue;
             }
             break;
         }
@@ -230,6 +257,11 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
                 cell.textLabel.textColor = [UIColor redColor];
                 cell.selectionStyle = UITableViewCellSelectionStyleBlue;
             }
+            break;
+        }
+        case LTSettingsSectionSync: {
+            cell.textLabel.text = @"Sync Playlists with Desktop";
+            cell.selectionStyle = UITableViewCellSelectionStyleBlue;
             break;
         }
         case LTSettingsSectionAbout: {
@@ -253,11 +285,25 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    if (indexPath.section != LTSettingsSectionStorage) return;
-    if (indexPath.row == 1) {
-        [self refreshMetadataTapped];
-    } else if (indexPath.row == 2) {
-        [self clearDownloadsTapped];
+    if (indexPath.section == LTSettingsSectionPlayback) {
+        if (indexPath.row == 0) {
+            [self showQualityPicker:nil];
+        } else if (indexPath.row == 2) {
+            LTTransitionSpeedViewController *vc = [[LTTransitionSpeedViewController alloc] init];
+            [self.navigationController pushViewController:vc animated:YES];
+        }
+        return;
+    }
+    if (indexPath.section == LTSettingsSectionStorage) {
+        if (indexPath.row == 1) {
+            [self refreshMetadataTapped];
+        } else if (indexPath.row == 2) {
+            [self clearDownloadsTapped];
+        }
+        return;
+    }
+    if (indexPath.section == LTSettingsSectionSync) {
+        [LTWirelessSync beginFromViewController:self];
     }
 }
 

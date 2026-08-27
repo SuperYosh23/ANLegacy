@@ -827,15 +827,13 @@ static UIImage *LTTrimmedArtworkImage(UIImage *image, BOOL allowCenterCrop) {
                                                             cachePolicy:NSURLRequestReturnCacheDataElseLoad
                                                         timeoutInterval:30.0];
     [request setValue:LTBrowserUserAgent forHTTPHeaderField:@"User-Agent"];
-    [NSURLConnection sendAsynchronousRequest:request queue:[NSOperationQueue mainQueue]
-                           completionHandler:^(NSURLResponse *response, NSData *data, NSError *connectionError) {
+
+    void (^handleResponse)(NSData *, NSError *) = ^(NSData *data, NSError *connectionError) {
         UIImage *image = nil;
         if (!connectionError && data.length) image = [UIImage imageWithData:data];
-        // Missing maxres thumbs come back as a tiny placeholder or an error.
-        BOOL usable = image && image.size.width >= 200;
-        LTLog(@"ART fetch url=%@ status=%d len=%lu decoded=%dx%d usable=%d err=%@",
+        BOOL usable = image && ([cacheKey rangeOfString:@"maxresdefault"].location == NSNotFound || image.size.width >= 200);
+        LTLog(@"ART fetch url=%@ len=%lu decoded=%dx%d usable=%d err=%@",
               urlString,
-              response ? (int)[(NSHTTPURLResponse *)response statusCode] : -1,
               (unsigned long)data.length,
               image ? (int)image.size.width : 0,
               image ? (int)image.size.height : 0,
@@ -853,8 +851,25 @@ static UIImage *LTTrimmedArtworkImage(UIImage *image, BOOL allowCenterCrop) {
         [self.imageCache setObject:image forKey:cacheKey];
         NSData *encoded = UIImageJPEGRepresentation(image, 0.85);
         if (encoded) [encoded writeToFile:diskPath atomically:YES];
-        if (completion) completion(image);
-    }];
+        // Always call completion on the main thread so UI updates work
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (completion) completion(image);
+        });
+    };
+
+    // Use NSURLSession on iOS 7+ (NSURLConnection is deprecated and silently fails on iOS 10+)
+    if (NSClassFromString(@"NSURLSession")) {
+        NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:request
+            completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+                handleResponse(data, error);
+            }];
+        [task resume];
+    } else {
+        [NSURLConnection sendAsynchronousRequest:request queue:[NSOperationQueue mainQueue]
+                               completionHandler:^(NSURLResponse *response, NSData *data, NSError *connectionError) {
+            handleResponse(data, connectionError);
+        }];
+    }
 }
 
 - (NSString *)diskCachePathForURL:(NSString *)urlString {

@@ -2,15 +2,27 @@
 #import "LTPlaylistStore.h"
 #import "LTPlayerController.h"
 #import "LTTabBarController.h"
+#import "LTYouTubeClient.h"
+#import "LTMediaCell.h"
+#import "LTCustomActionSheet.h"
 #import "LTLog.h"
 
-@interface LTLocalPlaylistDetailViewController () <UITableViewDataSource, UITableViewDelegate>
+#define kHeaderHeight 146.0f
+#define kArtworkSize 80.0f
+#define kButtonHeight 36.0f
+
+@interface LTLocalPlaylistDetailViewController () <UITableViewDataSource, UITableViewDelegate, UIAlertViewDelegate, LTCustomActionSheetDelegate, UIImagePickerControllerDelegate, UINavigationControllerDelegate>
 @property (nonatomic, strong) LTLocalPlaylist *playlist;
 @property (nonatomic, strong) UITableView *tableView;
-@property (nonatomic, strong) UILabel *headerLabel;
-@property (nonatomic, strong) UIBarButtonItem *playAllItem;
-@property (nonatomic, strong) UIBarButtonItem *downloadItem;
+@property (nonatomic, strong) UIImageView *artworkImageView;
+@property (nonatomic, strong) UILabel *playlistNameLabel;
+@property (nonatomic, strong) UILabel *trackCountLabel;
+@property (nonatomic, strong) UIButton *playAllButton;
+@property (nonatomic, strong) UIButton *downloadButton;
+@property (nonatomic, strong) UIButton *renameButton;
+@property (nonatomic, strong) UIActivityIndicatorView *downloadSpinner;
 @property (nonatomic, assign) NSInteger downloadFailures;
+@property (nonatomic, strong) UIAlertView *renameAlert;
 @end
 
 @implementation LTLocalPlaylistDetailViewController
@@ -31,29 +43,18 @@
     self.title = self.playlist.name;
     self.view.backgroundColor = [UIColor whiteColor];
 
-    self.headerLabel = [[UILabel alloc] initWithFrame:CGRectMake(16, 8, self.view.bounds.size.width - 32, 24)];
-    self.headerLabel.font = [UIFont systemFontOfSize:13];
-    self.headerLabel.textColor = [UIColor grayColor];
-    self.headerLabel.backgroundColor = [UIColor clearColor];
-    [self.view addSubview:self.headerLabel];
-
-    self.tableView = [[UITableView alloc] initWithFrame:CGRectMake(0, 36, self.view.bounds.size.width, self.view.bounds.size.height - 36)
-                                                  style:UITableViewStylePlain];
+    self.tableView = [[UITableView alloc] initWithFrame:self.view.bounds style:UITableViewStylePlain];
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
     self.tableView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    if ([self.tableView respondsToSelector:@selector(setSeparatorInset:)]) {
+        self.tableView.separatorInset = UIEdgeInsetsMake(0, 60, 0, 0);
+    }
     [self.view addSubview:self.tableView];
 
-    self.playAllItem = [[UIBarButtonItem alloc] initWithTitle:@"Play All"
-                                                        style:UIBarButtonItemStyleBordered
-                                                       target:self
-                                                       action:@selector(playAllTapped:)];
-    self.downloadItem = [[UIBarButtonItem alloc] initWithTitle:@"Download"
-                                                         style:UIBarButtonItemStyleBordered
-                                                        target:self
-                                                        action:@selector(downloadTapped:)];
-    self.navigationItem.rightBarButtonItems = @[self.playAllItem, self.downloadItem];
+    [self buildHeaderView];
     [self refreshHeader];
+    [self loadArtwork];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -78,15 +79,131 @@
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
+#pragma mark - Header
+
+- (void)buildHeaderView {
+    CGFloat w = self.view.bounds.size.width;
+
+    UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0, w, kHeaderHeight)];
+    container.backgroundColor = [UIColor whiteColor];
+
+    CGFloat pad = 12.0f;
+
+    // Artwork (left side, square)
+    _artworkImageView = [[UIImageView alloc] initWithFrame:CGRectMake(pad, pad, kArtworkSize, kArtworkSize)];
+    _artworkImageView.backgroundColor = [UIColor colorWithWhite:0.92f alpha:1.0f];
+    _artworkImageView.contentMode = UIViewContentModeScaleAspectFill;
+    _artworkImageView.clipsToBounds = YES;
+    _artworkImageView.layer.cornerRadius = 6.0f;
+    _artworkImageView.userInteractionEnabled = YES;
+    UITapGestureRecognizer *artTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(artworkTapped:)];
+    [_artworkImageView addGestureRecognizer:artTap];
+    [container addSubview:_artworkImageView];
+
+    CGFloat textX = pad + kArtworkSize + 10.0f;
+    CGFloat textW = w - textX - pad;
+    CGFloat y = pad;
+
+    // Playlist name
+    _playlistNameLabel = [[UILabel alloc] initWithFrame:CGRectMake(textX, y, textW, 20)];
+    _playlistNameLabel.font = [UIFont boldSystemFontOfSize:16];
+    _playlistNameLabel.text = self.playlist.name;
+    [container addSubview:_playlistNameLabel];
+
+    y += 22.0f;
+
+    // Track count
+    _trackCountLabel = [[UILabel alloc] initWithFrame:CGRectMake(textX, y, textW, 16)];
+    _trackCountLabel.font = [UIFont systemFontOfSize:12];
+    _trackCountLabel.textColor = [UIColor grayColor];
+    [container addSubview:_trackCountLabel];
+
+    y += 20.0f;
+
+    // Buttons row (below artwork)
+    CGFloat btnY = pad + kArtworkSize + 6.0f;
+    CGFloat buttonWidth = (w - pad * 2 - 20.0f) / 3.0f;
+
+    _playAllButton = [self headerButtonWithTitle:@"Play All" frame:CGRectMake(pad, btnY, buttonWidth, kButtonHeight)];
+    [_playAllButton addTarget:self action:@selector(playAllTapped:) forControlEvents:UIControlEventTouchUpInside];
+    [container addSubview:_playAllButton];
+
+    _downloadButton = [self headerButtonWithTitle:@"Download" frame:CGRectMake(pad + buttonWidth + 10, btnY, buttonWidth, kButtonHeight)];
+    [_downloadButton addTarget:self action:@selector(downloadTapped:) forControlEvents:UIControlEventTouchUpInside];
+    [container addSubview:_downloadButton];
+
+    _renameButton = [self headerButtonWithTitle:@"Rename" frame:CGRectMake(pad + (buttonWidth + 10) * 2, btnY, buttonWidth, kButtonHeight)];
+    [_renameButton addTarget:self action:@selector(renamePlaylistTapped:) forControlEvents:UIControlEventTouchUpInside];
+    [container addSubview:_renameButton];
+
+    // Download spinner
+    _downloadSpinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleGray];
+    _downloadSpinner.center = CGPointMake(w / 2.0f, btnY + kButtonHeight / 2.0f);
+    _downloadSpinner.hidesWhenStopped = YES;
+    [container addSubview:_downloadSpinner];
+
+    self.tableView.tableHeaderView = container;
+}
+
+- (UIButton *)headerButtonWithTitle:(NSString *)title frame:(CGRect)frame {
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    button.frame = frame;
+    [button setTitle:title forState:UIControlStateNormal];
+    button.titleLabel.font = [UIFont boldSystemFontOfSize:14];
+    button.backgroundColor = [UIColor colorWithWhite:0.95f alpha:1.0f];
+    button.layer.cornerRadius = 6.0f;
+    button.clipsToBounds = YES;
+    return button;
+}
+
 - (void)refreshHeader {
-    self.headerLabel.text = [NSString stringWithFormat:@"%d tracks", (int)self.playlist.tracks.count];
+    NSUInteger count = self.playlist.tracks.count;
+    self.trackCountLabel.text = [NSString stringWithFormat:@"%lu track%@",
+                                 (unsigned long)count, count == 1 ? @"" : @"s"];
+
+    BOOL hasTracks = count > 0;
+    self.playAllButton.enabled = hasTracks;
+    self.downloadButton.enabled = hasTracks;
+    self.playAllButton.alpha = hasTracks ? 1.0f : 0.4f;
+    self.downloadButton.alpha = hasTracks ? 1.0f : 0.4f;
+}
+
+- (void)loadArtwork {
+    // Custom cover takes priority
+    if (self.playlist.coverPath.length) {
+        UIImage *cover = [UIImage imageWithContentsOfFile:self.playlist.coverPath];
+        if (cover) {
+            self.artworkImageView.image = cover;
+            return;
+        }
+    }
+    // Fall back to first track thumbnail
+    if (self.playlist.tracks.count > 0) {
+        LTTrack *first = self.playlist.tracks[0];
+        if (first.thumbnailURL.length) {
+            __weak typeof(self) weakSelf = self;
+            NSString *artURL = [[LTYouTubeClient sharedClient] highResThumbnailURL:first.thumbnailURL];
+            [[LTYouTubeClient sharedClient] loadImageWithURL:artURL completion:^(UIImage *image) {
+                weakSelf.artworkImageView.image = image;
+            }];
+        }
+    }
 }
 
 #pragma mark - Actions
 
+- (void)artworkTapped:(id)sender {
+    LTCustomActionSheet *sheet = [[LTCustomActionSheet alloc] initWithTitle:@"Playlist Cover"
+                                                              buttonTitles:@[@"Choose from Library", @"Remove Cover"]
+                                                           destructiveIndex:1];
+    sheet.delegate = self;
+    [sheet show];
+}
+
 - (void)playAllTapped:(id)sender {
     if (!self.playlist.tracks.count) return;
     [[LTPlayerController sharedController] playQueue:self.playlist.tracks atIndex:0];
+    [LTPlayerController sharedController].repeatMode = LTRepeatModeAll;
     [(LTTabBarController *)self.tabBarController showNowPlaying];
 }
 
@@ -123,16 +240,74 @@
     }];
 }
 
+- (void)renamePlaylistTapped:(id)sender {
+    UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"Rename Playlist"
+                                                    message:nil
+                                                   delegate:self
+                                          cancelButtonTitle:@"Cancel"
+                                          otherButtonTitles:@"Save", nil];
+    alert.alertViewStyle = UIAlertViewStylePlainTextInput;
+    UITextField *field = [alert textFieldAtIndex:0];
+    field.text = self.playlist.name;
+    field.placeholder = @"Playlist name";
+    self.renameAlert = alert;
+    [alert show];
+}
+
+#pragma mark - UIAlertViewDelegate
+
+- (void)alertView:(UIAlertView *)alertView clickedButtonAtIndex:(NSInteger)buttonIndex {
+    if (alertView == self.renameAlert && buttonIndex == 1) {
+        UITextField *field = [alertView textFieldAtIndex:0];
+        NSString *name = [field.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (name.length) {
+            [[LTPlaylistStore sharedStore] renamePlaylist:self.playlist name:name];
+            self.title = name;
+            self.playlistNameLabel.text = name;
+        }
+    }
+}
+
+- (void)customActionSheet:(id)sheet tappedButtonAtIndex:(NSInteger)index {
+    if (index == 0) {
+        // Choose from Library - use native picker
+        if ([UIImagePickerController isSourceTypeAvailable:UIImagePickerControllerSourceTypePhotoLibrary]) {
+            UIImagePickerController *picker = [[UIImagePickerController alloc] init];
+            picker.sourceType = UIImagePickerControllerSourceTypePhotoLibrary;
+            picker.delegate = self;
+            picker.allowsEditing = YES;
+            [self presentViewController:picker animated:YES completion:nil];
+        }
+    } else if (index == 1) {
+        // Remove Cover
+        [[LTPlaylistStore sharedStore] setCoverImage:nil forPlaylist:self.playlist];
+        [self loadArtwork];
+    }
+}
+
+- (void)imagePickerController:(UIImagePickerController *)picker didFinishPickingMediaWithInfo:(NSDictionary *)info {
+    UIImage *image = [info objectForKey:UIImagePickerControllerEditedImage];
+    if (!image) image = [info objectForKey:UIImagePickerControllerOriginalImage];
+    if (image) {
+        [[LTPlaylistStore sharedStore] setCoverImage:image forPlaylist:self.playlist];
+        [self loadArtwork];
+    }
+    [picker dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (void)imagePickerControllerDidCancel:(UIImagePickerController *)picker {
+    [picker dismissViewControllerAnimated:YES completion:nil];
+}
+
 - (void)setDownloadingUI:(BOOL)downloading {
     if (downloading) {
-        UIActivityIndicatorView *spinner = [[UIActivityIndicatorView alloc]
-                                            initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleGray];
-        spinner.hidesWhenStopped = YES;
-        [spinner startAnimating];
-        self.navigationItem.rightBarButtonItems = @[self.playAllItem,
-                                                    [[UIBarButtonItem alloc] initWithCustomView:spinner]];
+        self.downloadButton.hidden = YES;
+        self.renameButton.hidden = YES;
+        [self.downloadSpinner startAnimating];
     } else {
-        self.navigationItem.rightBarButtonItems = @[self.playAllItem, self.downloadItem];
+        [self.downloadSpinner stopAnimating];
+        self.downloadButton.hidden = NO;
+        self.renameButton.hidden = NO;
         [self refreshHeader];
         [self.tableView reloadData];
     }
@@ -160,7 +335,7 @@
     NSInteger index = [info[@"index"] integerValue];
     NSInteger total = [info[@"total"] integerValue];
     if (total > 0) {
-        self.headerLabel.text = [NSString stringWithFormat:@"Downloading %d of %d...", (int)index + 1, (int)total];
+        self.trackCountLabel.text = [NSString stringWithFormat:@"Downloading %d of %d...", (int)index + 1, (int)total];
     }
     [self.tableView reloadData];
 }
@@ -177,15 +352,17 @@
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     static NSString *CellId = @"LTPlaylistTrackCell";
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:CellId];
+    LTMediaCell *cell = [tableView dequeueReusableCellWithIdentifier:CellId];
     if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:CellId];
+        cell = [[LTMediaCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:CellId];
         cell.textLabel.font = [UIFont boldSystemFontOfSize:15];
         cell.detailTextLabel.font = [UIFont systemFontOfSize:12];
         cell.detailTextLabel.textColor = [UIColor grayColor];
+        cell.accessoryType = UITableViewCellAccessoryNone;
     }
     LTTrack *track = [self.playlist.tracks objectAtIndex:(NSUInteger)indexPath.row];
     cell.textLabel.text = [NSString stringWithFormat:@"%d. %@", (int)indexPath.row + 1, track.title];
+
     NSMutableString *detail = [NSMutableString string];
     if (track.artist.length) [detail appendString:track.artist];
     if (track.duration > 0) {
@@ -193,6 +370,11 @@
         [detail appendString:[self formatDuration:track.duration]];
     }
     cell.detailTextLabel.text = detail;
+    if (track.thumbnailURL.length) {
+        [cell setImageFromURL:track.thumbnailURL];
+    } else {
+        cell.imageView.image = nil;
+    }
     if ([[LTPlaylistStore sharedStore] isTrackDownloaded:track]) {
         cell.accessoryType = UITableViewCellAccessoryCheckmark;
     } else {
@@ -209,7 +391,7 @@
 #pragma mark - UITableViewDelegate
 
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
-    return 50.0f;
+    return 54.0f;
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {

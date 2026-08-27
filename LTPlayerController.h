@@ -20,7 +20,7 @@ typedef NS_ENUM(NSInteger, LTRepeatMode) {
 @property (nonatomic, readonly) NSArray *queue;
 @property (nonatomic, readonly) NSInteger currentIndex;
 @property (nonatomic, readonly) BOOL shuffleEnabled;
-@property (nonatomic, readonly) LTRepeatMode repeatMode;
+@property (nonatomic, assign) LTRepeatMode repeatMode;
 @property (nonatomic, readonly) BOOL isPlaying;
 @property (nonatomic, readonly) BOOL isLoading;
 @property (nonatomic, readonly) NSTimeInterval duration;

@@ -19,7 +19,8 @@
     track.artist = dict[@"artist"];
     track.album = dict[@"album"];
     track.videoId = dict[@"videoId"];
-    track.thumbnailURL = dict[@"thumbnail"];
+    // Desktop sync payloads use "thumbnail", our own format uses "thumbnailURL".
+    track.thumbnailURL = dict[@"thumbnailURL"] ?: dict[@"thumbnail"];
     track.duration = [dict[@"duration"] doubleValue];
     return track;
 }
@@ -44,17 +45,20 @@
     for (LTTrack *track in self.tracks) {
         [trackDicts addObject:[track dictionaryRepresentation]];
     }
-    return @{
+    NSMutableDictionary *dict = [NSMutableDictionary dictionaryWithDictionary:@{
         @"identifier": self.identifier ?: @"",
         @"name": self.name ?: @"",
         @"tracks": trackDicts,
-    };
+    }];
+    if (self.coverPath.length) dict[@"coverPath"] = self.coverPath;
+    return dict;
 }
 
 + (instancetype)playlistWithDictionary:(NSDictionary *)dict {
     LTLocalPlaylist *playlist = [[LTLocalPlaylist alloc] init];
     playlist.identifier = dict[@"identifier"];
     playlist.name = dict[@"name"];
+    playlist.coverPath = dict[@"coverPath"];
     [playlist.tracks removeAllObjects];
     NSArray *trackDicts = dict[@"tracks"];
     if ([trackDicts isKindOfClass:[NSArray class]]) {

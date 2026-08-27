@@ -1,5 +1,5 @@
 #import "LTTabBarController.h"
-#import "LTPlayerController.h"
+#import "LTTransitionSettings.h"
 #import <QuartzCore/QuartzCore.h>
 
 @interface LTTabBarController () <UITabBarControllerDelegate>
@@ -11,42 +11,6 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.delegate = self;
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(playerStateChanged:)
-                                                 name:LTPlayerTrackDidChangeNotification
-                                               object:nil];
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(playerStateChanged:)
-                                                 name:LTPlayerStateDidChangeNotification
-                                               object:nil];
-    [self refreshNowPlayingIcon];
-}
-
-- (void)dealloc {
-    [[NSNotificationCenter defaultCenter] removeObserver:self];
-}
-
-#pragma mark - Now Playing indicator
-
-- (UITabBarItem *)nowPlayingItem {
-    UINavigationController *nav = [self.viewControllers lastObject];
-    if (![nav isKindOfClass:[UINavigationController class]]) return nil;
-    return [nav.viewControllers firstObject].tabBarItem;
-}
-
-- (void)refreshNowPlayingIcon {
-    UITabBarItem *item = [self nowPlayingItem];
-    if (!item) return;
-    BOOL playing = [[LTPlayerController sharedController] isPlaying];
-    // Plain .image is stencil-rendered gray by iOS 6 unless the tab is
-    // selected, so supply finished images that render verbatim instead.
-    UIImage *blue = [UIImage imageNamed:@"IcoPlayBlue"];
-    UIImage *gray = [UIImage imageNamed:@"IcoPlay"];
-    [item setFinishedSelectedImage:blue withFinishedUnselectedImage:(playing ? blue : gray)];
-}
-
-- (void)playerStateChanged:(NSNotification *)notification {
-    [self refreshNowPlayingIcon];
 }
 
 #pragma mark - UITabBarControllerDelegate
@@ -74,7 +38,7 @@
 
     [tabBarController.view addSubview:snapshot];
     viewController.view.alpha = 0.0f;
-    [UIView animateWithDuration:0.15f
+    [UIView animateWithDuration:[LTTransitionSettings durationFor:0.15f]
         delay:0.0f
         options:UIViewAnimationOptionCurveEaseOut
         animations:^{

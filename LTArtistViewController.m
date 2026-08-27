@@ -104,7 +104,11 @@
     if (isSongs) {
         LTTrack *track = [self.topSongs objectAtIndex:(NSUInteger)indexPath.row];
         cell.textLabel.text = track.title;
-        cell.detailTextLabel.text = track.album;
+        if (track.album.length) {
+            cell.detailTextLabel.text = track.album;
+        } else {
+            cell.detailTextLabel.text = nil;
+        }
         cell.accessoryType = UITableViewCellAccessoryNone;
         [cell setImageFromURL:track.thumbnailURL];
     } else {
