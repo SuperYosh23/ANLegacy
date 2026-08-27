@@ -9,7 +9,6 @@
 typedef NS_ENUM(NSInteger, LTSettingsSection) {
     LTSettingsSectionPlayback = 0,
     LTSettingsSectionStorage,
-    LTSettingsSectionSync,
     LTSettingsSectionAbout,
 };
 
@@ -192,14 +191,13 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
 #pragma mark - UITableViewDataSource
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return 4;
+    return 3;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
     switch (section) {
         case LTSettingsSectionPlayback: return @"Playback";
         case LTSettingsSectionStorage: return @"Storage";
-        case LTSettingsSectionSync: return @"Sync";
         case LTSettingsSectionAbout: return @"About";
         default: return @"";
     }
@@ -209,7 +207,6 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
     switch (section) {
         case LTSettingsSectionPlayback: return 3;
         case LTSettingsSectionStorage: return 3;
-        case LTSettingsSectionSync: return 1;
         case LTSettingsSectionAbout: return 2;
         default: return 0;
     }
@@ -259,11 +256,6 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
             }
             break;
         }
-        case LTSettingsSectionSync: {
-            cell.textLabel.text = @"Sync Playlists with Desktop";
-            cell.selectionStyle = UITableViewCellSelectionStyleBlue;
-            break;
-        }
         case LTSettingsSectionAbout: {
             if (indexPath.row == 0) {
                 cell.textLabel.text = @"App";
@@ -301,9 +293,6 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
             [self clearDownloadsTapped];
         }
         return;
-    }
-    if (indexPath.section == LTSettingsSectionSync) {
-        [LTWirelessSync beginFromViewController:self];
     }
 }
 

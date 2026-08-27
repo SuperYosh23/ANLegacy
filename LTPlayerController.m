@@ -232,6 +232,21 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
     [self loadCurrentTrack];
 }
 
+- (void)playQueue:(NSArray *)tracks shuffle:(BOOL)shuffle {
+    if (!tracks.count) return;
+    self.sourceQueue = [tracks copy];
+    self.queue = [tracks copy];
+    self.shuffleEnabled = shuffle;
+    if (shuffle) {
+        self.queue = [self shuffledArray:self.queue];
+        self.currentIndex = 0;
+    } else {
+        self.currentIndex = 0;
+    }
+    [self postQueueChanged];
+    [self loadCurrentTrack];
+}
+
 - (void)enqueueTracks:(NSArray *)tracks {
     if (!tracks.count) return;
     NSMutableArray *q = [self.queue mutableCopy] ?: [NSMutableArray array];

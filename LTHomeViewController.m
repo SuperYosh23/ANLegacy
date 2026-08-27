@@ -4,6 +4,7 @@
 #import "LTTabBarController.h"
 #import "LTLocalPlaylistDetailViewController.h"
 #import "LTMediaCell.h"
+#import "LTYouTubeClient.h"
 #import "LTModel.h"
 
 @interface LTHomeViewController ()
@@ -132,6 +133,18 @@
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         cell.accessoryView = nil;
         cell.imageView.image = nil;
+        if (playlist.coverPath.length) {
+            cell.imageView.image = [UIImage imageWithContentsOfFile:playlist.coverPath];
+        } else if (playlist.tracks.count) {
+            LTTrack *first = [playlist.tracks objectAtIndex:0];
+            if (first.thumbnailURL.length) {
+                NSString *artURL = [[LTYouTubeClient sharedClient] highResThumbnailURL:first.thumbnailURL];
+                __weak UITableViewCell *weakCell = cell;
+                [[LTYouTubeClient sharedClient] loadImageWithURL:artURL completion:^(UIImage *image) {
+                    if (image) weakCell.imageView.image = image;
+                }];
+            }
+        }
     }
     return cell;
 }

@@ -372,6 +372,19 @@
         cell.detailTextLabel.text = [NSString stringWithFormat:@"%d tracks", (int)playlist.tracks.count];
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         cell.imageView.image = nil;
+        if (playlist.coverPath.length) {
+            cell.imageView.image = [UIImage imageWithContentsOfFile:playlist.coverPath];
+        } else if (playlist.tracks.count) {
+            LTTrack *first = [playlist.tracks objectAtIndex:0];
+            if (first.thumbnailURL.length) {
+                NSString *artURL = [[LTYouTubeClient sharedClient] highResThumbnailURL:first.thumbnailURL];
+                cell.imageView.image = nil;
+                __weak UITableViewCell *weakCell = cell;
+                [[LTYouTubeClient sharedClient] loadImageWithURL:artURL completion:^(UIImage *image) {
+                    if (image) weakCell.imageView.image = image;
+                }];
+            }
+        }
     }
     return cell;
 }

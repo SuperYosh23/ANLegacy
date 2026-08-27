@@ -47,6 +47,10 @@ static BOOL LTFAFontLoaded = NO;
 }
 
 + (UIImage *)glyphIcon:(unichar)glyph {
+    return [self coloredGlyphIcon:glyph color:[UIColor whiteColor]];
+}
+
++ (UIImage *)coloredGlyphIcon:(unichar)glyph color:(UIColor *)color {
     [self loadFARegisteredFontsIfNeeded];
     UIFont *font = [self fontAwesomeFontWithSize:30];
     if (!font) return nil;
@@ -63,14 +67,76 @@ static BOOL LTFAFontLoaded = NO;
         }
     }
     UIGraphicsBeginImageContextWithOptions(CGSizeMake(30, 30), NO, 1.0);
-    CGContextRef ctx = UIGraphicsGetCurrentContext();
-    CGContextSetRGBFillColor(ctx, 1.0f, 1.0f, 1.0f, 1.0f);
+    [color setFill];
     CGPoint origin = CGPointMake((30.0f - stringSize.width) / 2.0f,
                                  (30.0f - stringSize.height) / 2.0f);
     [string drawAtPoint:origin withFont:font];
     UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
     UIGraphicsEndImageContext();
     return image;
+}
+
++ (UIImage *)playIcon {
+    UIImage *glyph = [self coloredGlyphIcon:0xF04B color:[UIColor colorWithRed:0.35f green:0.68f blue:0.88f alpha:1.0f]];
+    if (glyph) return glyph;
+    return [self iconWithDrawing:^(CGContextRef ctx) {
+        [[UIColor blueColor] setFill];
+        UIBezierPath *tri = [UIBezierPath bezierPath];
+        [tri moveToPoint:CGPointMake(9, 6)];
+        [tri addLineToPoint:CGPointMake(24, 15)];
+        [tri addLineToPoint:CGPointMake(9, 24)];
+        [tri closePath];
+        [tri fill];
+    }];
+}
+
++ (UIImage *)shuffleIcon {
+    UIImage *glyph = [self coloredGlyphIcon:0xF074 color:[UIColor colorWithRed:0.35f green:0.68f blue:0.88f alpha:1.0f]];
+    if (glyph) return glyph;
+    return [self iconWithDrawing:^(CGContextRef ctx) {
+        [[UIColor blueColor] setStroke];
+        UIBezierPath *p = [UIBezierPath bezierPath];
+        [p moveToPoint:CGPointMake(5, 7)];
+        [p addLineToPoint:CGPointMake(12, 7)];
+        p.lineWidth = 2.5f; p.lineCapStyle = kCGLineCapRound; [p stroke];
+    }];
+}
+
++ (UIImage *)downloadIcon {
+    UIImage *glyph = [self coloredGlyphIcon:0xF019 color:[UIColor colorWithRed:0.35f green:0.68f blue:0.88f alpha:1.0f]];
+    if (glyph) return glyph;
+    return [self iconWithDrawing:^(CGContextRef ctx) {
+        [[UIColor blueColor] setStroke];
+        UIBezierPath *arrow = [UIBezierPath bezierPath];
+        [arrow moveToPoint:CGPointMake(15, 5)];
+        [arrow addLineToPoint:CGPointMake(15, 19)];
+        arrow.lineWidth = 3.0f; arrow.lineCapStyle = kCGLineCapRound; [arrow stroke];
+        UIBezierPath *head = [UIBezierPath bezierPath];
+        [head moveToPoint:CGPointMake(9, 13)];
+        [head addLineToPoint:CGPointMake(15, 20)];
+        [head addLineToPoint:CGPointMake(21, 13)];
+        head.lineWidth = 3.0f; head.lineCapStyle = kCGLineCapRound; [head stroke];
+        UIBezierPath *base = [UIBezierPath bezierPath];
+        [base moveToPoint:CGPointMake(6, 24)];
+        [base addLineToPoint:CGPointMake(24, 24)];
+        base.lineWidth = 3.0f; base.lineCapStyle = kCGLineCapRound; [base stroke];
+    }];
+}
+
++ (UIImage *)renameIcon {
+    UIImage *glyph = [self coloredGlyphIcon:0xF303 color:[UIColor colorWithRed:0.35f green:0.68f blue:0.88f alpha:1.0f]];
+    if (glyph) return glyph;
+    return [self iconWithDrawing:^(CGContextRef ctx) {
+        [[UIColor blueColor] setStroke];
+        UIBezierPath *pencil = [UIBezierPath bezierPath];
+        [pencil moveToPoint:CGPointMake(6, 24)];
+        [pencil addLineToPoint:CGPointMake(8, 17)];
+        [pencil addLineToPoint:CGPointMake(20, 5)];
+        [pencil addLineToPoint:CGPointMake(25, 10)];
+        [pencil addLineToPoint:CGPointMake(13, 22)];
+        [pencil closePath];
+        pencil.lineWidth = 2.5f; pencil.lineCapStyle = kCGLineCapRound; [pencil stroke];
+    }];
 }
 
 + (UIImage *)homeIcon {

@@ -27,6 +27,7 @@ typedef NS_ENUM(NSInteger, LTRepeatMode) {
 @property (nonatomic, readonly) NSTimeInterval currentTime;
 
 - (void)playQueue:(NSArray *)tracks atIndex:(NSInteger)index;
+- (void)playQueue:(NSArray *)tracks shuffle:(BOOL)shuffle;
 - (void)enqueueTracks:(NSArray *)tracks;
 - (void)jumpToIndex:(NSInteger)index;
 - (void)removeTrackAtIndex:(NSInteger)index;

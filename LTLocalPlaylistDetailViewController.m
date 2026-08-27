@@ -5,9 +5,10 @@
 #import "LTYouTubeClient.h"
 #import "LTMediaCell.h"
 #import "LTCustomActionSheet.h"
+#import "LTGraphics.h"
 #import "LTLog.h"
 
-#define kHeaderHeight 146.0f
+#define kHeaderHeight 96.0f
 #define kArtworkSize 80.0f
 #define kButtonHeight 36.0f
 
@@ -18,6 +19,7 @@
 @property (nonatomic, strong) UILabel *playlistNameLabel;
 @property (nonatomic, strong) UILabel *trackCountLabel;
 @property (nonatomic, strong) UIButton *playAllButton;
+@property (nonatomic, strong) UIButton *shuffleButton;
 @property (nonatomic, strong) UIButton *downloadButton;
 @property (nonatomic, strong) UIButton *renameButton;
 @property (nonatomic, strong) UIActivityIndicatorView *downloadSpinner;
@@ -120,40 +122,60 @@
 
     y += 20.0f;
 
-    // Buttons row (below artwork)
-    CGFloat btnY = pad + kArtworkSize + 6.0f;
-    CGFloat buttonWidth = (w - pad * 2 - 20.0f) / 3.0f;
+    // Buttons row (next to artwork, left aligned like the playlist name)
+    CGFloat btnY = y + 4.0f;
+    CGFloat smallGap = 6.0f;
+    CGFloat smallBtn = 34.0f;
+    CGFloat smallH = 32.0f;
 
-    _playAllButton = [self headerButtonWithTitle:@"Play All" frame:CGRectMake(pad, btnY, buttonWidth, kButtonHeight)];
+    _playAllButton = [self headerButtonWithIcon:[LTGraphics playIcon] frame:CGRectMake(textX, btnY, smallBtn, smallH)];
     [_playAllButton addTarget:self action:@selector(playAllTapped:) forControlEvents:UIControlEventTouchUpInside];
     [container addSubview:_playAllButton];
 
-    _downloadButton = [self headerButtonWithTitle:@"Download" frame:CGRectMake(pad + buttonWidth + 10, btnY, buttonWidth, kButtonHeight)];
+    _shuffleButton = [self headerButtonWithIcon:[LTGraphics shuffleIcon] frame:CGRectMake(textX + (smallBtn + smallGap), btnY, smallBtn, smallH)];
+    [_shuffleButton addTarget:self action:@selector(shuffleTapped:) forControlEvents:UIControlEventTouchUpInside];
+    [container addSubview:_shuffleButton];
+
+    _downloadButton = [self headerButtonWithIcon:[LTGraphics downloadIcon] frame:CGRectMake(textX + (smallBtn + smallGap) * 2, btnY, smallBtn, smallH)];
     [_downloadButton addTarget:self action:@selector(downloadTapped:) forControlEvents:UIControlEventTouchUpInside];
     [container addSubview:_downloadButton];
 
-    _renameButton = [self headerButtonWithTitle:@"Rename" frame:CGRectMake(pad + (buttonWidth + 10) * 2, btnY, buttonWidth, kButtonHeight)];
+    _renameButton = [self headerButtonWithIcon:[LTGraphics renameIcon] frame:CGRectMake(textX + (smallBtn + smallGap) * 3, btnY, smallBtn, smallH)];
     [_renameButton addTarget:self action:@selector(renamePlaylistTapped:) forControlEvents:UIControlEventTouchUpInside];
     [container addSubview:_renameButton];
 
     // Download spinner
     _downloadSpinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleGray];
-    _downloadSpinner.center = CGPointMake(w / 2.0f, btnY + kButtonHeight / 2.0f);
+    _downloadSpinner.center = CGPointMake(textX + smallBtn / 2.0f, btnY + smallH / 2.0f);
     _downloadSpinner.hidesWhenStopped = YES;
     [container addSubview:_downloadSpinner];
 
     self.tableView.tableHeaderView = container;
 }
 
-- (UIButton *)headerButtonWithTitle:(NSString *)title frame:(CGRect)frame {
+- (UIButton *)headerButtonWithIcon:(UIImage *)icon frame:(CGRect)frame {
     UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
     button.frame = frame;
-    [button setTitle:title forState:UIControlStateNormal];
-    button.titleLabel.font = [UIFont boldSystemFontOfSize:14];
+    [button setImage:[self scaledIcon:icon] forState:UIControlStateNormal];
+    button.imageView.contentMode = UIViewContentModeCenter;
     button.backgroundColor = [UIColor colorWithWhite:0.95f alpha:1.0f];
     button.layer.cornerRadius = 6.0f;
     button.clipsToBounds = YES;
     return button;
+}
+
+- (UIImage *)scaledIcon:(UIImage *)image {
+    if (!image) return nil;
+    CGSize target = CGSizeMake(22.0f, 22.0f);
+    UIGraphicsBeginImageContextWithOptions(target, NO, image.scale);
+    CGFloat scale = MIN(target.width / image.size.width, target.height / image.size.height);
+    CGFloat dw = image.size.width * scale;
+    CGFloat dh = image.size.height * scale;
+    CGRect rect = CGRectMake((target.width - dw) / 2.0f, (target.height - dh) / 2.0f, dw, dh);
+    [image drawInRect:rect];
+    UIImage *scaled = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return scaled;
 }
 
 - (void)refreshHeader {
@@ -163,8 +185,10 @@
 
     BOOL hasTracks = count > 0;
     self.playAllButton.enabled = hasTracks;
+    self.shuffleButton.enabled = hasTracks;
     self.downloadButton.enabled = hasTracks;
     self.playAllButton.alpha = hasTracks ? 1.0f : 0.4f;
+    self.shuffleButton.alpha = hasTracks ? 1.0f : 0.4f;
     self.downloadButton.alpha = hasTracks ? 1.0f : 0.4f;
 }
 
@@ -203,6 +227,13 @@
 - (void)playAllTapped:(id)sender {
     if (!self.playlist.tracks.count) return;
     [[LTPlayerController sharedController] playQueue:self.playlist.tracks atIndex:0];
+    [LTPlayerController sharedController].repeatMode = LTRepeatModeAll;
+    [(LTTabBarController *)self.tabBarController showNowPlaying];
+}
+
+- (void)shuffleTapped:(id)sender {
+    if (!self.playlist.tracks.count) return;
+    [[LTPlayerController sharedController] playQueue:self.playlist.tracks shuffle:YES];
     [LTPlayerController sharedController].repeatMode = LTRepeatModeAll;
     [(LTTabBarController *)self.tabBarController showNowPlaying];
 }

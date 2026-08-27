@@ -8,6 +8,7 @@
     if (self) {
         self.imageView.contentMode = UIViewContentModeScaleAspectFill;
         self.imageView.clipsToBounds = YES;
+        self.imageView.layer.cornerRadius = 4.0f;
     }
     return self;
 }

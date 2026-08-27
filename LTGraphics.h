@@ -7,4 +7,9 @@
 + (UIImage *)popularIcon;
 + (UIImage *)settingsIcon;
 
++ (UIImage *)playIcon;
++ (UIImage *)shuffleIcon;
++ (UIImage *)downloadIcon;
++ (UIImage *)renameIcon;
+
 @end
