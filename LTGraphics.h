@@ -6,10 +6,12 @@
 + (UIImage *)searchIcon;
 + (UIImage *)popularIcon;
 + (UIImage *)settingsIcon;
++ (UIImage *)libraryIcon;
 
 + (UIImage *)playIcon;
 + (UIImage *)shuffleIcon;
 + (UIImage *)downloadIcon;
++ (UIImage *)checkmarkIcon;
 + (UIImage *)renameIcon;
 
 @end

@@ -3,12 +3,15 @@
 #import "LTPlayerController.h"
 #import "LTQueueViewController.h"
 #import "LTYouTubeClient.h"
+#import "LTPlaylistStore.h"
 #import "LTLog.h"
 
 @interface LTPlayerViewController ()
 @property (nonatomic, strong) UIImageView *artworkView;
+@property (nonatomic, strong) UIImageView *incomingArtworkView;
 @property (nonatomic, strong) UILabel *titleLabel;
 @property (nonatomic, strong) UILabel *artistLabel;
+@property (nonatomic, strong) UILabel *bitrateLabel;
 @property (nonatomic, strong) UISlider *progressSlider;
 @property (nonatomic, strong) UILabel *elapsedLabel;
 @property (nonatomic, strong) UILabel *remainingLabel;
@@ -21,6 +24,10 @@
 @property (nonatomic, strong) UIActivityIndicatorView *spinner;
 @property (nonatomic, strong) NSTimer *timer;
 @property (nonatomic, assign) BOOL scrubbing;
+@property (nonatomic, assign) BOOL panning;
+@property (nonatomic, assign) CGFloat panBaseX;
+@property (nonatomic, assign) BOOL panCommitted;
+@property (nonatomic, assign) NSInteger panSwipeDir;
 @end
 
 @implementation LTPlayerViewController
@@ -33,6 +40,13 @@
     self.title = @"Now Playing";
     self.view.backgroundColor = [UIColor colorWithWhite:0.15f alpha:1.0f];
     LTLog(@"PLAYER_VC bounds=%d x %d", (int)self.view.bounds.size.width, (int)self.view.bounds.size.height);
+
+    self.incomingArtworkView = [[UIImageView alloc] init];
+    self.incomingArtworkView.backgroundColor = [UIColor colorWithWhite:0.25f alpha:1.0f];
+    self.incomingArtworkView.contentMode = UIViewContentModeScaleAspectFill;
+    self.incomingArtworkView.clipsToBounds = YES;
+    self.incomingArtworkView.alpha = 0.0f;
+    [self.view addSubview:self.incomingArtworkView];
 
     self.artworkView = [[UIImageView alloc] init];
     self.artworkView.backgroundColor = [UIColor colorWithWhite:0.25f alpha:1.0f];
@@ -56,6 +70,14 @@
     self.artistLabel.textColor = [UIColor colorWithWhite:0.8f alpha:1.0f];
     self.artistLabel.backgroundColor = [UIColor clearColor];
     [self.view addSubview:self.artistLabel];
+
+    self.bitrateLabel = [[UILabel alloc] init];
+    self.bitrateLabel.textAlignment = NSTextAlignmentLeft;
+    self.bitrateLabel.font = [UIFont systemFontOfSize:11];
+    self.bitrateLabel.textColor = [UIColor colorWithWhite:0.6f alpha:1.0f];
+    self.bitrateLabel.backgroundColor = [UIColor clearColor];
+    self.bitrateLabel.text = @"";
+    [self.view addSubview:self.bitrateLabel];
 
     self.elapsedLabel = [[UILabel alloc] init];
     self.elapsedLabel.font = [UIFont systemFontOfSize:11];
@@ -103,6 +125,134 @@
     [self.view addSubview:self.queueButton];
 
     [self layoutControls];
+    [self setupSwipeGestures];
+}
+
+- (void)setupSwipeGestures {
+    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePan:)];
+    pan.maximumNumberOfTouches = 1;
+    pan.minimumNumberOfTouches = 1;
+    [self.view addGestureRecognizer:pan];
+}
+
+- (void)handlePan:(UIPanGestureRecognizer *)pan {
+    UIView *view = self.view;
+    CGPoint translation = [pan translationInView:view];
+    CGFloat width = view.bounds.size.width;
+    CGFloat maxDrag = width * 0.5f;
+
+    switch (pan.state) {
+        case UIGestureRecognizerStateBegan: {
+            self.panning = YES;
+            self.panBaseX = width / 2.0f;
+            self.panCommitted = NO;
+            self.panSwipeDir = 0;
+            break;
+        }
+        case UIGestureRecognizerStateChanged: {
+            CGFloat tx = translation.x;
+            CGFloat ax = fabs(tx), ay = fabs(translation.y);
+            if (ay > ax * 1.5f && ax < 12.0f) break;
+            if (tx != 0.0f) self.panSwipeDir = (tx > 0) ? 1 : -1;
+            if (self.panSwipeDir != 0 && !self.incomingArtworkView.image) {
+                [self prepareIncomingArtForDirection:self.panSwipeDir];
+            }
+
+            CGFloat clamped = MAX(-maxDrag, MIN(maxDrag, tx));
+            CGFloat progress = fabs(clamped) / maxDrag;
+
+            self.artworkView.center = CGPointMake(self.panBaseX + clamped, self.artworkView.center.y);
+            CGFloat scale = 1.0f - progress * 0.15f;
+            self.artworkView.transform = CGAffineTransformMakeScale(scale, scale);
+            self.artworkView.alpha = 1.0f - progress * 0.35f;
+
+            if (self.panSwipeDir < 0) {
+                self.incomingArtworkView.center = CGPointMake(self.panBaseX + maxDrag + (clamped + maxDrag), self.artworkView.center.y);
+            } else if (self.panSwipeDir > 0) {
+                self.incomingArtworkView.center = CGPointMake(self.panBaseX - maxDrag + (clamped - maxDrag), self.artworkView.center.y);
+            }
+            self.incomingArtworkView.alpha = progress;
+            break;
+        }
+        case UIGestureRecognizerStateEnded: {
+            self.panning = NO;
+            CGFloat tx = translation.x + [pan velocityInView:view].x * 0.2f;
+            CGFloat velocity = fabs([pan velocityInView:view].x);
+            BOOL commit = (fabs(tx) > width * 0.18f) || velocity > 750.0f;
+            if (commit && self.panSwipeDir != 0) {
+                self.panCommitted = YES;
+                CGFloat dirOff = (self.panSwipeDir > 0) ? 1.0f : -1.0f;
+                CGFloat offX = (width / 2.0f) * dirOff + self.artworkView.bounds.size.width * dirOff;
+                [UIView animateWithDuration:0.18f animations:^{
+                    self.artworkView.center = CGPointMake(self.panBaseX + offX, self.artworkView.center.y);
+                    self.artworkView.alpha = 0.0f;
+                    self.artworkView.transform = CGAffineTransformMakeScale(0.9f, 0.9f);
+                    self.incomingArtworkView.center = CGPointMake(self.panBaseX, self.artworkView.center.y);
+                    self.incomingArtworkView.alpha = 1.0f;
+                } completion:^(BOOL finished){
+                    if (self.panSwipeDir > 0) {
+                        [[LTPlayerController sharedController] previousTrack];
+                    } else {
+                        [[LTPlayerController sharedController] nextTrack];
+                    }
+                    [self resetArtworkPresentation];
+                }];
+            } else {
+                [UIView animateWithDuration:0.22f animations:^{
+                    self.artworkView.center = CGPointMake(self.panBaseX, self.artworkView.center.y);
+                    self.artworkView.transform = CGAffineTransformIdentity;
+                    self.artworkView.alpha = 1.0f;
+                    self.incomingArtworkView.alpha = 0.0f;
+                    self.incomingArtworkView.center = CGPointMake(self.panBaseX, self.artworkView.center.y);
+                }];
+            }
+            break;
+        }
+        case UIGestureRecognizerStateCancelled:
+        case UIGestureRecognizerStateFailed: {
+            self.panning = NO;
+            [UIView animateWithDuration:0.22f animations:^{
+                self.artworkView.center = CGPointMake(self.panBaseX, self.artworkView.center.y);
+                self.artworkView.transform = CGAffineTransformIdentity;
+                self.artworkView.alpha = 1.0f;
+                self.incomingArtworkView.alpha = 0.0f;
+                self.incomingArtworkView.center = CGPointMake(self.panBaseX, self.artworkView.center.y);
+            }];
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+- (void)prepareIncomingArtForDirection:(NSInteger)dir {
+    LTTrack *adj = [[LTPlayerController sharedController] peekTrackOffset:(dir > 0) ? -1 : 1];
+    if (!adj || !adj.thumbnailURL.length) {
+        self.incomingArtworkView.image = nil;
+        return;
+    }
+    NSString *url = [[LTYouTubeClient sharedClient] highResThumbnailURL:adj.thumbnailURL];
+    __weak LTPlayerViewController *weakSelf = self;
+    [[LTYouTubeClient sharedClient] loadImageWithURL:url completion:^(UIImage *image) {
+        if (!image) return;
+        LTPlayerViewController *strongSelf = weakSelf;
+        if (!strongSelf) return;
+        if (strongSelf.panSwipeDir == dir) {
+            strongSelf.incomingArtworkView.image = image;
+        }
+    }];
+}
+
+- (void)resetArtworkPresentation {
+    self.panBaseX = self.view.bounds.size.width / 2.0f;
+    self.artworkView.center = CGPointMake(self.panBaseX, self.artworkView.center.y);
+    self.artworkView.transform = CGAffineTransformIdentity;
+    self.artworkView.alpha = 1.0f;
+    self.incomingArtworkView.center = CGPointMake(self.panBaseX, self.artworkView.center.y);
+    self.incomingArtworkView.transform = CGAffineTransformIdentity;
+    self.incomingArtworkView.alpha = 0.0f;
+    self.incomingArtworkView.image = nil;
+    self.panSwipeDir = 0;
 }
 
 - (UIButton *)makeIconButton:(NSString *)imageName selectedImage:(NSString *)selectedImageName action:(SEL)action {
@@ -119,11 +269,13 @@
 }
 
 - (void)layoutControls {
+    if (self.panning) return;
     CGFloat width = self.view.bounds.size.width;
     CGFloat height = self.view.bounds.size.height;
 
     self.titleLabel.frame = CGRectMake(16, 8, width - 32, 22);
     self.artistLabel.frame = CGRectMake(16, 32, width - 32, 18);
+    self.bitrateLabel.frame = CGRectMake(16, height - 20, 90, 14);
 
     CGFloat transportH = 44.0f;
     CGFloat transportY = height - 6.0f - transportH;
@@ -139,6 +291,7 @@
     if (artworkSize < 1.0f) artworkSize = 0.0f;
     CGFloat artworkY = artworkTop + (artworkBottom - artworkTop - artworkSize) / 2.0f;
     self.artworkView.frame = CGRectMake((width - artworkSize) / 2.0f, artworkY, artworkSize, artworkSize);
+    self.incomingArtworkView.frame = self.artworkView.frame;
     self.spinner.center = self.artworkView.center;
 
     self.elapsedLabel.frame = CGRectMake(16, timeY, 50, 16);
@@ -185,6 +338,7 @@
 #pragma mark - Refresh
 
 - (void)refreshTrack {
+    [self resetArtworkPresentation];
     LTTrack *track = [[LTPlayerController sharedController] currentTrack];
     if (!track) {
         self.titleLabel.text = @"Nothing playing";
@@ -202,6 +356,7 @@
     self.artistLabel.text = artist;
 
     self.artworkView.image = nil;
+    LTLog(@"PLAYER refresh track=%@ url=%@", track.title, track.thumbnailURL.length ? track.thumbnailURL : @"(none)");
     if (track.thumbnailURL.length) {
         NSString *artURL = [[LTYouTubeClient sharedClient] highResThumbnailURL:track.thumbnailURL];
         [[LTYouTubeClient sharedClient] loadImageWithURL:artURL completion:^(UIImage *image) {
@@ -209,12 +364,28 @@
                 self.artworkView.image = image;
             }
         }];
+    } else {
+        __weak LTPlayerViewController *weakSelf = self;
+        [[LTPlaylistStore sharedStore] resolveThumbnailForTrack:track completion:^(NSString *thumbnailURL) {
+            LTPlayerViewController *strongSelf = weakSelf;
+            if (!strongSelf || !thumbnailURL.length) return;
+            strongSelf.titleLabel.text = track.title;
+            NSString *artURL = [[LTYouTubeClient sharedClient] highResThumbnailURL:thumbnailURL];
+            [[LTYouTubeClient sharedClient] loadImageWithURL:artURL completion:^(UIImage *image) {
+                if (image && [track.videoId isEqualToString:[[LTPlayerController sharedController] currentTrack].videoId]) {
+                    strongSelf.artworkView.image = image;
+                }
+            }];
+        }];
     }
     [self refreshControls];
 }
 
 - (void)refreshControls {
     LTPlayerController *controller = [LTPlayerController sharedController];
+    NSInteger kbps = [controller audioBitrateKbps];
+    BOOL showKbps = [[NSUserDefaults standardUserDefaults] boolForKey:@"LTShowKbpsCounter"];
+    self.bitrateLabel.text = (showKbps && kbps > 0) ? [NSString stringWithFormat:@"%d kbps", (int)kbps] : @"";
     if ([controller isPlaying]) {
         [self.playButton setImage:[UIImage imageNamed:@"IcoPause"] forState:UIControlStateNormal];
     } else {

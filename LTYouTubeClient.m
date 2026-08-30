@@ -257,7 +257,7 @@ static id LTPath(id root, id key, ...) {
         LTTrack *track = [[LTTrack alloc] init];
         track.title = title;
         track.videoId = videoId;
-        track.thumbnailURL = [self thumbnailFromItem:item];
+        track.thumbnailURL = [self compatThumbnailURL:[self thumbnailFromItem:item] videoId:videoId];
         NSArray *subRuns = flex.count > 1 ? [self runsFromFlexColumn:[flex objectAtIndex:1]] : nil;
         [self applySubtitleRuns:subRuns toTrack:track];
         return track;
@@ -464,7 +464,7 @@ static id LTPath(id root, id key, ...) {
     LTTrack *track = [[LTTrack alloc] init];
     track.title = title;
     track.videoId = videoId;
-    track.thumbnailURL = [self thumbnailFromItem:item];
+    track.thumbnailURL = [self compatThumbnailURL:[self thumbnailFromItem:item] videoId:videoId];
 
     NSArray *col1 = flex.count > 1 ? [self runsFromFlexColumn:[flex objectAtIndex:1]] : nil;
     NSArray *col2 = flex.count > 2 ? [self runsFromFlexColumn:[flex objectAtIndex:2]] : nil;
@@ -539,9 +539,9 @@ static id LTPath(id root, id key, ...) {
 #pragma mark - Player
 
 - (void)streamURLForVideo:(NSString *)videoId
-               completion:(void (^)(NSString *streamURL, BOOL muxedStream, NSError *error))completion {
+               completion:(void (^)(NSString *streamURL, BOOL muxedStream, NSInteger audioBitrateKbps, NSError *error))completion {
     if (!videoId.length) {
-        if (completion) completion(nil, NO, [self errorWithCode:1 message:@"Missing video id"]);
+        if (completion) completion(nil, NO, 0, [self errorWithCode:1 message:@"Missing video id"]);
         return;
     }
     __weak LTYouTubeClient *weakSelf = self;
@@ -551,33 +551,33 @@ static id LTPath(id root, id key, ...) {
     [self fetchStreamURLWithContext:[self androidContext]
                          clientName:@"ANDROID"
                             videoId:videoId
-                         completion:^(NSString *streamURL, BOOL muxed, NSError *androidError) {
+                         completion:^(NSString *streamURL, BOOL muxed, NSInteger kbps, NSError *androidError) {
         if (streamURL.length) {
-            if (completion) completion(streamURL, muxed, nil);
+            if (completion) completion(streamURL, muxed, kbps, nil);
             return;
         }
         LTLog(@"STREAM falling back to ANDROID_VR client for %@", videoId);
         [weakSelf fetchStreamURLWithContext:[weakSelf androidVRContext]
                                  clientName:@"ANDROID_VR"
                                     videoId:videoId
-                                 completion:^(NSString *vrURL, BOOL vrMuxed, NSError *vrError) {
+                                 completion:^(NSString *vrURL, BOOL vrMuxed, NSInteger vrKbps, NSError *vrError) {
             if (vrURL.length) {
-                if (completion) completion(vrURL, vrMuxed, nil);
+                if (completion) completion(vrURL, vrMuxed, vrKbps, nil);
                 return;
             }
             LTLog(@"STREAM falling back to IOS client for %@", videoId);
             [weakSelf fetchStreamURLWithContext:[weakSelf iosContext]
                                      clientName:@"IOS"
                                         videoId:videoId
-                                     completion:^(NSString *iosURL, BOOL iosMuxed, NSError *iosError) {
+                                     completion:^(NSString *iosURL, BOOL iosMuxed, NSInteger iosKbps, NSError *iosError) {
                 if (iosURL.length) {
-                    if (completion) completion(iosURL, iosMuxed, nil);
+                    if (completion) completion(iosURL, iosMuxed, iosKbps, nil);
                     return;
                 }
                 NSError *last = iosError ?: vrError ?: androidError;
                 NSString *msg = [NSString stringWithFormat:@"All playback sources failed.\nLast error: %@",
                                  last.localizedDescription ?: @"unknown"];
-                if (completion) completion(nil, NO, [weakSelf errorWithCode:2 message:msg]);
+                if (completion) completion(nil, NO, 0, [weakSelf errorWithCode:2 message:msg]);
             }];
         }];
     }];
@@ -586,9 +586,9 @@ static id LTPath(id root, id key, ...) {
 - (void)fetchStreamURLWithContext:(NSDictionary *)context
                          clientName:(NSString *)clientName
                             videoId:(NSString *)videoId
-                         completion:(void (^)(NSString *streamURL, BOOL muxedStream, NSError *error))completion {
+                         completion:(void (^)(NSString *streamURL, BOOL muxedStream, NSInteger audioBitrateKbps, NSError *error))completion {
     if (!videoId.length) {
-        if (completion) completion(nil, NO, [self errorWithCode:1 message:@"Missing video id"]);
+        if (completion) completion(nil, NO, 0, [self errorWithCode:1 message:@"Missing video id"]);
         return;
     }
     NSDictionary *body = @{
@@ -599,7 +599,7 @@ static id LTPath(id root, id key, ...) {
     };
     [self postToHost:@"www.youtube.com" path:@"player" body:body completion:^(id json, NSError *error) {
         if (error || !json) {
-            if (completion) completion(nil, NO, error);
+            if (completion) completion(nil, NO, 0, error);
             return;
         }
         NSDictionary *playability = [json objectForKey:@"playabilityStatus"];
@@ -609,20 +609,17 @@ static id LTPath(id root, id key, ...) {
             if (!reason.length) reason = @"Playback unavailable";
             NSLog(@"LTYouTubeClient: player status=%@ reason=%@ for videoId=%@ client=%@", status, reason, videoId, clientName);
             LTLog(@"PLAYER status=%@ reason=%@ videoId=%@ client=%@", status, reason, videoId, clientName);
-            if (completion) completion(nil, NO, [self errorWithCode:2 message:reason]);
+            if (completion) completion(nil, NO, 0, [self errorWithCode:2 message:reason]);
             return;
         }
         NSDictionary *sd = [json objectForKey:@"streamingData"];
         NSDictionary *best = nil;
-        id stored = [[NSUserDefaults standardUserDefaults] objectForKey:@"LTStreamingQuality"];
-        NSInteger quality = stored ? [stored integerValue] : 2;
-        if (quality < 0) quality = 0;
-        if (quality > 2) quality = 2;
         NSArray *orders = @[
-            @[@139, @140, @141],
-            @[@140, @141, @139],
             @[@141, @140, @139],
+            @[@140, @141, @139],
+            @[@139, @140, @141],
         ];
+        NSInteger quality = 0;
         NSArray *adaptive = [sd objectForKey:@"adaptiveFormats"];
         if ([adaptive isKindOfClass:[NSArray class]]) {
             NSArray *order = [orders objectAtIndex:(NSUInteger)quality];
@@ -649,16 +646,27 @@ static id LTPath(id root, id key, ...) {
         }
         NSString *url = [best objectForKey:@"url"];
         if (best && url.length) {
+            NSInteger kbps = [self audioBitrateKbpsForItag:[[best objectForKey:@"itag"] intValue]];
             NSString *mime = [best objectForKey:@"mimeType"] ?: @"";
             BOOL muxed = ([mime rangeOfString:@"video/"].location != NSNotFound);
             BOOL hasN = ([url rangeOfString:@"&n="].location != NSNotFound || [url rangeOfString:@"?n="].location != NSNotFound);
-            LTLog(@"STREAM client=%@ itag=%d muxed=%d videoId=%@ hasN=%d fullurl=%@", clientName, [[best objectForKey:@"itag"] intValue], muxed, videoId, hasN, url);
-            if (completion) completion(url, muxed, nil);
+            LTLog(@"STREAM client=%@ itag=%d kbps=%d muxed=%d videoId=%@ hasN=%d fullurl=%@", clientName, [[best objectForKey:@"itag"] intValue], (int)kbps, muxed, videoId, hasN, url);
+            if (completion) completion(url, muxed, kbps, nil);
         } else {
             NSLog(@"LTYouTubeClient: no playable stream found for videoId=%@", videoId);
-            if (completion) completion(nil, NO, [self errorWithCode:3 message:@"No playable stream found"]);
+            if (completion) completion(nil, NO, 0, [self errorWithCode:3 message:@"No playable stream found"]);
         }
     }];
+}
+
+- (NSInteger)audioBitrateKbpsForItag:(NSInteger)itag {
+    switch (itag) {
+        case 141: return 256;
+        case 140: return 128;
+        case 139: return 48;
+        case 18: return 128;
+        default: return 128;
+    }
 }
 
 #pragma mark - Metadata
@@ -797,6 +805,7 @@ static UIImage *LTTrimmedArtworkImage(UIImage *image, BOOL allowCenterCrop) {
         if (completion) completion(nil);
         return;
     }
+    LTLog(@"IMG load url=%@", urlString);
     UIImage *cached = [self.imageCache objectForKey:urlString];
     if (cached) {
         if (completion) completion(cached);
@@ -805,6 +814,7 @@ static UIImage *LTTrimmedArtworkImage(UIImage *image, BOOL allowCenterCrop) {
     NSString *diskPath = [self diskCachePathForURL:urlString];
     UIImage *diskImage = [UIImage imageWithContentsOfFile:diskPath];
     if (diskImage) {
+        LTLog(@"IMG disk-hit url=%@", urlString);
         diskImage = LTTrimmedArtworkImage(diskImage, [urlString rangeOfString:@"i.ytimg.com"].location != NSNotFound);
         [self.imageCache setObject:diskImage forKey:urlString];
         if (completion) completion(diskImage);
@@ -941,6 +951,15 @@ static UIImage *LTTrimmedArtworkImage(UIImage *image, BOOL allowCenterCrop) {
 - (NSString *)thumbnailFromItem:(NSDictionary *)item {
     NSArray *thumbs = LTPath(item, @"thumbnail", @"musicThumbnailRenderer", @"thumbnail", @"thumbnails", nil);
     return [self largestThumbnailURLFromArray:thumbs];
+}
+
+- (NSString *)compatThumbnailURL:(NSString *)urlString videoId:(NSString *)videoId {
+    if (!urlString.length || !videoId.length) return urlString;
+    if ([[[UIDevice currentDevice] systemVersion] intValue] >= 7) return urlString;
+    if ([urlString rangeOfString:@"i.ytimg.com"].location != NSNotFound) return urlString;
+    // Pre-7.0 iOS TLS cannot negotiate lh3.googleusercontent.com / ggpht TLS 1.2,
+    // so fall back to the i.ytimg mirror, which is what offline tracks already use.
+    return [NSString stringWithFormat:@"https://i.ytimg.com/vi/%@/sddefault.jpg", videoId];
 }
 
 - (NSString *)largestThumbnailURLFromArray:(NSArray *)thumbs {

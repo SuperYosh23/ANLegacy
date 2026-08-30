@@ -27,7 +27,12 @@ LegacyMusic_FILES = main.m \
 	LTHeaderView.m \
 	LTCustomActionSheet.m \
 	LTTransitionSettings.m \
-	LTTransitionSpeedViewController.m
+	LTTransitionSpeedViewController.m \
+	LTWebExporter.m \
+	LTPlaylistSelectViewController.m \
+	LTLibraryViewController.m \
+	LTLibrarySongsViewController.m \
+	LTSpinnerView.m
 LegacyMusic_FRAMEWORKS = UIKit Foundation CoreGraphics QuartzCore MediaPlayer
 LegacyMusic_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -Wno-objc-interface-ivars
 LegacyMusic_LDFLAGS =

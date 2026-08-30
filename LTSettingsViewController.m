@@ -4,6 +4,8 @@
 #import "LTWirelessSync.h"
 #import "LTTransitionSettings.h"
 #import "LTTransitionSpeedViewController.h"
+#import "LTWebExporter.h"
+#import "LTPlaylistSelectViewController.h"
 #import "LTLog.h"
 
 typedef NS_ENUM(NSInteger, LTSettingsSection) {
@@ -15,6 +17,7 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
 @interface LTSettingsViewController () <UITableViewDataSource, UITableViewDelegate, UIAlertViewDelegate, UIActionSheetDelegate>
 @property (nonatomic, strong) UITableView *tableView;
 @property (nonatomic, strong) UISwitch *awakeSwitch;
+@property (nonatomic, strong) UISwitch *kbpsSwitch;
 @property (nonatomic, strong) UIAlertView *progressAlert;
 @property (nonatomic, assign) BOOL refreshingMetadata;
 @end
@@ -54,20 +57,23 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
     return _awakeSwitch;
 }
 
-- (void)showQualityPicker:(id)sender {
-    UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:@"Streaming Quality"
-                                                      delegate:self
-                                             cancelButtonTitle:@"Cancel"
-                                        destructiveButtonTitle:nil
-                                             otherButtonTitles:@"Low", @"Normal", @"High", nil];
-    sheet.tag = 800;
-    [sheet showInView:self.view];
-}
-
 - (void)awakeChanged:(id)sender {
     [[NSUserDefaults standardUserDefaults] setBool:self.awakeSwitch.on forKey:@"LTKeepAwake"];
     BOOL playing = [[LTPlayerController sharedController] isPlaying];
     [[UIApplication sharedApplication] setIdleTimerDisabled:(self.awakeSwitch.on && playing)];
+}
+
+- (UISwitch *)kbpsSwitch {
+    if (!_kbpsSwitch) {
+        _kbpsSwitch = [[UISwitch alloc] init];
+        _kbpsSwitch.on = [[NSUserDefaults standardUserDefaults] boolForKey:@"LTShowKbpsCounter"];
+        [_kbpsSwitch addTarget:self action:@selector(kbpsChanged:) forControlEvents:UIControlEventValueChanged];
+    }
+    return _kbpsSwitch;
+}
+
+- (void)kbpsChanged:(id)sender {
+    [[NSUserDefaults standardUserDefaults] setBool:self.kbpsSwitch.on forKey:@"LTShowKbpsCounter"];
 }
 
 #pragma mark - Storage
@@ -155,6 +161,87 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
     self.progressAlert = progress;
 }
 
+#pragma mark - Web export
+
+- (void)exportToWebTapped {
+    LTPlaylistStore *store = [LTPlaylistStore sharedStore];
+    NSInteger count = [store offlineFileCount];
+    if (!count) {
+        UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"Nothing to Export"
+                                                        message:@"Download some tracks to a playlist first, then you can create an AN Mini instance."
+                                                       delegate:nil
+                                              cancelButtonTitle:@"OK"
+                                              otherButtonTitles:nil];
+        [alert show];
+        return;
+    }
+
+    // Only offer playlists that actually contain downloaded tracks.
+    NSMutableArray *eligible = [NSMutableArray array];
+    for (LTLocalPlaylist *p in store.playlists) {
+        BOOL hasDownloaded = NO;
+        for (LTTrack *t in p.tracks) {
+            if ([store isTrackDownloaded:t]) { hasDownloaded = YES; break; }
+        }
+        if (hasDownloaded) [eligible addObject:p];
+    }
+    if (!eligible.count) {
+        UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"Nothing to Export"
+                                                        message:@"Download some tracks to a playlist first, then you can create an AN Mini instance."
+                                                       delegate:nil
+                                              cancelButtonTitle:@"OK"
+                                              otherButtonTitles:nil];
+        [alert show];
+        return;
+    }
+
+    __weak LTSettingsViewController *weakSelf = self;
+    LTPlaylistSelectViewController *picker =
+        [[LTPlaylistSelectViewController alloc] initWithPlaylists:eligible
+                                                       completion:^(NSArray *identifiers, BOOL cancelled) {
+        LTSettingsViewController *strongSelf = weakSelf;
+        [strongSelf dismissViewControllerAnimated:YES completion:NULL];
+        if (!strongSelf || cancelled) return;
+        [strongSelf startWebExportWithPlaylists:identifiers];
+    }];
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:picker];
+    [self presentViewController:nav animated:YES completion:NULL];
+}
+
+- (void)startWebExportWithPlaylists:(NSArray *)identifiers {
+    UIAlertView *progress = [[UIAlertView alloc] initWithTitle:@"Creating AN Mini"
+                                                       message:@"Downloading missing artwork, then packaging your tracks…"
+                                                      delegate:nil
+                                             cancelButtonTitle:nil
+                                             otherButtonTitles:nil];
+    [progress show];
+    self.progressAlert = progress;
+
+    __weak LTSettingsViewController *weakSelf = self;
+    [[LTWebExporter sharedExporter] exportWithSelectedPlaylists:identifiers
+        completion:^(NSString *outDir, NSError *error) {
+            LTSettingsViewController *strongSelf = weakSelf;
+            if (!strongSelf) return;
+            [strongSelf.progressAlert dismissWithClickedButtonIndex:0 animated:NO];
+            strongSelf.progressAlert = nil;
+            NSString *title;
+            NSString *message;
+            if (outDir) {
+                title = @"AN Mini Created";
+                message = [NSString stringWithFormat:@"Your audioNINJA Mini was written to:\n%@\n\nCopy that folder to any computer or phone, then open its index.html to listen. It works fully offline.", outDir];
+            } else {
+                title = @"Create Failed";
+                message = error.localizedDescription ?: @"Something went wrong while creating your AN Mini.";
+            }
+            UIAlertView *alert = [[UIAlertView alloc] initWithTitle:title
+                                                            message:message
+                                                           delegate:nil
+                                                  cancelButtonTitle:@"OK"
+                                                  otherButtonTitles:nil];
+            [alert show];
+        }];
+}
+
 #pragma mark - UIAlertViewDelegate
 
 - (void)alertView:(UIAlertView *)alertView clickedButtonAtIndex:(NSInteger)buttonIndex {
@@ -163,23 +250,6 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
     }
     if (alertView.tag == 901 && buttonIndex == 1) {
         [self startMetadataRefresh];
-    }
-}
-
-- (void)actionSheet:(UIActionSheet *)actionSheet clickedButtonAtIndex:(NSInteger)buttonIndex {
-    if (actionSheet.tag == 800 && buttonIndex >= 0 && buttonIndex <= 2) {
-        [[NSUserDefaults standardUserDefaults] setInteger:buttonIndex forKey:@"LTStreamingQuality"];
-        [self.tableView reloadData];
-    }
-}
-
-- (NSString *)qualityLabel {
-    NSInteger quality = [[NSUserDefaults standardUserDefaults] integerForKey:@"LTStreamingQuality"];
-    if (quality < 0 || quality > 2) quality = 2;
-    switch (quality) {
-        case 0: return @"Low";
-        case 1: return @"Normal";
-        default: return @"High";
     }
 }
 
@@ -206,7 +276,7 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     switch (section) {
         case LTSettingsSectionPlayback: return 3;
-        case LTSettingsSectionStorage: return 3;
+        case LTSettingsSectionStorage: return 4;
         case LTSettingsSectionAbout: return 2;
         default: return 0;
     }
@@ -226,13 +296,11 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
     switch (indexPath.section) {
         case LTSettingsSectionPlayback: {
             if (indexPath.row == 0) {
-                cell.textLabel.text = @"Streaming Quality";
-                cell.detailTextLabel.text = [self qualityLabel];
-                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-                cell.selectionStyle = UITableViewCellSelectionStyleBlue;
-            } else if (indexPath.row == 1) {
                 cell.textLabel.text = @"Keep Screen Awake";
                 cell.accessoryView = [self awakeSwitch];
+            } else if (indexPath.row == 1) {
+                cell.textLabel.text = @"Show kbps Counter";
+                cell.accessoryView = [self kbpsSwitch];
             } else {
                 cell.textLabel.text = @"Transition Speed";
                 cell.detailTextLabel.text = [self speedLabel];
@@ -248,6 +316,9 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
                 cell.detailTextLabel.text = [NSString stringWithFormat:@"%d files", (int)[store offlineFileCount]];
             } else if (indexPath.row == 1) {
                 cell.textLabel.text = @"Refresh Metadata & Artwork";
+                cell.selectionStyle = UITableViewCellSelectionStyleBlue;
+            } else if (indexPath.row == 2) {
+                cell.textLabel.text = @"Create AN Mini Instance (BETA)";
                 cell.selectionStyle = UITableViewCellSelectionStyleBlue;
             } else {
                 cell.textLabel.text = @"Clear Offline Downloads";
@@ -278,9 +349,7 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     if (indexPath.section == LTSettingsSectionPlayback) {
-        if (indexPath.row == 0) {
-            [self showQualityPicker:nil];
-        } else if (indexPath.row == 2) {
+        if (indexPath.row == 1) {
             LTTransitionSpeedViewController *vc = [[LTTransitionSpeedViewController alloc] init];
             [self.navigationController pushViewController:vc animated:YES];
         }
@@ -290,6 +359,8 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
         if (indexPath.row == 1) {
             [self refreshMetadataTapped];
         } else if (indexPath.row == 2) {
+            [self exportToWebTapped];
+        } else if (indexPath.row == 3) {
             [self clearDownloadsTapped];
         }
         return;

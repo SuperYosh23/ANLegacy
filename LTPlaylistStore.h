@@ -12,6 +12,7 @@ extern NSString *const LTRecentsDidChangeNotification;
 
 @property (nonatomic, readonly) NSArray *playlists;
 @property (nonatomic, readonly) NSArray *recentTracks;
+@property (nonatomic, readonly) NSArray *libraryTracks;
 
 - (NSString *)baseDirectory;
 - (NSString *)audioDirectory;
@@ -25,18 +26,29 @@ extern NSString *const LTRecentsDidChangeNotification;
 - (void)removeTrackAtIndex:(NSInteger)index fromPlaylist:(LTLocalPlaylist *)playlist;
 
 - (void)recordRecentTrack:(LTTrack *)track;
+- (NSInteger)listenedSongsCount;
 - (NSInteger)offlineFileCount;
 
 - (NSString *)localFilePathForVideoId:(NSString *)videoId;
 - (NSString *)existingLocalFilePathForVideoId:(NSString *)videoId;
 - (BOOL)isTrackDownloaded:(LTTrack *)track;
+- (BOOL)isTrackDownloading:(LTTrack *)track;
 - (BOOL)isDownloading;
 
 - (void)downloadTracks:(NSArray *)tracks completion:(void (^)(void))completion;
+- (void)removeDownloadsForTracks:(NSArray *)tracks;
+- (NSArray *)downloadedTracks;
+- (void)addTrackToLibrary:(LTTrack *)track;
 
 - (NSInteger)offlineTrackCount;
 - (void)refreshOfflineMetadataWithProgress:(void (^)(NSInteger done, NSInteger total))progress
                             completion:(void (^)(NSInteger updated, NSInteger failed))completion;
+
+- (void)resolveThumbnailForTrack:(LTTrack *)track
+                      completion:(void (^)(NSString *thumbnailURL))completion;
+
+- (void)recordBitrateKbps:(NSInteger)kbps forVideoId:(NSString *)videoId;
+- (NSInteger)bitrateKbpsForVideoId:(NSString *)videoId;
 
 - (BOOL)exportPlaylistsToJSONFile:(NSString *)filePath error:(NSError **)error;
 - (BOOL)importPlaylistsFromJSONFile:(NSString *)filePath error:(NSError **)error;

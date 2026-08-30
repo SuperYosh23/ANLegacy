@@ -26,6 +26,7 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
 @property (nonatomic, strong) NSMutableData *streamData;
 @property (nonatomic, copy) NSString *streamVideoId;
 @property (nonatomic, assign) NSInteger streamHTTPStatus;
+@property (nonatomic, assign) NSInteger audioBitrateKbps;
 @end
 
 @implementation LTPlayerController
@@ -209,6 +210,22 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
     return [self.queue objectAtIndex:(NSUInteger)self.currentIndex];
 }
 
+- (LTTrack *)peekTrackOffset:(NSInteger)offset {
+    if (offset == 0) return [self currentTrack];
+    if (self.repeatMode == LTRepeatModeOff) {
+        NSInteger idx = self.currentIndex + offset;
+        if (idx < 0) return nil;
+        if (idx >= (NSInteger)self.queue.count) return nil;
+        return [self.queue objectAtIndex:(NSUInteger)idx];
+    }
+    NSInteger n = (NSInteger)self.queue.count;
+    if (n <= 0) return nil;
+    NSInteger idx = self.currentIndex + offset;
+    while (idx < 0) idx += n;
+    while (idx >= n) idx -= n;
+    return [self.queue objectAtIndex:(NSUInteger)idx];
+}
+
 - (BOOL)isPlaying {
     return [self playerIsPlaying];
 }
@@ -300,6 +317,18 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
     [self postQueueChanged];
 }
 
+- (void)loadNowPlayingArtworkForTrack:(LTTrack *)track {
+    if (!track.thumbnailURL.length) return;
+    __weak LTPlayerController *weakSelf = self;
+    NSString *artURL = [[LTYouTubeClient sharedClient] highResThumbnailURL:track.thumbnailURL];
+    [[LTYouTubeClient sharedClient] loadImageWithURL:artURL completion:^(UIImage *image) {
+        LTPlayerController *strongSelf = weakSelf;
+        if (!strongSelf || !image) return;
+        strongSelf.nowPlayingArtwork = [[MPMediaItemArtwork alloc] initWithImage:image];
+        [strongSelf updateNowPlayingInfo];
+    }];
+}
+
 - (void)loadCurrentTrack {
     LTTrack *track = [self currentTrack];
     if (!track) return;
@@ -308,13 +337,13 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
 
     self.nowPlayingArtwork = nil;
     if (track.thumbnailURL.length) {
+        [self loadNowPlayingArtworkForTrack:track];
+    } else {
         __weak LTPlayerController *weakSelf = self;
-        NSString *artURL = [[LTYouTubeClient sharedClient] highResThumbnailURL:track.thumbnailURL];
-        [[LTYouTubeClient sharedClient] loadImageWithURL:artURL completion:^(UIImage *image) {
-            LTPlayerController *strongSelf = weakSelf;
-            if (!strongSelf || !image) return;
-            strongSelf.nowPlayingArtwork = [[MPMediaItemArtwork alloc] initWithImage:image];
-            [strongSelf updateNowPlayingInfo];
+        [[LTPlaylistStore sharedStore] resolveThumbnailForTrack:track completion:^(NSString *thumbnailURL) {
+            if (thumbnailURL.length) {
+                [weakSelf loadNowPlayingArtworkForTrack:track];
+            }
         }];
     }
 
@@ -322,6 +351,7 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
     if (localPath.length) {
         LTLog(@"OFFLINE playing videoId=%@ title=%@", track.videoId, track.title);
         self.isLoading = NO;
+        self.audioBitrateKbps = [[LTPlaylistStore sharedStore] bitrateKbpsForVideoId:track.videoId];
         [self loadLocalFileAtPath:localPath];
         return;
     }
@@ -330,7 +360,7 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
     self.isLoading = YES;
     LTLog(@"LOAD videoId=%@ title=%@", track.videoId, track.title);
     __weak LTPlayerController *weakSelf = self;
-    [[LTYouTubeClient sharedClient] streamURLForVideo:track.videoId completion:^(NSString *streamURL, BOOL muxedStream, NSError *error) {
+    [[LTYouTubeClient sharedClient] streamURLForVideo:track.videoId completion:^(NSString *streamURL, BOOL muxedStream, NSInteger audioBitrateKbps, NSError *error) {
         LTPlayerController *strongSelf = weakSelf;
         if (!strongSelf) return;
         if (![strongSelf.pendingVideoId isEqualToString:track.videoId]) return;
@@ -341,6 +371,8 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
             return;
         }
         strongSelf.pendingMuxed = muxedStream;
+        strongSelf.audioBitrateKbps = audioBitrateKbps;
+        [[LTPlaylistStore sharedStore] recordBitrateKbps:audioBitrateKbps forVideoId:track.videoId];
         LTLog(@"FETCH_OK downloading stream for %@ muxed=%d", track.videoId, muxedStream);
         [strongSelf downloadAndPlayURL:streamURL videoId:track.videoId];
     }];

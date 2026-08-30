@@ -123,6 +123,22 @@ static BOOL LTFAFontLoaded = NO;
     }];
 }
 
++ (UIImage *)checkmarkIcon {
+    UIImage *glyph = [self coloredGlyphIcon:0xF00C color:[UIColor colorWithRed:0.20f green:0.72f blue:0.30f alpha:1.0f]];
+    if (glyph) return glyph;
+    return [self iconWithDrawing:^(CGContextRef ctx) {
+        [[UIColor colorWithRed:0.20f green:0.72f blue:0.30f alpha:1.0f] setStroke];
+        UIBezierPath *check = [UIBezierPath bezierPath];
+        [check moveToPoint:CGPointMake(6, 16)];
+        [check addLineToPoint:CGPointMake(13, 23)];
+        [check addLineToPoint:CGPointMake(25, 8)];
+        check.lineWidth = 4.0f;
+        check.lineCapStyle = kCGLineCapRound;
+        check.lineJoinStyle = kCGLineJoinRound;
+        [check stroke];
+    }];
+}
+
 + (UIImage *)renameIcon {
     UIImage *glyph = [self coloredGlyphIcon:0xF303 color:[UIColor colorWithRed:0.35f green:0.68f blue:0.88f alpha:1.0f]];
     if (glyph) return glyph;
@@ -218,6 +234,39 @@ static BOOL LTFAFontLoaded = NO;
         knobs.lineWidth = 3.0f;
         knobs.lineCapStyle = kCGLineCapRound;
         [knobs stroke];
+    }];
+}
+
++ (UIImage *)libraryIcon {
+    UIImage *glyph = [self glyphIcon:0xF5FD];
+    if (glyph) return glyph;
+    return [self iconWithDrawing:^(CGContextRef ctx) {
+        [[UIColor whiteColor] setFill];
+
+        CGFloat shelfTop = 22.5f;
+        UIBezierPath *shelf = [UIBezierPath bezierPathWithRoundedRect:CGRectMake(4.5f, shelfTop, 21.0f, 2.5f) cornerRadius:1.25f];
+        [shelf fill];
+
+        UIBezierPath *smallBook = [UIBezierPath bezierPathWithRoundedRect:CGRectMake(6.0f, 9.5f, 4.5f, 12.0f) cornerRadius:1.0f];
+        [smallBook fill];
+
+        UIBezierPath *tallBook = [UIBezierPath bezierPathWithRoundedRect:CGRectMake(12.0f, 4.5f, 4.5f, 17.0f) cornerRadius:1.0f];
+        [tallBook fill];
+
+        UIBezierPath *midBook = [UIBezierPath bezierPathWithRoundedRect:CGRectMake(18.5f, 7.0f, 4.5f, 14.5f) cornerRadius:1.0f];
+        [midBook fill];
+
+        [[UIColor colorWithWhite:0.65f alpha:1.0f] setStroke];
+        UIBezierPath *spines = [UIBezierPath bezierPath];
+        [spines moveToPoint:CGPointMake(8.25f, 10.5f)];
+        [spines addLineToPoint:CGPointMake(8.25f, 20.5f)];
+        [spines moveToPoint:CGPointMake(14.25f, 5.5f)];
+        [spines addLineToPoint:CGPointMake(14.25f, 20.5f)];
+        [spines moveToPoint:CGPointMake(20.75f, 8.0f)];
+        [spines addLineToPoint:CGPointMake(20.75f, 20.5f)];
+        spines.lineWidth = 1.5f;
+        spines.lineCapStyle = kCGLineCapRound;
+        [spines stroke];
     }];
 }
 

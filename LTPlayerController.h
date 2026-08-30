@@ -25,6 +25,7 @@ typedef NS_ENUM(NSInteger, LTRepeatMode) {
 @property (nonatomic, readonly) BOOL isLoading;
 @property (nonatomic, readonly) NSTimeInterval duration;
 @property (nonatomic, readonly) NSTimeInterval currentTime;
+@property (nonatomic, readonly) NSInteger audioBitrateKbps;
 
 - (void)playQueue:(NSArray *)tracks atIndex:(NSInteger)index;
 - (void)playQueue:(NSArray *)tracks shuffle:(BOOL)shuffle;
@@ -32,6 +33,7 @@ typedef NS_ENUM(NSInteger, LTRepeatMode) {
 - (void)jumpToIndex:(NSInteger)index;
 - (void)removeTrackAtIndex:(NSInteger)index;
 - (LTTrack *)currentTrack;
+- (LTTrack *)peekTrackOffset:(NSInteger)offset;
 - (void)nextTrack;
 - (void)previousTrack;
 - (void)togglePlayPause;

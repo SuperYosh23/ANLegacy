@@ -6,12 +6,115 @@
 #import "LTMediaCell.h"
 #import "LTYouTubeClient.h"
 #import "LTModel.h"
+#import <QuartzCore/QuartzCore.h>
+
+#pragma mark - Recently played horizontal strip
+
+@interface LTHomeRecentsCell : UITableViewCell
+@property (nonatomic, copy) void (^onTrackTapped)(LTTrack *track);
+- (void)setTracks:(NSArray *)tracks;
+@end
+
+@implementation LTHomeRecentsCell {
+    UIScrollView *_scrollView;
+    NSArray *_tracks;
+}
+
+- (id)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier {
+    self = [super initWithStyle:style reuseIdentifier:reuseIdentifier];
+    if (self) {
+        self.selectionStyle = UITableViewCellSelectionStyleNone;
+        _scrollView = [[UIScrollView alloc] initWithFrame:CGRectZero];
+        _scrollView.showsHorizontalScrollIndicator = NO;
+        _scrollView.showsVerticalScrollIndicator = NO;
+        _scrollView.directionalLockEnabled = YES;
+        _scrollView.bounces = NO;
+        if ([_scrollView respondsToSelector:@selector(setAlwaysBounceVertical:)]) {
+            _scrollView.alwaysBounceVertical = NO;
+        }
+        _scrollView.backgroundColor = [UIColor whiteColor];
+        _scrollView.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+        [self.contentView addSubview:_scrollView];
+    }
+    return self;
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    _scrollView.frame = CGRectMake(0, 0, self.contentView.bounds.size.width, self.contentView.bounds.size.height);
+}
+
+- (void)setTracks:(NSArray *)tracks {
+    _tracks = tracks;
+    for (UIView *view in _scrollView.subviews) {
+        [view removeFromSuperview];
+    }
+    CGFloat tileWidth = 116.0f;
+    CGFloat gap = 10.0f;
+    CGFloat x = 10.0f;
+    NSUInteger index = 0;
+    for (LTTrack *track in tracks) {
+        UIView *tile = [[UIView alloc] initWithFrame:CGRectMake(x, 6, tileWidth, 146)];
+
+        UIButton *imageButton = [UIButton buttonWithType:UIButtonTypeCustom];
+        imageButton.frame = CGRectMake(0, 0, tileWidth, 104);
+        imageButton.backgroundColor = [UIColor colorWithWhite:0.9f alpha:1.0f];
+        imageButton.layer.cornerRadius = 8.0f;
+        imageButton.clipsToBounds = YES;
+        imageButton.tag = (NSInteger)index;
+        [imageButton addTarget:self action:@selector(tileTapped:) forControlEvents:UIControlEventTouchUpInside];
+        [tile addSubview:imageButton];
+
+        UIImageView *artwork = [[UIImageView alloc] initWithFrame:imageButton.bounds];
+        artwork.contentMode = UIViewContentModeScaleAspectFill;
+        artwork.clipsToBounds = YES;
+        [imageButton addSubview:artwork];
+        if (track.thumbnailURL.length) {
+            NSString *artURL = [[LTYouTubeClient sharedClient] highResThumbnailURL:track.thumbnailURL];
+            __weak UIImageView *weakArtwork = artwork;
+            [[LTYouTubeClient sharedClient] loadImageWithURL:artURL completion:^(UIImage *image) {
+                if (image) weakArtwork.image = image;
+            }];
+        }
+
+        UILabel *titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(2, 108, tileWidth - 4, 26)];
+        titleLabel.font = [UIFont boldSystemFontOfSize:12];
+        titleLabel.numberOfLines = 2;
+        titleLabel.textColor = [UIColor darkGrayColor];
+        titleLabel.text = track.title;
+        [tile addSubview:titleLabel];
+
+        UILabel *artistLabel = [[UILabel alloc] initWithFrame:CGRectMake(2, 134, tileWidth - 4, 12)];
+        artistLabel.font = [UIFont systemFontOfSize:11];
+        artistLabel.textColor = [UIColor grayColor];
+        artistLabel.text = track.artist.length ? track.artist : @"Unknown Artist";
+        [tile addSubview:artistLabel];
+
+        [_scrollView addSubview:tile];
+        x += tileWidth + gap;
+        index += 1;
+    }
+    CGFloat contentWidth = MAX(x, self.contentView.bounds.size.width + 1);
+    _scrollView.contentSize = CGSizeMake(contentWidth, 158);
+}
+
+- (void)tileTapped:(UIButton *)button {
+    NSUInteger index = (NSUInteger)button.tag;
+    if (index >= _tracks.count) return;
+    if (self.onTrackTapped) self.onTrackTapped([_tracks objectAtIndex:index]);
+}
+
+@end
+
+#pragma mark - Home
 
 @interface LTHomeViewController ()
 @property (nonatomic, strong) UITableView *tableView;
 @property (nonatomic, strong) NSArray *recentTracks;
 @property (nonatomic, strong) NSArray *playlists;
 @property (nonatomic, strong) UILabel *emptyLabel;
+@property (nonatomic, strong) UILabel *bannerTitleLabel;
+@property (nonatomic, strong) UILabel *bannerSubtitleLabel;
 @end
 
 @implementation LTHomeViewController
@@ -30,15 +133,54 @@
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
     self.tableView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    self.tableView.tableHeaderView = [self buildBanner];
     [self.view addSubview:self.tableView];
 
-    self.emptyLabel = [[UILabel alloc] initWithFrame:CGRectMake(24, 120, bounds.size.width - 48, 60)];
+    self.emptyLabel = [[UILabel alloc] initWithFrame:CGRectMake(24, 190, bounds.size.width - 48, 60)];
     self.emptyLabel.textAlignment = NSTextAlignmentCenter;
     self.emptyLabel.font = [UIFont systemFontOfSize:15];
     self.emptyLabel.textColor = [UIColor grayColor];
     self.emptyLabel.numberOfLines = 0;
     self.emptyLabel.hidden = YES;
     [self.view addSubview:self.emptyLabel];
+}
+
+- (UIView *)buildBanner {
+    CGFloat width = self.view.bounds.size.width;
+    UIView *banner = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 92)];
+
+    CAGradientLayer *gradient = [CAGradientLayer layer];
+    gradient.frame = banner.bounds;
+    gradient.colors = @[
+        (id)[UIColor colorWithRed:0.06f green:0.22f blue:0.46f alpha:1.0f].CGColor,
+        (id)[UIColor colorWithRed:0.0f green:0.42f blue:0.85f alpha:1.0f].CGColor,
+    ];
+    [banner.layer insertSublayer:gradient atIndex:0];
+
+    UILabel *titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(16, 20, width - 32, 30)];
+    titleLabel.text = @"Welcome back.";
+    titleLabel.font = [UIFont boldSystemFontOfSize:24];
+    titleLabel.textColor = [UIColor whiteColor];
+    titleLabel.backgroundColor = [UIColor clearColor];
+    self.bannerTitleLabel = titleLabel;
+    [banner addSubview:titleLabel];
+
+    UILabel *subtitleLabel = [[UILabel alloc] initWithFrame:CGRectMake(16, 54, width - 32, 16)];
+    subtitleLabel.text = @"";
+    subtitleLabel.font = [UIFont systemFontOfSize:13];
+    subtitleLabel.textColor = [UIColor colorWithWhite:1.0f alpha:0.75f];
+    subtitleLabel.backgroundColor = [UIColor clearColor];
+    self.bannerSubtitleLabel = subtitleLabel;
+    [banner addSubview:subtitleLabel];
+
+    [self updateBannerText];
+    return banner;
+}
+
+- (void)updateBannerText {
+    NSInteger count = [[LTPlaylistStore sharedStore] listenedSongsCount];
+    self.bannerSubtitleLabel.text = [NSString stringWithFormat:@"You've listened to %d song%@.",
+                                     (int)count, count == 1 ? @"" : @"s"];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -62,6 +204,7 @@
 - (void)reloadData {
     self.recentTracks = [[LTPlaylistStore sharedStore] recentTracks];
     self.playlists = [[LTPlaylistStore sharedStore] playlists];
+    [self updateBannerText];
     [self.tableView reloadData];
     if (!self.recentTracks.count && !self.playlists.count) {
         self.emptyLabel.text = @"Nothing here yet.\nPlay a song and create playlists to see them.";
@@ -75,35 +218,52 @@
     [self reloadData];
 }
 
+- (BOOL)hasRecents {
+    return self.recentTracks.count > 0;
+}
+
+- (NSInteger)playlistSection {
+    return [self hasRecents] ? 1 : 0;
+}
+
 #pragma mark - UITableViewDataSource
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
     NSInteger sections = 0;
-    if (self.recentTracks.count) sections += 1;
+    if ([self hasRecents]) sections += 1;
     if (self.playlists.count) sections += 1;
     return sections;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    if (self.recentTracks.count && self.playlists.count) {
-        return section == 0 ? @"Recently Played" : @"Your Playlists";
-    }
-    if (self.recentTracks.count) return @"Recently Played";
-    return @"Your Playlists";
+    if ([self hasRecents] && section == 0) return @"Recently Played";
+    if (section == [self playlistSection] && self.playlists.count) return @"Your Playlists";
+    return @"";
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    BOOL isWidescreen = ([UIScreen mainScreen].bounds.size.height >= 568.0f);
-    NSInteger recentsLimit = isWidescreen ? 4 : 3;
-    if (self.recentTracks.count && self.playlists.count) {
-        if (section == 0) return MIN((NSInteger)self.recentTracks.count, recentsLimit);
-        return (NSInteger)self.playlists.count;
-    }
-    if (self.recentTracks.count) return MIN((NSInteger)self.recentTracks.count, recentsLimit);
+    if ([self hasRecents] && section == 0) return 1;
     return (NSInteger)self.playlists.count;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if ([self hasRecents] && indexPath.section == 0) {
+        static NSString *StripCellId = @"LTHomeRecentsCell";
+        LTHomeRecentsCell *cell = [tableView dequeueReusableCellWithIdentifier:StripCellId];
+        if (!cell) {
+            cell = [[LTHomeRecentsCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:StripCellId];
+        }
+        __weak LTHomeViewController *weakSelf = self;
+        cell.onTrackTapped = ^(LTTrack *track) {
+            LTHomeViewController *strongSelf = weakSelf;
+            if (!strongSelf) return;
+            [[LTPlayerController sharedController] playQueue:@[track] atIndex:0];
+            [(LTTabBarController *)strongSelf.tabBarController showNowPlaying];
+        };
+        [cell setTracks:self.recentTracks];
+        return cell;
+    }
+
     static NSString *CellId = @"LTHomeCell";
     LTMediaCell *cell = [tableView dequeueReusableCellWithIdentifier:CellId];
     if (!cell) {
@@ -111,65 +271,37 @@
         cell.textLabel.font = [UIFont boldSystemFontOfSize:15];
         cell.detailTextLabel.font = [UIFont systemFontOfSize:12];
         cell.detailTextLabel.textColor = [UIColor grayColor];
-    }
-    id item = [self itemForIndexPath:indexPath];
-    if ([item isKindOfClass:[LTTrack class]]) {
-        LTTrack *track = item;
-        cell.textLabel.text = track.title;
-        NSMutableString *detail = [NSMutableString string];
-        if (track.artist.length) [detail appendString:track.artist];
-        if (track.album.length) {
-            if (detail.length) [detail appendString:@"  •  "];
-            [detail appendString:track.album];
-        }
-        cell.detailTextLabel.text = detail;
-        cell.accessoryType = UITableViewCellAccessoryNone;
-        cell.accessoryView = nil;
-        [cell setImageFromURL:track.thumbnailURL];
-    } else if ([item isKindOfClass:[LTLocalPlaylist class]]) {
-        LTLocalPlaylist *playlist = item;
-        cell.textLabel.text = playlist.name;
-        cell.detailTextLabel.text = [NSString stringWithFormat:@"%d tracks", (int)playlist.tracks.count];
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-        cell.accessoryView = nil;
-        cell.imageView.image = nil;
-        if (playlist.coverPath.length) {
-            cell.imageView.image = [UIImage imageWithContentsOfFile:playlist.coverPath];
-        } else if (playlist.tracks.count) {
-            LTTrack *first = [playlist.tracks objectAtIndex:0];
-            if (first.thumbnailURL.length) {
-                NSString *artURL = [[LTYouTubeClient sharedClient] highResThumbnailURL:first.thumbnailURL];
-                __weak UITableViewCell *weakCell = cell;
-                [[LTYouTubeClient sharedClient] loadImageWithURL:artURL completion:^(UIImage *image) {
-                    if (image) weakCell.imageView.image = image;
-                }];
-            }
+    }
+    LTLocalPlaylist *playlist = [self.playlists objectAtIndex:(NSUInteger)indexPath.row];
+    cell.textLabel.text = playlist.name;
+    cell.detailTextLabel.text = [NSString stringWithFormat:@"%d tracks", (int)playlist.tracks.count];
+    cell.accessoryView = nil;
+    cell.imageView.image = nil;
+    if (playlist.coverPath.length) {
+        cell.imageView.image = [UIImage imageWithContentsOfFile:playlist.coverPath];
+    } else if (playlist.tracks.count) {
+        LTTrack *first = [playlist.tracks objectAtIndex:0];
+        if (first.thumbnailURL.length) {
+            NSString *artURL = [[LTYouTubeClient sharedClient] highResThumbnailURL:first.thumbnailURL];
+            __weak UITableViewCell *weakCell = cell;
+            [[LTYouTubeClient sharedClient] loadImageWithURL:artURL completion:^(UIImage *image) {
+                if (image) weakCell.imageView.image = image;
+            }];
         }
     }
     return cell;
 }
 
-- (id)itemForIndexPath:(NSIndexPath *)indexPath {
-    if (self.recentTracks.count && self.playlists.count) {
-        if (indexPath.section == 0) return [self.recentTracks objectAtIndex:(NSUInteger)indexPath.row];
-        return [self.playlists objectAtIndex:(NSUInteger)indexPath.row];
-    }
-    if (self.recentTracks.count) return [self.recentTracks objectAtIndex:(NSUInteger)indexPath.row];
-    return [self.playlists objectAtIndex:(NSUInteger)indexPath.row];
-}
-
 #pragma mark - Editing (swipe to delete playlists)
 
-// Playlist rows live in the last section; recents (when present) take section 0.
 - (BOOL)tableView:(UITableView *)tableView canEditRowAtIndexPath:(NSIndexPath *)indexPath {
-    BOOL playlistSection = self.recentTracks.count ? indexPath.section == 1 : YES;
-    return playlistSection && self.playlists.count > 0;
+    return indexPath.section == [self playlistSection] && self.playlists.count > 0;
 }
 
 - (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle forRowAtIndexPath:(NSIndexPath *)indexPath {
     if (editingStyle != UITableViewCellEditingStyleDelete) return;
-    BOOL playlistSection = self.recentTracks.count ? indexPath.section == 1 : YES;
-    if (!playlistSection) return;
+    if (indexPath.section != [self playlistSection]) return;
     LTLocalPlaylist *playlist = [self.playlists objectAtIndex:(NSUInteger)indexPath.row];
     [[LTPlaylistStore sharedStore] deletePlaylist:playlist];
     [self.tableView reloadData];
@@ -178,19 +310,16 @@
 #pragma mark - UITableViewDelegate
 
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
-    return 60.0f;
+    if ([self hasRecents] && indexPath.section == 0) return 158.0f;
+    return 64.0f;
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    id item = [self itemForIndexPath:indexPath];
-    if ([item isKindOfClass:[LTTrack class]]) {
-        [[LTPlayerController sharedController] playQueue:[NSArray arrayWithObject:item] atIndex:0];
-        [(LTTabBarController *)self.tabBarController showNowPlaying];
-    } else if ([item isKindOfClass:[LTLocalPlaylist class]]) {
-        LTLocalPlaylistDetailViewController *detail = [[LTLocalPlaylistDetailViewController alloc] initWithPlaylist:item];
-        [self.navigationController pushViewController:detail animated:YES];
-    }
+    if (indexPath.section != [self playlistSection]) return;
+    LTLocalPlaylist *playlist = [self.playlists objectAtIndex:(NSUInteger)indexPath.row];
+    LTLocalPlaylistDetailViewController *detail = [[LTLocalPlaylistDetailViewController alloc] initWithPlaylist:playlist];
+    [self.navigationController pushViewController:detail animated:YES];
 }
 
 @end

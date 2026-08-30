@@ -1,5 +1,6 @@
 #import "LTAppDelegate.h"
 #import "LTSearchViewController.h"
+#import "LTLibraryViewController.h"
 #import "LTHomeViewController.h"
 #import "LTSettingsViewController.h"
 #import "LTPlayerViewController.h"
@@ -33,10 +34,10 @@
     UINavigationController *searchNav = [[UINavigationController alloc] initWithRootViewController:search];
     [controllers addObject:searchNav];
 
-    LTSearchViewController *playlists = [[LTSearchViewController alloc] initWithType:@"playlists"];
-    playlists.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Playlists" image:[UIImage imageNamed:@"TabPlaylists"] tag:0];
-    UINavigationController *playlistsNav = [[UINavigationController alloc] initWithRootViewController:playlists];
-    [controllers addObject:playlistsNav];
+    LTLibraryViewController *library = [[LTLibraryViewController alloc] init];
+    library.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Library" image:[LTGraphics libraryIcon] tag:0];
+    UINavigationController *libraryNav = [[UINavigationController alloc] initWithRootViewController:library];
+    [controllers addObject:libraryNav];
 
     LTSettingsViewController *settings = [[LTSettingsViewController alloc] init];
     settings.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Settings" image:[LTGraphics settingsIcon] tag:0];

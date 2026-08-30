@@ -2,6 +2,8 @@
 #import "LTYouTubeClient.h"
 #import "LTLog.h"
 
+#define kLTListenedSongIDsKey @"LTListenedSongIDs2"
+
 NSString *const LTPlaylistsDidChangeNotification = @"LTPlaylistsDidChangeNotification";
 NSString *const LTPlaylistTrackDidChangeNotification = @"LTPlaylistTrackDidChangeNotification";
 NSString *const LTPlaylistDownloadProgressNotification = @"LTPlaylistDownloadProgressNotification";
@@ -13,12 +15,14 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
 @property (nonatomic, strong) NSURLConnection *downloadConnection;
 @property (nonatomic, strong) NSMutableData *downloadData;
 @property (nonatomic, copy) NSString *downloadingVideoId;
+@property (nonatomic, strong) LTTrack *downloadingTrack;
 @property (nonatomic, assign) BOOL downloadingMuxed;
 @property (nonatomic, assign) NSInteger downloadHTTPStatus;
 @property (nonatomic, assign) NSInteger downloadTotal;
 @property (nonatomic, assign) NSInteger downloadIndex;
 @property (nonatomic, copy) void (^downloadCompletion)(void);
 @property (nonatomic, assign) BOOL downloading;
+@property (nonatomic, strong) NSMutableArray *libraryTracks;
 @end
 
 @implementation LTPlaylistStore
@@ -37,8 +41,10 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     if (self) {
         _playlists = [NSMutableArray array];
         _downloadQueue = [NSMutableArray array];
+        _libraryTracks = [NSMutableArray array];
         [self ensureDirectories];
         [self loadPlaylists];
+        [self loadLibrary];
     }
     return self;
 }
@@ -94,6 +100,102 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
 }
 
 - (void)postPlaylistsChanged {
+    [[NSNotificationCenter defaultCenter] postNotificationName:LTPlaylistsDidChangeNotification object:self];
+}
+
+#pragma mark - Library
+
+- (NSString *)libraryFilePath {
+    return [[self baseDirectory] stringByAppendingPathComponent:@"library.plist"];
+}
+
+- (void)loadLibrary {
+    NSArray *plist = [NSArray arrayWithContentsOfFile:[self libraryFilePath]];
+    if (![plist isKindOfClass:[NSArray class]]) return;
+    for (NSDictionary *dict in plist) {
+        LTTrack *track = [LTTrack trackWithDictionary:dict];
+        if (track.videoId.length) [_libraryTracks addObject:track];
+    }
+    LTLog(@"STORE loaded %d library tracks", (int)self.libraryTracks.count);
+}
+
+- (void)saveLibrary {
+    NSMutableArray *plist = [NSMutableArray array];
+    for (LTTrack *track in self.libraryTracks) {
+        [plist addObject:[track dictionaryRepresentation]];
+    }
+    [plist writeToFile:[self libraryFilePath] atomically:YES];
+}
+
+- (void)addTrackToLibrary:(LTTrack *)track {
+    if (!track.videoId.length) return;
+    for (LTTrack *existing in self.libraryTracks) {
+        if ([existing.videoId isEqualToString:track.videoId]) {
+            if (!existing.title.length && track.title.length) existing.title = track.title;
+            if (!existing.artist.length && track.artist.length) existing.artist = track.artist;
+            if (!existing.album.length && track.album.length) existing.album = track.album;
+            if (!existing.thumbnailURL.length && track.thumbnailURL.length) existing.thumbnailURL = track.thumbnailURL;
+            if (existing.duration <= 0 && track.duration > 0) existing.duration = track.duration;
+            [self saveLibrary];
+            return;
+        }
+    }
+    LTTrack *copy = [[LTTrack alloc] init];
+    copy.title = track.title;
+    copy.artist = track.artist;
+    copy.album = track.album;
+    copy.videoId = track.videoId;
+    copy.thumbnailURL = track.thumbnailURL;
+    copy.duration = track.duration;
+    [_libraryTracks addObject:copy];
+    [self saveLibrary];
+    [self postPlaylistsChanged];
+    LTLog(@"STORE added %@ to library", track.videoId);
+}
+
+- (NSArray *)downloadedTracks {
+    NSMutableArray *result = [NSMutableArray array];
+    NSMutableSet *seen = [NSMutableSet set];
+    for (LTLocalPlaylist *playlist in self.playlists) {
+        for (LTTrack *track in playlist.tracks) {
+            if (!track.videoId.length) continue;
+            if ([seen containsObject:track.videoId]) continue;
+            if (![self existingLocalFilePathForVideoId:track.videoId]) continue;
+            [seen addObject:track.videoId];
+            [result addObject:track];
+        }
+    }
+    for (LTTrack *track in self.libraryTracks) {
+        if (!track.videoId.length) continue;
+        if ([seen containsObject:track.videoId]) continue;
+        if (![self existingLocalFilePathForVideoId:track.videoId]) continue;
+        [seen addObject:track.videoId];
+        [result addObject:track];
+    }
+    return result;
+}
+
+- (void)removeDownloadsForTracks:(NSArray *)tracks {
+    NSMutableArray *changedVideoIds = [NSMutableArray array];
+    for (LTTrack *track in tracks) {
+        NSString *path = [self existingLocalFilePathForVideoId:track.videoId];
+        if (path.length) {
+            [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+            [changedVideoIds addObject:track.videoId];
+        }
+    }
+    if (changedVideoIds.count) {
+        for (NSInteger i = (NSInteger)self.libraryTracks.count - 1; i >= 0; i--) {
+            LTTrack *libTrack = [self.libraryTracks objectAtIndex:(NSUInteger)i];
+            if ([changedVideoIds containsObject:libTrack.videoId]) {
+                [_libraryTracks removeObjectAtIndex:(NSUInteger)i];
+            }
+        }
+        [self saveLibrary];
+    }
+    for (NSString *videoId in changedVideoIds) {
+        [self postTrackChanged:videoId];
+    }
     [[NSNotificationCenter defaultCenter] postNotificationName:LTPlaylistsDidChangeNotification object:self];
 }
 
@@ -195,6 +297,12 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     return path.length > 0;
 }
 
+- (BOOL)isTrackDownloading:(LTTrack *)track {
+    if (![self isDownloading]) return NO;
+    if (!track.videoId.length) return NO;
+    return [self.downloadingVideoId isEqualToString:track.videoId];
+}
+
 - (BOOL)isDownloading {
     return _downloading;
 }
@@ -219,6 +327,11 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
 
 - (void)recordRecentTrack:(LTTrack *)track {
     if (!track.videoId.length) return;
+    NSMutableArray *ids = [NSMutableArray arrayWithArray:[self listenedSongIDs]];
+    if (![ids containsObject:track.videoId]) {
+        [ids addObject:track.videoId];
+        [[NSUserDefaults standardUserDefaults] setObject:ids forKey:kLTListenedSongIDsKey];
+    }
     NSMutableArray *plist = [NSMutableArray array];
     [plist addObject:[track dictionaryRepresentation]];
     NSInteger count = 1;
@@ -226,10 +339,34 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
         if ([old.videoId isEqualToString:track.videoId]) continue;
         [plist addObject:[old dictionaryRepresentation]];
         count += 1;
-        if (count >= 4) break;
+        if (count >= 20) break;
     }
     [plist writeToFile:[self recentsFilePath] atomically:YES];
     [[NSNotificationCenter defaultCenter] postNotificationName:LTRecentsDidChangeNotification object:self];
+}
+
+- (NSArray *)listenedSongIDs {
+    NSArray *ids = [[NSUserDefaults standardUserDefaults] arrayForKey:kLTListenedSongIDsKey];
+    if (ids) return ids;
+    // First run: seed from every song the store knows about (recents, playlists,
+    // library) so the counter reflects all history, not just the 4-file recents cap.
+    NSMutableArray *seed = [NSMutableArray array];
+    void (^addVideoId)(NSString *) = ^(NSString *videoId) {
+        if (videoId.length && ![seed containsObject:videoId]) {
+            [seed addObject:videoId];
+        }
+    };
+    for (LTTrack *track in [self recentTracks]) addVideoId(track.videoId);
+    for (LTLocalPlaylist *playlist in self.playlists) {
+        for (LTTrack *track in playlist.tracks) addVideoId(track.videoId);
+    }
+    for (LTTrack *track in self.libraryTracks) addVideoId(track.videoId);
+    [[NSUserDefaults standardUserDefaults] setObject:seed forKey:kLTListenedSongIDsKey];
+    return seed;
+}
+
+- (NSInteger)listenedSongsCount {
+    return (NSInteger)[[self listenedSongIDs] count];
 }
 
 - (NSInteger)offlineFileCount {
@@ -275,20 +412,23 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
         return;
     }
     self.downloadingVideoId = track.videoId;
+    self.downloadingTrack = track;
     [self postProgressStatus:@"fetching"];
     __weak LTPlaylistStore *weakSelf = self;
-    [[LTYouTubeClient sharedClient] streamURLForVideo:track.videoId completion:^(NSString *streamURL, BOOL muxedStream, NSError *error) {
+    [[LTYouTubeClient sharedClient] streamURLForVideo:track.videoId completion:^(NSString *streamURL, BOOL muxedStream, NSInteger audioBitrateKbps, NSError *error) {
         LTPlaylistStore *strongSelf = weakSelf;
         if (!strongSelf) return;
         if (error || !streamURL.length) {
             LTLog(@"STORE DL stream error %@ for %@", error, track.videoId);
             strongSelf.downloadingVideoId = nil;
+            strongSelf.downloadingTrack = nil;
             strongSelf.downloadIndex += 1;
             [strongSelf postProgressStatus:@"error"];
             [strongSelf startNextDownload];
             return;
         }
         strongSelf.downloadingMuxed = muxedStream;
+        [strongSelf recordBitrateKbps:audioBitrateKbps forVideoId:track.videoId];
         [strongSelf startDownloadURL:streamURL videoId:track.videoId];
     }];
 }
@@ -310,6 +450,7 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     self.downloadConnection = nil;
     self.downloadData = nil;
     self.downloadingVideoId = nil;
+    self.downloadingTrack = nil;
     [self postProgressStatus:@"finished"];
     void (^completion)(void) = self.downloadCompletion;
     self.downloadCompletion = nil;
@@ -396,6 +537,48 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     nextStep();
 }
 
+- (void)resolveThumbnailForTrack:(LTTrack *)track
+                      completion:(void (^)(NSString *thumbnailURL))completion {
+    if (track.thumbnailURL.length) {
+        if (completion) completion(track.thumbnailURL);
+        return;
+    }
+    if (!track.videoId.length) {
+        if (completion) completion(nil);
+        return;
+    }
+    __weak LTPlaylistStore *weakSelf = self;
+    [[LTYouTubeClient sharedClient] trackMetadataForVideoId:track.videoId
+        completion:^(NSString *title, NSString *artist, NSTimeInterval duration, NSString *thumbnailURL, NSError *error) {
+        __strong LTPlaylistStore *strongSelf = weakSelf;
+        if (!strongSelf || !thumbnailURL.length) {
+            if (completion) completion(thumbnailURL);
+            return;
+        }
+        track.thumbnailURL = thumbnailURL;
+        if (!track.title.length && title.length) track.title = title;
+        if (!track.artist.length && artist.length) track.artist = artist;
+        [strongSelf savePlaylists];
+        LTLog(@"META resolved thumb %@ videoId=%@", thumbnailURL, track.videoId);
+        if (completion) completion(thumbnailURL);
+    }];
+}
+
+- (void)recordBitrateKbps:(NSInteger)kbps forVideoId:(NSString *)videoId {
+    if (!videoId.length) return;
+    NSMutableDictionary *rates = [[[NSUserDefaults standardUserDefaults] dictionaryForKey:@"LTBitrates"] mutableCopy] ?: [NSMutableDictionary dictionary];
+    [rates setObject:@(kbps) forKey:videoId];
+    [[NSUserDefaults standardUserDefaults] setObject:rates forKey:@"LTBitrates"];
+}
+
+- (NSInteger)bitrateKbpsForVideoId:(NSString *)videoId {
+    if (!videoId.length) return 128;
+    NSDictionary *rates = [[NSUserDefaults standardUserDefaults] dictionaryForKey:@"LTBitrates"];
+    id v = [rates objectForKey:videoId];
+    if (!v) return 128;
+    return [v integerValue];
+}
+
 - (void)postProgressStatus:(NSString *)status {
     NSDictionary *userInfo = @{
         @"status": status ?: @"",
@@ -425,6 +608,7 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     LTLog(@"STORE DL_ERROR %@ for %@", error, self.downloadingVideoId);
     [self postTrackChanged:self.downloadingVideoId];
     self.downloadingVideoId = nil;
+    self.downloadingTrack = nil;
     self.downloadIndex += 1;
     [self postProgressStatus:@"error"];
     [self startNextDownload];
@@ -440,11 +624,13 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
             : [self localFilePathForVideoId:videoId];
         BOOL wrote = [self.downloadData writeToFile:path atomically:YES];
         LTLog(@"STORE saved offline %@ muxed=%d ok=%d", videoId, self.downloadingMuxed, wrote);
+        if (wrote) [self addTrackToLibrary:self.downloadingTrack];
         [self postTrackChanged:videoId];
     } else {
         LTLog(@"STORE DL_FAILED status=%d bytes=%d for %@", (int)self.downloadHTTPStatus, (int)self.downloadData.length, videoId);
     }
     self.downloadingVideoId = nil;
+    self.downloadingTrack = nil;
     self.downloadIndex += 1;
     [self postProgressStatus: ok ? @"downloaded" : @"error"];
     [self startNextDownload];

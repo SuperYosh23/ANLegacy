@@ -6,6 +6,7 @@
 #import "LTMediaCell.h"
 #import "LTCustomActionSheet.h"
 #import "LTGraphics.h"
+#import "LTSpinnerView.h"
 #import "LTLog.h"
 
 #define kHeaderHeight 96.0f
@@ -22,8 +23,10 @@
 @property (nonatomic, strong) UIButton *shuffleButton;
 @property (nonatomic, strong) UIButton *downloadButton;
 @property (nonatomic, strong) UIButton *renameButton;
-@property (nonatomic, strong) UIActivityIndicatorView *downloadSpinner;
+@property (nonatomic, strong) LTSpinnerView *downloadSpinner;
 @property (nonatomic, assign) NSInteger downloadFailures;
+@property (nonatomic, assign) NSInteger pendingRemoveRow;
+@property (nonatomic, assign) BOOL playlistFullyDownloaded;
 @property (nonatomic, strong) UIAlertView *renameAlert;
 @end
 
@@ -145,9 +148,10 @@
     [container addSubview:_renameButton];
 
     // Download spinner
-    _downloadSpinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleGray];
+    _downloadSpinner = [[LTSpinnerView alloc] initWithFrame:CGRectMake(0, 0, 16, 16)];
     _downloadSpinner.center = CGPointMake(textX + smallBtn / 2.0f, btnY + smallH / 2.0f);
     _downloadSpinner.hidesWhenStopped = YES;
+    _downloadSpinner.hidden = YES;
     [container addSubview:_downloadSpinner];
 
     self.tableView.tableHeaderView = container;
@@ -190,6 +194,17 @@
     self.playAllButton.alpha = hasTracks ? 1.0f : 0.4f;
     self.shuffleButton.alpha = hasTracks ? 1.0f : 0.4f;
     self.downloadButton.alpha = hasTracks ? 1.0f : 0.4f;
+
+    BOOL fullyDownloaded = hasTracks;
+    if (fullyDownloaded) {
+        LTPlaylistStore *store = [LTPlaylistStore sharedStore];
+        for (LTTrack *track in self.playlist.tracks) {
+            if (![store isTrackDownloaded:track]) { fullyDownloaded = NO; break; }
+        }
+    }
+    self.playlistFullyDownloaded = fullyDownloaded;
+    [self.downloadButton setImage:[self scaledIcon:fullyDownloaded ? [LTGraphics checkmarkIcon] : [LTGraphics downloadIcon]]
+                        forState:UIControlStateNormal];
 }
 
 - (void)loadArtwork {
@@ -240,6 +255,21 @@
 
 - (void)downloadTapped:(id)sender {
     if ([[LTPlaylistStore sharedStore] isDownloading]) return;
+
+    BOOL allDownloaded = self.playlistFullyDownloaded;
+    if (allDownloaded) {
+        NSInteger count = self.playlist.tracks.count;
+        self.pendingRemoveRow = -1;
+        UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"Remove Downloads"
+                                                        message:[NSString stringWithFormat:@"Remove all %d downloaded track%@ from this playlist? They will no longer be available offline.", (int)count, count == 1 ? @"" : @"s"]
+                                                       delegate:self
+                                              cancelButtonTitle:@"Cancel"
+                                              otherButtonTitles:@"Remove", nil];
+        alert.tag = 951;
+        [alert show];
+        return;
+    }
+
     NSMutableArray *missing = [NSMutableArray array];
     for (LTTrack *track in self.playlist.tracks) {
         if (![[LTPlaylistStore sharedStore] isTrackDownloaded:track]) {
@@ -247,12 +277,6 @@
         }
     }
     if (!missing.count) {
-        UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"All Downloaded"
-                                                        message:@"This playlist is already available offline."
-                                                       delegate:nil
-                                              cancelButtonTitle:@"OK"
-                                              otherButtonTitles:nil];
-        [alert show];
         return;
     }
     LTLog(@"PLAYLIST download %d tracks", (int)missing.count);
@@ -288,6 +312,21 @@
 #pragma mark - UIAlertViewDelegate
 
 - (void)alertView:(UIAlertView *)alertView clickedButtonAtIndex:(NSInteger)buttonIndex {
+    if (alertView.tag == 950 && buttonIndex == 1) {
+        NSInteger row = self.pendingRemoveRow;
+        self.pendingRemoveRow = -1;
+        if (row >= 0 && row < (NSInteger)self.playlist.tracks.count) {
+            LTTrack *track = [self.playlist.tracks objectAtIndex:(NSUInteger)row];
+            LTLog(@"ROW remove download %@ title=%@", track.videoId, track.title);
+            [[LTPlaylistStore sharedStore] removeDownloadsForTracks:@[track]];
+        }
+        return;
+    }
+    if (alertView.tag == 951 && buttonIndex == 1) {
+        LTLog(@"PLAYLIST remove all downloads count=%lu", (unsigned long)self.playlist.tracks.count);
+        [[LTPlaylistStore sharedStore] removeDownloadsForTracks:self.playlist.tracks];
+        return;
+    }
     if (alertView == self.renameAlert && buttonIndex == 1) {
         UITextField *field = [alertView textFieldAtIndex:0];
         NSString *name = [field.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
@@ -358,15 +397,15 @@
 - (void)downloadProgress:(NSNotification *)notification {
     NSDictionary *info = [notification userInfo];
     NSString *status = info[@"status"];
-    if ([status isEqualToString:@"started"]) {
-        self.downloadFailures = 0;
-    } else if ([status isEqualToString:@"error"]) {
+    if ([status isEqualToString:@"error"]) {
         self.downloadFailures += 1;
     }
     NSInteger index = [info[@"index"] integerValue];
     NSInteger total = [info[@"total"] integerValue];
-    if (total > 0) {
+    if (total > 0 && index < total) {
         self.trackCountLabel.text = [NSString stringWithFormat:@"Downloading %d of %d...", (int)index + 1, (int)total];
+    } else {
+        [self refreshHeader];
     }
     [self.tableView reloadData];
 }
@@ -405,13 +444,86 @@
         [cell setImageFromURL:track.thumbnailURL];
     } else {
         cell.imageView.image = nil;
+        [[LTPlaylistStore sharedStore] resolveThumbnailForTrack:track completion:^(NSString *thumbnailURL) {
+            if (thumbnailURL.length) {
+                [cell setImageFromURL:thumbnailURL];
+            }
+        }];
     }
-    if ([[LTPlaylistStore sharedStore] isTrackDownloaded:track]) {
-        cell.accessoryType = UITableViewCellAccessoryCheckmark;
+    if ([[LTPlaylistStore sharedStore] isTrackDownloading:track]) {
+        cell.accessoryType = UITableViewCellAccessoryNone;
+        cell.accessoryView = [self rowSpinnerForRow:indexPath.row];
+    } else if ([[LTPlaylistStore sharedStore] isTrackDownloaded:track]) {
+        cell.accessoryType = UITableViewCellAccessoryNone;
+        cell.accessoryView = [self rowRemoveButtonForRow:indexPath.row];
     } else {
         cell.accessoryType = UITableViewCellAccessoryNone;
+        cell.accessoryView = [self rowDownloadButtonForRow:indexPath.row];
     }
     return cell;
+}
+
+- (UIView *)rowSpinnerForRow:(NSInteger)row {
+    LTSpinnerView *spinner = [[LTSpinnerView alloc] initWithFrame:CGRectMake(0, 0, 22, 22)];
+    [spinner startAnimating];
+    return spinner;
+}
+
+- (UIButton *)rowRemoveButtonForRow:(NSInteger)row {
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
+    button.frame = CGRectMake(0, 0, 40, 32);
+    [button setImage:[self scaledIcon:[LTGraphics checkmarkIcon]] forState:UIControlStateNormal];
+    button.imageView.contentMode = UIViewContentModeCenter;
+    button.tag = row;
+    [button addTarget:self action:@selector(rowRemoveTapped:) forControlEvents:UIControlEventTouchUpInside];
+    return button;
+}
+
+- (void)rowRemoveTapped:(id)sender {
+    UIButton *button = (UIButton *)sender;
+    NSInteger row = button.tag;
+    if (row < 0 || row >= (NSInteger)self.playlist.tracks.count) return;
+    LTTrack *track = [self.playlist.tracks objectAtIndex:(NSUInteger)row];
+    if (![[LTPlaylistStore sharedStore] isTrackDownloaded:track]) return;
+    self.pendingRemoveRow = row;
+    UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"Remove Download"
+                                                    message:[NSString stringWithFormat:@"Remove \"%@\" from your offline downloads?", track.title]
+                                                   delegate:self
+                                          cancelButtonTitle:@"Cancel"
+                                          otherButtonTitles:@"Remove", nil];
+    alert.tag = 950;
+    [alert show];
+}
+
+- (UIButton *)rowDownloadButtonForRow:(NSInteger)row {
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
+    button.frame = CGRectMake(0, 0, 40, 32);
+    [button setImage:[self scaledIcon:[LTGraphics downloadIcon]] forState:UIControlStateNormal];
+    button.imageView.contentMode = UIViewContentModeCenter;
+    button.tag = row;
+    [button addTarget:self action:@selector(rowDownloadTapped:) forControlEvents:UIControlEventTouchUpInside];
+    return button;
+}
+
+- (void)rowDownloadTapped:(id)sender {
+    UIButton *button = (UIButton *)sender;
+    NSInteger row = button.tag;
+    if (row < 0 || row >= (NSInteger)self.playlist.tracks.count) return;
+    if ([[LTPlaylistStore sharedStore] isDownloading]) return;
+    LTTrack *track = [self.playlist.tracks objectAtIndex:(NSUInteger)row];
+    if ([[LTPlaylistStore sharedStore] isTrackDownloaded:track]) return;
+    LTLog(@"ROW download %@ title=%@", track.videoId, track.title);
+    self.downloadFailures = 0;
+    [[LTPlaylistStore sharedStore] downloadTracks:@[track] completion:^{
+        if (self.downloadFailures > 0) {
+            UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"Download Failed"
+                                                            message:@"That track could not be downloaded.\nCheck your connection and try again."
+                                                           delegate:nil
+                                                  cancelButtonTitle:@"OK"
+                                                  otherButtonTitles:nil];
+            [alert show];
+        }
+    }];
 }
 
 - (NSString *)formatDuration:(NSTimeInterval)duration {
@@ -441,9 +553,9 @@
 
 - (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle forRowAtIndexPath:(NSIndexPath *)indexPath {
     if (editingStyle == UITableViewCellEditingStyleDelete) {
+        LTTrack *track = [self.playlist.tracks objectAtIndex:(NSUInteger)indexPath.row];
+        LTLog(@"PLAYLIST remove track %@ title=%@", track.videoId, track.title);
         [[LTPlaylistStore sharedStore] removeTrackAtIndex:indexPath.row fromPlaylist:self.playlist];
-        [self.tableView deleteRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationAutomatic];
-        [self refreshHeader];
     }
 }
 

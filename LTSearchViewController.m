@@ -9,6 +9,7 @@
 #import "LTPlaylistStore.h"
 #import "LTPlaylistPicker.h"
 #import "LTLocalPlaylistDetailViewController.h"
+#import "LTSpinnerView.h"
 #import <QuartzCore/QuartzCore.h>
 
 @interface LTSearchViewController () <UISearchBarDelegate, UITableViewDataSource, UITableViewDelegate,
@@ -94,6 +95,10 @@
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(playlistsDidChange:)
                                                  name:LTPlaylistsDidChangeNotification
+                                               object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(downloadProgress:)
+                                                 name:LTPlaylistDownloadProgressNotification
                                                object:nil];
     if ([self isPlaylistsMode]) {
         [self showLocalPlaylists];
@@ -224,11 +229,12 @@
 
 - (void)showSongOptionsForTrack:(LTTrack *)track {
     self.pendingTrack = track;
+    NSString *lastOption = [[LTPlaylistStore sharedStore] isTrackDownloaded:track] ? @"Remove Download" : @"Download";
     UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:track.title
                                                        delegate:self
                                               cancelButtonTitle:@"Cancel"
                                          destructiveButtonTitle:nil
-                                              otherButtonTitles:@"Add to Queue", @"Add to Playlist...", nil];
+                                              otherButtonTitles:@"Add to Queue", @"Add to Playlist...", lastOption, nil];
     sheet.tag = 10;
     [sheet showInView:self.view];
 }
@@ -272,6 +278,22 @@
             self.pendingTrack = nil;
         } else if (buttonIndex == 1) {
             [self showPlaylistPickerForTrack:self.pendingTrack];
+        } else if (buttonIndex == 2) {
+            LTTrack *track = self.pendingTrack;
+            self.pendingTrack = nil;
+            if ([[LTPlaylistStore sharedStore] isTrackDownloaded:track]) {
+                [[LTPlaylistStore sharedStore] removeDownloadsForTracks:@[track]];
+                [self showToast:@"Removed download"];
+            } else {
+                if ([[LTPlaylistStore sharedStore] isDownloading]) {
+                    [self showToast:@"A download is already in progress"];
+                } else {
+                    __weak LTSearchViewController *weakSelf = self;
+                    [[LTPlaylistStore sharedStore] downloadTracks:@[track] completion:^{
+                        [weakSelf showToast:@"Downloaded"];
+                    }];
+                }
+            }
         }
     } else if (actionSheet.tag == 11) {
         // Handled by LTPlaylistPicker now.
@@ -304,6 +326,10 @@
     if ([self isPlaylistsMode]) {
         [self showLocalPlaylists];
     }
+}
+
+- (void)downloadProgress:(NSNotification *)notification {
+    [self.tableView reloadData];
 }
 
 #pragma mark - UISearchBarDelegate
@@ -355,10 +381,16 @@
             [detail appendString:track.album];
         }
         cell.detailTextLabel.text = detail;
-        UIButton *plus = [UIButton buttonWithType:UIButtonTypeContactAdd];
-        plus.tag = (NSInteger)indexPath.row;
-        [plus addTarget:self action:@selector(songPlusTapped:) forControlEvents:UIControlEventTouchUpInside];
-        cell.accessoryView = plus;
+        if ([[LTPlaylistStore sharedStore] isTrackDownloading:track]) {
+            LTSpinnerView *spinner = [[LTSpinnerView alloc] initWithFrame:CGRectMake(0, 0, 22, 22)];
+            [spinner startAnimating];
+            cell.accessoryView = spinner;
+        } else {
+            UIButton *plus = [UIButton buttonWithType:UIButtonTypeContactAdd];
+            plus.tag = (NSInteger)indexPath.row;
+            [plus addTarget:self action:@selector(songPlusTapped:) forControlEvents:UIControlEventTouchUpInside];
+            cell.accessoryView = plus;
+        }
         [cell setImageFromURL:track.thumbnailURL];
     } else if ([item isKindOfClass:[LTBrowseItem class]]) {
         LTBrowseItem *bi = item;
