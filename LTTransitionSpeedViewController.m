@@ -26,6 +26,7 @@
     desc.text = @"How fast in-app transitions play. Lower = faster.";
     desc.font = [UIFont systemFontOfSize:14];
     desc.textColor = [UIColor lightGrayColor];
+    desc.backgroundColor = [UIColor clearColor];
     desc.numberOfLines = 0;
     desc.textAlignment = NSTextAlignmentCenter;
     [self.view addSubview:desc];
@@ -35,6 +36,7 @@
     self.valueLabel.text = [NSString stringWithFormat:@"%.1fx", [LTTransitionSettings speedMultiplier]];
     self.valueLabel.font = [UIFont boldSystemFontOfSize:22];
     self.valueLabel.textColor = [UIColor colorWithRed:0.35f green:0.68f blue:0.88f alpha:1.0f];
+    self.valueLabel.backgroundColor = [UIColor clearColor];
     self.valueLabel.textAlignment = NSTextAlignmentCenter;
     [self.view addSubview:self.valueLabel];
 
@@ -50,6 +52,7 @@
     self.fastLabel.text = @"Slower";
     self.fastLabel.font = [UIFont systemFontOfSize:14];
     self.fastLabel.textColor = [UIColor whiteColor];
+    self.fastLabel.backgroundColor = [UIColor clearColor];
     self.fastLabel.textAlignment = NSTextAlignmentLeft;
     [self.view addSubview:self.fastLabel];
 
@@ -57,8 +60,11 @@
     self.slowLabel.text = @"Faster";
     self.slowLabel.font = [UIFont systemFontOfSize:14];
     self.slowLabel.textColor = [UIColor whiteColor];
+    self.slowLabel.backgroundColor = [UIColor clearColor];
     self.slowLabel.textAlignment = NSTextAlignmentRight;
     [self.view addSubview:self.slowLabel];
+
+    self.view.opaque = YES;
 }
 
 - (void)sliderChanged:(UISlider *)slider {

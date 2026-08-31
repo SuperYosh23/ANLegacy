@@ -4,8 +4,10 @@
 #import "LTWirelessSync.h"
 #import "LTTransitionSettings.h"
 #import "LTTransitionSpeedViewController.h"
+#import "LTRecentsTileSizeViewController.h"
 #import "LTWebExporter.h"
 #import "LTPlaylistSelectViewController.h"
+#import "LTHomeViewController.h"
 #import "LTLog.h"
 
 typedef NS_ENUM(NSInteger, LTSettingsSection) {
@@ -258,6 +260,14 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
     return [NSString stringWithFormat:@"%.1fx", multiplier];
 }
 
+- (NSString *)tileSizeLabel {
+    CGFloat width = [[NSUserDefaults standardUserDefaults] floatForKey:@"LTHomeTileSize"];
+    if (width < kHomeTileMinWidth || width > kHomeTileMaxWidth) {
+        width = kHomeTileMinWidth;
+    }
+    return [NSString stringWithFormat:@"%.0f pt", width];
+}
+
 #pragma mark - UITableViewDataSource
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
@@ -275,7 +285,7 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     switch (section) {
-        case LTSettingsSectionPlayback: return 3;
+        case LTSettingsSectionPlayback: return 4;
         case LTSettingsSectionStorage: return 4;
         case LTSettingsSectionAbout: return 2;
         default: return 0;
@@ -301,9 +311,14 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
             } else if (indexPath.row == 1) {
                 cell.textLabel.text = @"Show kbps Counter";
                 cell.accessoryView = [self kbpsSwitch];
-            } else {
+            } else if (indexPath.row == 2) {
                 cell.textLabel.text = @"Transition Speed";
                 cell.detailTextLabel.text = [self speedLabel];
+                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                cell.selectionStyle = UITableViewCellSelectionStyleBlue;
+            } else {
+                cell.textLabel.text = @"Recents Tile Size";
+                cell.detailTextLabel.text = [self tileSizeLabel];
                 cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
                 cell.selectionStyle = UITableViewCellSelectionStyleBlue;
             }
@@ -349,8 +364,11 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     if (indexPath.section == LTSettingsSectionPlayback) {
-        if (indexPath.row == 1) {
+        if (indexPath.row == 2) {
             LTTransitionSpeedViewController *vc = [[LTTransitionSpeedViewController alloc] init];
+            [self.navigationController pushViewController:vc animated:YES];
+        } else if (indexPath.row == 3) {
+            LTRecentsTileSizeViewController *vc = [[LTRecentsTileSizeViewController alloc] init];
             [self.navigationController pushViewController:vc animated:YES];
         }
         return;

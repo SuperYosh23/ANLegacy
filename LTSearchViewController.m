@@ -10,6 +10,7 @@
 #import "LTPlaylistPicker.h"
 #import "LTLocalPlaylistDetailViewController.h"
 #import "LTSpinnerView.h"
+#import "LTGraphics.h"
 #import <QuartzCore/QuartzCore.h>
 
 @interface LTSearchViewController () <UISearchBarDelegate, UITableViewDataSource, UITableViewDelegate,
@@ -23,6 +24,7 @@
 @property (nonatomic, strong) LTTrack *pendingTrack;
 @property (nonatomic, strong) UILabel *emptyLabel;
 @property (nonatomic, assign) BOOL ignorePlaylistChanges;
+@property (nonatomic, assign) BOOL showingHistory;
 @end
 
 @implementation LTSearchViewController
@@ -104,6 +106,8 @@
         [self showLocalPlaylists];
     } else if (self.currentQuery.length && !self.results.count && !self.loading) {
         [self performSearch];
+    } else if (!self.currentQuery.length && !self.showingHistory) {
+        [self showSearchHistory];
     }
 }
 
@@ -136,6 +140,8 @@
     NSString *query = [self.searchBar.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (query.length) {
         [self performSearch];
+    } else {
+        [self showSearchHistory];
     }
 }
 
@@ -161,6 +167,19 @@
     [self promptForPlaylistNameWithTrack:nil];
 }
 
+- (void)showSearchHistory {
+    self.showingHistory = YES;
+    [self.results removeAllObjects];
+    [self.tableView reloadData];
+    NSArray *history = [[LTPlaylistStore sharedStore] searchHistory];
+    if (!history.count) {
+        self.emptyLabel.text = @"No search history yet.\nSearch YouTube above to get started.";
+        self.emptyLabel.hidden = NO;
+    } else {
+        self.emptyLabel.hidden = YES;
+    }
+}
+
 - (void)performSearch {
     if ([self isPlaylistsMode]) {
         [self showLocalPlaylists];
@@ -169,8 +188,13 @@
     [self.searchBar resignFirstResponder];
     NSString *query = self.searchBar.text;
     query = [query stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if (!query.length) return;
+    if (!query.length) {
+        [self showSearchHistory];
+        return;
+    }
+    self.showingHistory = NO;
     self.currentQuery = query;
+    [[LTPlaylistStore sharedStore] recordSearchTerm:query];
     self.loading = YES;
     [self showSpinner:YES];
 
@@ -343,12 +367,15 @@
     searchBar.text = @"";
     self.currentQuery = nil;
     [self.results removeAllObjects];
-    [self.tableView reloadData];
     self.emptyLabel.hidden = YES;
+    [self showSearchHistory];
 }
 
 - (void)searchBarTextDidBeginEditing:(UISearchBar *)searchBar {
     searchBar.showsCancelButton = YES;
+    if (!searchBar.text.length && !self.currentQuery.length) {
+        [self showSearchHistory];
+    }
 }
 
 #pragma mark - UITableViewDataSource
@@ -358,10 +385,50 @@
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    if (self.showingHistory) {
+        NSUInteger count = [[[LTPlaylistStore sharedStore] searchHistory] count];
+        return count ? (NSInteger)count + 1 : 0;
+    }
     return (NSInteger)self.results.count;
 }
 
+- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (self.showingHistory) return 44.0f;
+    return 60.0f;
+}
+
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (self.showingHistory) {
+        static NSString *HistoryCellId = @"LTHistoryCell";
+        NSArray *history = [[LTPlaylistStore sharedStore] searchHistory];
+        NSInteger clearRow = (NSInteger)history.count;
+        if (indexPath.row == clearRow) {
+            UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:HistoryCellId];
+            if (!cell) {
+                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:HistoryCellId];
+            }
+            cell.textLabel.text = @"Clear Search History";
+            cell.textLabel.textAlignment = NSTextAlignmentCenter;
+            cell.textLabel.textColor = [UIColor grayColor];
+            cell.textLabel.font = [UIFont systemFontOfSize:14];
+            cell.imageView.image = nil;
+            cell.accessoryView = nil;
+            return cell;
+        }
+        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:HistoryCellId];
+        if (!cell) {
+            cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:HistoryCellId];
+            cell.textLabel.font = [UIFont systemFontOfSize:15];
+            cell.textLabel.textColor = [UIColor blackColor];
+        }
+        cell.textLabel.textAlignment = NSTextAlignmentLeft;
+        cell.textLabel.text = [history objectAtIndex:(NSUInteger)indexPath.row];
+        cell.textLabel.textColor = [UIColor blackColor];
+        cell.imageView.image = [LTGraphics searchIcon];
+        cell.accessoryView = nil;
+        return cell;
+    }
+
     static NSString *CellId = @"LTMediaCell";
     LTMediaCell *cell = [tableView dequeueReusableCellWithIdentifier:CellId];
     if (!cell) {
@@ -423,10 +490,6 @@
 
 #pragma mark - UITableViewDelegate
 
-- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
-    return 60.0f;
-}
-
 - (BOOL)tableView:(UITableView *)tableView canEditRowAtIndexPath:(NSIndexPath *)indexPath {
     return [self isPlaylistsMode];
 }
@@ -463,6 +526,17 @@
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (self.showingHistory) {
+        NSArray *history = [[LTPlaylistStore sharedStore] searchHistory];
+        if (indexPath.row >= (NSInteger)history.count) {
+            [[LTPlaylistStore sharedStore] clearSearchHistory];
+            [self showSearchHistory];
+            return;
+        }
+        self.searchBar.text = [history objectAtIndex:(NSUInteger)indexPath.row];
+        [self performSearch];
+        return;
+    }
     id item = [self.results objectAtIndex:(NSUInteger)indexPath.row];
     if ([item isKindOfClass:[LTTrack class]]) {
         NSArray *tracks = [self tracksFromResults];

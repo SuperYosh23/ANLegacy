@@ -25,6 +25,9 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
 @property (nonatomic, strong) NSMutableArray *libraryTracks;
 @end
 
+@implementation LTStatsEntry
+@end
+
 @implementation LTPlaylistStore
 
 + (instancetype)sharedStore {
@@ -367,6 +370,164 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
 
 - (NSInteger)listenedSongsCount {
     return (NSInteger)[[self listenedSongIDs] count];
+}
+
+#pragma mark - Search history
+
+- (NSArray *)searchHistory {
+    NSArray *terms = [[NSUserDefaults standardUserDefaults] arrayForKey:@"LTSearchHistory"];
+    if (![terms isKindOfClass:[NSArray class]]) return @[];
+    return terms;
+}
+
+- (void)recordSearchTerm:(NSString *)term {
+    if (!term.length) return;
+    NSMutableArray *terms = [NSMutableArray arrayWithArray:[self searchHistory]];
+    [terms removeObject:term];
+    [terms insertObject:term atIndex:0];
+    if (terms.count > 20) {
+        [terms removeObjectsInRange:NSMakeRange(20, terms.count - 20)];
+    }
+    [[NSUserDefaults standardUserDefaults] setObject:terms forKey:@"LTSearchHistory"];
+}
+
+- (void)clearSearchHistory {
+    [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"LTSearchHistory"];
+}
+
+#pragma mark - Listening stats
+
+- (NSString *)statsFilePath {
+    return [[self baseDirectory] stringByAppendingPathComponent:@"stats.plist"];
+}
+
+- (NSMutableDictionary *)statsFileDict {
+    NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:[self statsFilePath]];
+    if ([dict isKindOfClass:[NSDictionary class]]) {
+        return [NSMutableDictionary dictionaryWithDictionary:dict];
+    }
+    return [NSMutableDictionary dictionary];
+}
+
+- (void)writeStatsFileDict:(NSDictionary *)dict {
+    if (![dict writeToFile:[self statsFilePath] atomically:YES]) {
+        LTLog(@"STATS write failed");
+    }
+}
+
+- (NSMutableDictionary *)statsEntryForVideoId:(NSString *)videoId inDict:(NSMutableDictionary *)dict {
+    if (!videoId.length) return nil;
+    NSMutableDictionary *tracks = [dict objectForKey:@"tracks"];
+    if (![tracks isKindOfClass:[NSMutableDictionary class]]) {
+        tracks = [NSMutableDictionary dictionary];
+        [dict setObject:tracks forKey:@"tracks"];
+    }
+    NSMutableDictionary *entry = [tracks objectForKey:videoId];
+    if (![entry isKindOfClass:[NSMutableDictionary class]]) {
+        entry = [NSMutableDictionary dictionary];
+        [tracks setObject:entry forKey:videoId];
+    }
+    return entry;
+}
+
+- (void)recordTrackPlay:(LTTrack *)track {
+    if (!track.videoId.length) return;
+    NSMutableDictionary *dict = [self statsFileDict];
+    NSMutableDictionary *entry = [self statsEntryForVideoId:track.videoId inDict:dict];
+    NSInteger plays = [[entry objectForKey:@"plays"] integerValue];
+    [entry setObject:@(plays + 1) forKey:@"plays"];
+    [entry setObject:track.title ?: @"" forKey:@"title"];
+    if (track.artist.length) [entry setObject:track.artist forKey:@"artist"];
+    if (track.album.length) [entry setObject:track.album forKey:@"album"];
+    if (track.thumbnailURL.length) [entry setObject:track.thumbnailURL forKey:@"thumbnailURL"];
+    [self writeStatsFileDict:dict];
+}
+
+- (void)recordListenedSeconds:(NSTimeInterval)seconds forTrack:(LTTrack *)track {
+    if (!track.videoId.length || seconds <= 0) return;
+    NSMutableDictionary *dict = [self statsFileDict];
+    NSMutableDictionary *entry = [self statsEntryForVideoId:track.videoId inDict:dict];
+    NSTimeInterval current = [[entry objectForKey:@"seconds"] doubleValue];
+    [entry setObject:@(current + seconds) forKey:@"seconds"];
+    [entry setObject:track.title ?: @"" forKey:@"title"];
+    if (track.artist.length) [entry setObject:track.artist forKey:@"artist"];
+    if (track.album.length) [entry setObject:track.album forKey:@"album"];
+    if (track.thumbnailURL.length) [entry setObject:track.thumbnailURL forKey:@"thumbnailURL"];
+    [self writeStatsFileDict:dict];
+}
+
+- (NSArray *)statsEntries {
+    NSMutableDictionary *dict = [self statsFileDict];
+    NSDictionary *tracks = [dict objectForKey:@"tracks"];
+    if (![tracks isKindOfClass:[NSDictionary class]]) return @[];
+    NSMutableArray *entries = [NSMutableArray array];
+    for (NSString *videoId in tracks) {
+        NSDictionary *data = [tracks objectForKey:videoId];
+        LTStatsEntry *entry = [[LTStatsEntry alloc] init];
+        entry.videoId = videoId;
+        entry.title = [data objectForKey:@"title"];
+        entry.artist = [data objectForKey:@"artist"];
+        entry.thumbnailURL = [data objectForKey:@"thumbnailURL"];
+        entry.plays = [[data objectForKey:@"plays"] integerValue];
+        entry.seconds = [[data objectForKey:@"seconds"] doubleValue];
+        [entries addObject:entry];
+    }
+    return entries;
+}
+
+- (NSArray *)mostPlayedTracks {
+    NSArray *entries = [self statsEntries];
+    return [entries sortedArrayUsingComparator:^NSComparisonResult(LTStatsEntry *a, LTStatsEntry *b) {
+        if (a.plays != b.plays) return (a.plays > b.plays) ? NSOrderedAscending : NSOrderedDescending;
+        if (a.seconds != b.seconds) return (a.seconds > b.seconds) ? NSOrderedAscending : NSOrderedDescending;
+        return [a.title compare:b.title];
+    }];
+}
+
+- (NSArray *)topArtists {
+    NSMutableDictionary *byArtist = [NSMutableDictionary dictionary];
+    for (LTStatsEntry *entry in [self statsEntries]) {
+        NSString *artist = entry.artist.length ? entry.artist : @"Unknown Artist";
+        NSMutableDictionary *agg = [byArtist objectForKey:artist];
+        if (!agg) {
+            agg = [NSMutableDictionary dictionaryWithObjectsAndKeys:
+                   @(0), @"plays", @(0.0), @"seconds", nil];
+            [byArtist setObject:agg forKey:artist];
+        }
+        [agg setObject:@([[agg objectForKey:@"plays"] integerValue] + entry.plays) forKey:@"plays"];
+        [agg setObject:@([[agg objectForKey:@"seconds"] doubleValue] + entry.seconds) forKey:@"seconds"];
+    }
+    NSArray *sorted = [byArtist keysSortedByValueUsingComparator:^NSComparisonResult(id a, id b) {
+        NSTimeInterval sa = [[a objectForKey:@"seconds"] doubleValue];
+        NSTimeInterval sb = [[b objectForKey:@"seconds"] doubleValue];
+        if (sa != sb) return (sa > sb) ? NSOrderedAscending : NSOrderedDescending;
+        NSInteger pa = [[a objectForKey:@"plays"] integerValue];
+        NSInteger pb = [[b objectForKey:@"plays"] integerValue];
+        if (pa != pb) return (pa > pb) ? NSOrderedAscending : NSOrderedDescending;
+        return NSOrderedSame;
+    }];
+    NSMutableArray *result = [NSMutableArray array];
+    for (NSString *artist in sorted) {
+        NSDictionary *agg = [byArtist objectForKey:artist];
+        NSMutableDictionary *row = [NSMutableDictionary dictionary];
+        [row setObject:artist forKey:@"name"];
+        [row setObject:[agg objectForKey:@"plays"] forKey:@"plays"];
+        [row setObject:[agg objectForKey:@"seconds"] forKey:@"seconds"];
+        [result addObject:row];
+    }
+    return result;
+}
+
+- (NSTimeInterval)totalListeningTime {
+    NSTimeInterval total = 0;
+    for (LTStatsEntry *entry in [self statsEntries]) total += entry.seconds;
+    return total;
+}
+
+- (NSInteger)totalPlayCount {
+    NSInteger total = 0;
+    for (LTStatsEntry *entry in [self statsEntries]) total += entry.plays;
+    return total;
 }
 
 - (NSInteger)offlineFileCount {

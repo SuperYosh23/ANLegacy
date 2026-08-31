@@ -27,6 +27,8 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
 @property (nonatomic, copy) NSString *streamVideoId;
 @property (nonatomic, assign) NSInteger streamHTTPStatus;
 @property (nonatomic, assign) NSInteger audioBitrateKbps;
+@property (nonatomic, strong) NSTimer *statsTimer;
+@property (nonatomic, assign) NSTimeInterval statsBaseTime;
 @end
 
 @implementation LTPlayerController
@@ -58,6 +60,12 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
                                                      name:AVAudioSessionInterruptionNotification
                                                    object:nil];
         [self configureAudioSession];
+        self.statsTimer = [NSTimer scheduledTimerWithTimeInterval:5.0
+                                                           target:self
+                                                         selector:@selector(statsTick:)
+                                                         userInfo:nil
+                                                          repeats:YES];
+        [[NSRunLoop mainRunLoop] addTimer:self.statsTimer forMode:NSRunLoopCommonModes];
     }
     return self;
 }
@@ -91,9 +99,32 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
 - (void)playerSeekToTime:(NSTimeInterval)time {
     if (self.moviePlayer) {
         [self.moviePlayer seekToTime:CMTimeMakeWithSeconds(time, NSEC_PER_SEC)];
+        self.statsBaseTime = time;
         return;
     }
     self.audioPlayer.currentTime = time;
+    self.statsBaseTime = time;
+}
+
+#pragma mark - Listening stats
+
+- (void)statsTick:(NSTimer *)timer {
+    [self commitStatsDelta];
+}
+
+- (void)commitStatsDelta {
+    LTTrack *track = [self currentTrack];
+    if (!track || !track.videoId.length) return;
+    NSTimeInterval now = [self playerCurrentTime];
+    if (now <= self.statsBaseTime) {
+        self.statsBaseTime = now;
+        return;
+    }
+    NSTimeInterval delta = now - self.statsBaseTime;
+    self.statsBaseTime = now;
+    if (delta > 0) {
+        [[LTPlaylistStore sharedStore] recordListenedSeconds:delta forTrack:track];
+    }
 }
 
 - (void)startActivePlayer {
@@ -165,6 +196,7 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
     [self configureAudioSession];
     self.isLoading = NO;
     self.userPaused = NO;
+    self.statsBaseTime = [self playerCurrentTime];
     [self startActivePlayer];
     [self updateNowPlayingInfo];
     BOOL keepAwake = [[NSUserDefaults standardUserDefaults] boolForKey:@"LTKeepAwake"];
@@ -173,6 +205,7 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
 }
 
 - (void)pausePlayback {
+    [self commitStatsDelta];
     [self pauseActivePlayer];
     [self updateNowPlayingInfo];
     [[UIApplication sharedApplication] setIdleTimerDisabled:NO];
@@ -240,6 +273,7 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
 
 - (void)playQueue:(NSArray *)tracks atIndex:(NSInteger)index {
     if (!tracks.count) return;
+    [self commitStatsDelta];
     self.sourceQueue = [tracks copy];
     self.queue = [tracks copy];
     if (index < 0) index = 0;
@@ -251,6 +285,7 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
 
 - (void)playQueue:(NSArray *)tracks shuffle:(BOOL)shuffle {
     if (!tracks.count) return;
+    [self commitStatsDelta];
     self.sourceQueue = [tracks copy];
     self.queue = [tracks copy];
     self.shuffleEnabled = shuffle;
@@ -283,6 +318,7 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
 
 - (void)jumpToIndex:(NSInteger)index {
     if (index < 0 || index >= (NSInteger)self.queue.count) return;
+    [self commitStatsDelta];
     self.currentIndex = index;
     [self postQueueChanged];
     [self loadCurrentTrack];
@@ -333,6 +369,8 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
     LTTrack *track = [self currentTrack];
     if (!track) return;
     [[LTPlaylistStore sharedStore] recordRecentTrack:track];
+    [[LTPlaylistStore sharedStore] recordTrackPlay:track];
+    self.statsBaseTime = 0;
     [[NSNotificationCenter defaultCenter] postNotificationName:LTPlayerTrackDidChangeNotification object:self];
 
     self.nowPlayingArtwork = nil;
@@ -487,6 +525,7 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
 }
 
 - (void)nextTrack {
+    [self commitStatsDelta];
     if (self.repeatMode == LTRepeatModeOne && self.currentIndex >= 0) {
         [self loadCurrentTrack];
         return;
@@ -508,6 +547,7 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
 }
 
 - (void)previousTrack {
+    [self commitStatsDelta];
     if (self.currentIndex > 0) {
         self.currentIndex -= 1;
         [self postQueueChanged];

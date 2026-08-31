@@ -3,6 +3,7 @@
 #import "LTPlayerController.h"
 #import "LTTabBarController.h"
 #import "LTLocalPlaylistDetailViewController.h"
+#import "LTStatsViewController.h"
 #import "LTMediaCell.h"
 #import "LTYouTubeClient.h"
 #import "LTModel.h"
@@ -18,6 +19,27 @@
 @implementation LTHomeRecentsCell {
     UIScrollView *_scrollView;
     NSArray *_tracks;
+}
+
+const CGFloat kHomeTileMinWidth = 90.0f;
+const CGFloat kHomeTileMaxWidth = 130.0f;
+const CGFloat kHomeTileArtRatio = 104.0f / 116.0f;
+
++ (CGFloat)tileWidth {
+    CGFloat width = [[NSUserDefaults standardUserDefaults] floatForKey:@"LTHomeTileSize"];
+    if (width < kHomeTileMinWidth || width > kHomeTileMaxWidth) {
+        width = kHomeTileMinWidth;
+        [[NSUserDefaults standardUserDefaults] setFloat:width forKey:@"LTHomeTileSize"];
+    }
+    return width;
+}
+
++ (CGFloat)artworkHeight {
+    return [LTHomeRecentsCell tileWidth] * kHomeTileArtRatio;
+}
+
++ (CGFloat)contentHeight {
+    return [LTHomeRecentsCell artworkHeight] + 54.0f;
 }
 
 - (id)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier {
@@ -49,15 +71,16 @@
     for (UIView *view in _scrollView.subviews) {
         [view removeFromSuperview];
     }
-    CGFloat tileWidth = 116.0f;
+    CGFloat tileWidth = [LTHomeRecentsCell tileWidth];
+    CGFloat artH = [LTHomeRecentsCell artworkHeight];
     CGFloat gap = 10.0f;
     CGFloat x = 10.0f;
     NSUInteger index = 0;
     for (LTTrack *track in tracks) {
-        UIView *tile = [[UIView alloc] initWithFrame:CGRectMake(x, 6, tileWidth, 146)];
+        UIView *tile = [[UIView alloc] initWithFrame:CGRectMake(x, 6, tileWidth, artH + 42)];
 
         UIButton *imageButton = [UIButton buttonWithType:UIButtonTypeCustom];
-        imageButton.frame = CGRectMake(0, 0, tileWidth, 104);
+        imageButton.frame = CGRectMake(0, 0, tileWidth, artH);
         imageButton.backgroundColor = [UIColor colorWithWhite:0.9f alpha:1.0f];
         imageButton.layer.cornerRadius = 8.0f;
         imageButton.clipsToBounds = YES;
@@ -77,14 +100,14 @@
             }];
         }
 
-        UILabel *titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(2, 108, tileWidth - 4, 26)];
+        UILabel *titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(2, artH + 4, tileWidth - 4, 26)];
         titleLabel.font = [UIFont boldSystemFontOfSize:12];
         titleLabel.numberOfLines = 2;
         titleLabel.textColor = [UIColor darkGrayColor];
         titleLabel.text = track.title;
         [tile addSubview:titleLabel];
 
-        UILabel *artistLabel = [[UILabel alloc] initWithFrame:CGRectMake(2, 134, tileWidth - 4, 12)];
+        UILabel *artistLabel = [[UILabel alloc] initWithFrame:CGRectMake(2, artH + 30, tileWidth - 4, 12)];
         artistLabel.font = [UIFont systemFontOfSize:11];
         artistLabel.textColor = [UIColor grayColor];
         artistLabel.text = track.artist.length ? track.artist : @"Unknown Artist";
@@ -95,7 +118,7 @@
         index += 1;
     }
     CGFloat contentWidth = MAX(x, self.contentView.bounds.size.width + 1);
-    _scrollView.contentSize = CGSizeMake(contentWidth, 158);
+    _scrollView.contentSize = CGSizeMake(contentWidth, [LTHomeRecentsCell contentHeight]);
 }
 
 - (void)tileTapped:(UIButton *)button {
@@ -126,6 +149,10 @@
     }
     self.title = @"Home";
     self.view.backgroundColor = [UIColor whiteColor];
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Stats"
+                                                                             style:UIBarButtonItemStyleBordered
+                                                                            target:self
+                                                                            action:@selector(statsTapped:)];
 
     CGRect bounds = self.view.bounds;
     self.tableView = [[UITableView alloc] initWithFrame:CGRectMake(0, 0, bounds.size.width, bounds.size.height)
@@ -216,6 +243,11 @@
 
 - (void)storeDidChange:(NSNotification *)notification {
     [self reloadData];
+}
+
+- (void)statsTapped:(id)sender {
+    LTStatsViewController *stats = [[LTStatsViewController alloc] init];
+    [self.navigationController pushViewController:stats animated:YES];
 }
 
 - (BOOL)hasRecents {
@@ -310,7 +342,7 @@
 #pragma mark - UITableViewDelegate
 
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
-    if ([self hasRecents] && indexPath.section == 0) return 158.0f;
+    if ([self hasRecents] && indexPath.section == 0) return [LTHomeRecentsCell contentHeight];
     return 64.0f;
 }
 

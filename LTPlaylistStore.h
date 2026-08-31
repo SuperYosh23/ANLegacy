@@ -6,6 +6,15 @@ extern NSString *const LTPlaylistTrackDidChangeNotification;
 extern NSString *const LTPlaylistDownloadProgressNotification;
 extern NSString *const LTRecentsDidChangeNotification;
 
+@interface LTStatsEntry : NSObject
+@property (nonatomic, copy) NSString *videoId;
+@property (nonatomic, copy) NSString *title;
+@property (nonatomic, copy) NSString *artist;
+@property (nonatomic, copy) NSString *thumbnailURL;
+@property (nonatomic, assign) NSInteger plays;
+@property (nonatomic, assign) NSTimeInterval seconds;
+@end
+
 @interface LTPlaylistStore : NSObject
 
 + (instancetype)sharedStore;
@@ -28,6 +37,17 @@ extern NSString *const LTRecentsDidChangeNotification;
 - (void)recordRecentTrack:(LTTrack *)track;
 - (NSInteger)listenedSongsCount;
 - (NSInteger)offlineFileCount;
+
+- (NSArray *)searchHistory;
+- (void)recordSearchTerm:(NSString *)term;
+- (void)clearSearchHistory;
+
+- (void)recordTrackPlay:(LTTrack *)track;
+- (void)recordListenedSeconds:(NSTimeInterval)seconds forTrack:(LTTrack *)track;
+- (NSArray *)mostPlayedTracks;
+- (NSArray *)topArtists;
+- (NSTimeInterval)totalListeningTime;
+- (NSInteger)totalPlayCount;
 
 - (NSString *)localFilePathForVideoId:(NSString *)videoId;
 - (NSString *)existingLocalFilePathForVideoId:(NSString *)videoId;
