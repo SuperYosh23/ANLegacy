@@ -40,6 +40,40 @@
         self.tableView.separatorInset = UIEdgeInsetsMake(0, 60, 0, 0);
     }
     [self.view addSubview:self.tableView];
+
+    UIBarButtonItem *shuffleItem = [[UIBarButtonItem alloc] initWithTitle:@"Shuffle"
+                                                                    style:UIBarButtonItemStyleBordered
+                                                                   target:self
+                                                                   action:@selector(shuffleAllTapped)];
+    UIBarButtonItem *playItem = [[UIBarButtonItem alloc] initWithTitle:@"Play All"
+                                                                 style:UIBarButtonItemStyleBordered
+                                                                target:self
+                                                                action:@selector(playAllTapped)];
+    self.navigationItem.rightBarButtonItems = @[shuffleItem, playItem];
+    [self updateToolbarEnabled];
+}
+
+- (void)updateToolbarEnabled {
+    BOOL has = self.tracks.count > 0;
+    for (UIBarButtonItem *item in self.navigationItem.rightBarButtonItems) {
+        item.enabled = has;
+    }
+}
+
+- (void)shuffleAllTapped {
+    if (!self.tracks.count) return;
+    LTPlayerController *player = [LTPlayerController sharedController];
+    player.repeatMode = LTRepeatModeAll;
+    [player playQueue:self.tracks shuffle:YES];
+    [(LTTabBarController *)self.tabBarController showNowPlaying];
+}
+
+- (void)playAllTapped {
+    if (!self.tracks.count) return;
+    LTPlayerController *player = [LTPlayerController sharedController];
+    player.repeatMode = LTRepeatModeAll;
+    [player playQueue:self.tracks atIndex:0];
+    [(LTTabBarController *)self.tabBarController showNowPlaying];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -66,6 +100,7 @@
     }
     self.tracks = stillDownloaded;
     [self.tableView reloadData];
+    [self updateToolbarEnabled];
 }
 
 #pragma mark - UIAlertViewDelegate
@@ -83,6 +118,7 @@
         [self.tableView deleteRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:row inSection:0]]
                               withRowAnimation:UITableViewRowAnimationAutomatic];
         self.ignoreStoreChanges = NO;
+        [self updateToolbarEnabled];
     }
 }
 

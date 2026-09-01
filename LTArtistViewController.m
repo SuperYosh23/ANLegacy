@@ -6,14 +6,16 @@
 #import "LTTrackListViewController.h"
 #import "LTTabBarController.h"
 #import "LTPlayerController.h"
+#import "LTSongMenu.h"
 
-@interface LTArtistViewController ()
+@interface LTArtistViewController () <UIActionSheetDelegate>
 @property (nonatomic, copy) NSString *browseId;
 @property (nonatomic, strong) UITableView *tableView;
 @property (nonatomic, strong) NSArray *topSongs;
 @property (nonatomic, strong) NSArray *albums;
 @property (nonatomic, strong) NSDictionary *info;
 @property (nonatomic, strong) LTHeaderView *headerView;
+@property (nonatomic, strong) LTSongMenu *songMenu;
 @end
 
 @implementation LTArtistViewController
@@ -110,6 +112,10 @@
             cell.detailTextLabel.text = nil;
         }
         cell.accessoryType = UITableViewCellAccessoryNone;
+        UIButton *plus = [UIButton buttonWithType:UIButtonTypeContactAdd];
+        plus.tag = (NSInteger)indexPath.row;
+        [plus addTarget:self action:@selector(songPlusTapped:) forControlEvents:UIControlEventTouchUpInside];
+        cell.accessoryView = plus;
         [cell setImageFromURL:track.thumbnailURL];
     } else {
         LTBrowseItem *album = [self.albums objectAtIndex:(NSUInteger)indexPath.row];
@@ -140,6 +146,14 @@
                                                                                        title:album.title];
         [self.navigationController pushViewController:vc animated:YES];
     }
+}
+
+- (void)songPlusTapped:(UIButton *)button {
+    NSInteger row = (NSInteger)button.tag;
+    if (row < 0 || row >= (NSInteger)self.topSongs.count) return;
+    LTTrack *track = [self.topSongs objectAtIndex:(NSUInteger)row];
+    if (!self.songMenu) self.songMenu = [[LTSongMenu alloc] init];
+    [self.songMenu presentForTrack:track fromViewController:self];
 }
 
 @end

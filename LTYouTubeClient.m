@@ -393,11 +393,42 @@ static id LTPath(id root, id key, ...) {
         }
     }
 
+    if (!title) {
+        id detail = LTPath(json, @"contents", @"twoColumnBrowseResultsRenderer", @"tabs", @0,
+                           @"tabRenderer", @"content", @"sectionListRenderer", @"contents", @0,
+                           @"musicDetailHeaderRenderer", nil);
+        if (![detail isKindOfClass:[NSDictionary class]]) {
+            detail = LTPath(json, @"contents", @"singleColumnBrowseResultsRenderer", @"tabs", @0,
+                            @"tabRenderer", @"content", @"musicDetailHeaderRenderer", nil);
+        }
+        if ([detail isKindOfClass:[NSDictionary class]]) {
+            title = [self textFromRuns:[detail objectForKey:@"title"][@"runs"]];
+            subtitle = [self subtitleForDetailHeader:detail];
+            thumb = [self thumbnailFromHeader:detail];
+        }
+    }
+
     NSMutableDictionary *info = [NSMutableDictionary dictionary];
     if (title.length) [info setObject:title forKey:@"title"];
     if (subtitle.length) [info setObject:subtitle forKey:@"subtitle"];
     if (thumb.length) [info setObject:thumb forKey:@"thumbnail"];
     return info;
+}
+
+- (NSString *)subtitleForDetailHeader:(NSDictionary *)detail {
+    NSMutableArray *parts = [NSMutableArray array];
+    NSArray *s1 = [detail objectForKey:@"subtitle"][@"runs"];
+    for (id run in s1) {
+        if ([run isKindOfClass:[NSDictionary class]]) {
+            NSString *text = [run objectForKey:@"text"];
+            if (text.length) [parts addObject:text];
+        }
+    }
+    id affects = [detail objectForKey:@"subtitle"][@"content"];
+    if ([affects isKindOfClass:[NSString class]] && ((NSString *)affects).length) {
+        [parts addObject:affects];
+    }
+    return [parts componentsJoinedByString:@" · "];
 }
 
 - (NSString *)thumbnailFromHeader:(NSDictionary *)header {

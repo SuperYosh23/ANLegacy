@@ -157,13 +157,44 @@ typedef NS_ENUM(NSInteger, LTLibrarySegment) {
 
 - (void)updateRightBarButton {
     if (self.currentSegment == LTLibrarySegmentPlaylists) {
+        self.navigationItem.leftBarButtonItem = nil;
         self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAdd
                                                                                                target:self
                                                                                                action:@selector(newPlaylistTapped:)];
         self.navigationItem.rightBarButtonItem.style = UIBarButtonItemStyleBordered;
+    } else if (self.currentSegment == LTLibrarySegmentSongs) {
+        UIBarButtonItem *shuffleItem = [[UIBarButtonItem alloc] initWithTitle:@"Shuffle"
+                                                                        style:UIBarButtonItemStyleBordered
+                                                                       target:self
+                                                                       action:@selector(shuffleAllTapped)];
+        UIBarButtonItem *playItem = [[UIBarButtonItem alloc] initWithTitle:@"Play All"
+                                                                     style:UIBarButtonItemStyleBordered
+                                                                    target:self
+                                                                    action:@selector(playAllTapped)];
+        shuffleItem.enabled = self.songs.count > 0;
+        playItem.enabled = self.songs.count > 0;
+        self.navigationItem.leftBarButtonItem = shuffleItem;
+        self.navigationItem.rightBarButtonItem = playItem;
     } else {
+        self.navigationItem.leftBarButtonItem = nil;
         self.navigationItem.rightBarButtonItem = nil;
     }
+}
+
+- (void)shuffleAllTapped {
+    if (!self.songs.count) return;
+    LTPlayerController *player = [LTPlayerController sharedController];
+    player.repeatMode = LTRepeatModeAll;
+    [player playQueue:self.songs shuffle:YES];
+    [(LTTabBarController *)self.tabBarController showNowPlaying];
+}
+
+- (void)playAllTapped {
+    if (!self.songs.count) return;
+    LTPlayerController *player = [LTPlayerController sharedController];
+    player.repeatMode = LTRepeatModeAll;
+    [player playQueue:self.songs atIndex:0];
+    [(LTTabBarController *)self.tabBarController showNowPlaying];
 }
 
 - (void)refreshEmptyState {
