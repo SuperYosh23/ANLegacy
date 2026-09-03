@@ -23,6 +23,7 @@ LegacyMusic_FILES = main.m \
 	LTSongMenu.m \
 	LTSyncServer.m \
 	LTWirelessSync.m \
+	LTP2PSync.m \
 	LTLocalPlaylistDetailViewController.m \
 	LTMediaCell.m \
 	LTHeaderView.m \

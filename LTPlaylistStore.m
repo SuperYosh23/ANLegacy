@@ -905,4 +905,164 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     return YES;
 }
 
+#pragma mark - Full-state sync (phone-to-phone)
+
+- (NSArray *)librarySyncArray {
+    NSMutableArray *result = [NSMutableArray array];
+    for (LTTrack *track in self.libraryTracks) {
+        [result addObject:[track dictionaryRepresentation]];
+    }
+    return result;
+}
+
+- (NSArray *)recentsSyncArray {
+    NSMutableArray *result = [NSMutableArray array];
+    for (LTTrack *track in [self recentTracks]) {
+        [result addObject:[track dictionaryRepresentation]];
+    }
+    return result;
+}
+
+- (NSDictionary *)statsSyncDict {
+    NSMutableDictionary *dict = [self statsFileDict];
+    NSDictionary *tracks = [dict objectForKey:@"tracks"];
+    if (![tracks isKindOfClass:[NSDictionary class]]) return dict;
+    // Trim the payload: only ship fields the other side needs to merge.
+    NSMutableDictionary *trimmedTracks = [NSMutableDictionary dictionary];
+    for (NSString *videoId in tracks) {
+        NSDictionary *entry = [tracks objectForKey:videoId];
+        if (![entry isKindOfClass:[NSDictionary class]]) continue;
+        NSMutableDictionary *trimmed = [NSMutableDictionary dictionary];
+        trimmed[@"title"] = entry[@"title"] ?: @"";
+        trimmed[@"artist"] = entry[@"artist"] ?: @"";
+        trimmed[@"album"] = entry[@"album"] ?: @"";
+        trimmed[@"thumbnailURL"] = entry[@"thumbnailURL"] ?: @"";
+        trimmed[@"plays"] = @([[entry objectForKey:@"plays"] integerValue]);
+        trimmed[@"seconds"] = @([[entry objectForKey:@"seconds"] doubleValue]);
+        [trimmedTracks setObject:trimmed forKey:videoId];
+    }
+    [dict setObject:trimmedTracks forKey:@"tracks"];
+    return dict;
+}
+
+- (NSDictionary *)syncPayload {
+    return @{
+        @"version": @1,
+        @"deviceId": [self syncDeviceId],
+        @"timestamp": @([[NSDate date] timeIntervalSince1970]),
+        @"playlists": [self syncArrayRepresentation],
+        @"library": [self librarySyncArray],
+        @"recents": [self recentsSyncArray],
+        @"stats": [self statsSyncDict],
+        @"listenedIds": [self listenedSongIDs],
+    };
+}
+
+- (NSString *)syncDeviceId {
+    NSString *deviceId = [[NSUserDefaults standardUserDefaults] stringForKey:@"LTSyncDeviceId"];
+    if (!deviceId.length) {
+        deviceId = [[[UIDevice currentDevice] identifierForVendor] UUIDString];
+        if (!deviceId.length) deviceId = [[NSUUID UUID] UUIDString];
+        [[NSUserDefaults standardUserDefaults] setObject:deviceId forKey:@"LTSyncDeviceId"];
+    }
+    return deviceId;
+}
+
+- (void)mergeSyncPayload:(NSDictionary *)payload {
+    if (![payload isKindOfClass:[NSDictionary class]]) return;
+    BOOL changed = NO;
+
+    NSArray *playlists = payload[@"playlists"];
+    if ([playlists isKindOfClass:[NSArray class]]) {
+        NSInteger m = [self mergeSyncArray:playlists];
+        if (m > 0) changed = YES;
+    }
+
+    NSArray *library = payload[@"library"];
+    if ([library isKindOfClass:[NSArray class]]) {
+        for (NSDictionary *dict in library) {
+            if (![dict isKindOfClass:[NSDictionary class]]) continue;
+            LTTrack *track = [LTTrack trackWithDictionary:dict];
+            if (!track.videoId.length) continue;
+            [self addTrackToLibrary:track];
+            changed = YES; // addTrackToLibrary is itself idempotent/updating
+        }
+    }
+
+    NSArray *recents = payload[@"recents"];
+    if ([recents isKindOfClass:[NSArray class]]) {
+        // Merge recents newest-first, de-duplicating by videoId.
+        NSMutableArray *merged = [NSMutableArray array];
+        NSMutableSet *seen = [NSMutableSet set];
+        for (NSDictionary *dict in recents) {
+            if (![dict isKindOfClass:[NSDictionary class]]) continue;
+            LTTrack *track = [LTTrack trackWithDictionary:dict];
+            if (!track.videoId.length || [seen containsObject:track.videoId]) continue;
+            [seen addObject:track.videoId];
+            [merged addObject:[track dictionaryRepresentation]];
+        }
+        for (LTTrack *local in [self recentTracks]) {
+            if ([seen containsObject:local.videoId]) continue;
+            [seen addObject:local.videoId];
+            [merged addObject:[local dictionaryRepresentation]];
+        }
+        if (merged.count > 20) {
+            [merged removeObjectsInRange:NSMakeRange(20, merged.count - 20)];
+        }
+        [merged writeToFile:[self recentsFilePath] atomically:YES];
+        changed = YES;
+    }
+
+    NSDictionary *stats = payload[@"stats"];
+    if ([stats isKindOfClass:[NSDictionary class]]) {
+        NSDictionary *incomingTracks = [stats objectForKey:@"tracks"];
+        if ([incomingTracks isKindOfClass:[NSDictionary class]]) {
+            NSMutableDictionary *dict = [self statsFileDict];
+            // Merge each incoming entry, taking the max plays/seconds so both
+            // devices' listening history is preserved rather than overwritten.
+            for (NSString *videoId in incomingTracks) {
+                NSDictionary *incoming = [incomingTracks objectForKey:videoId];
+                if (![incoming isKindOfClass:[NSDictionary class]]) continue;
+                NSMutableDictionary *entry = [self statsEntryForVideoId:videoId inDict:dict];
+                NSInteger inPlays = [[incoming objectForKey:@"plays"] integerValue];
+                NSInteger localPlays = [[entry objectForKey:@"plays"] integerValue];
+                if (inPlays > localPlays) [entry setObject:@(inPlays) forKey:@"plays"];
+                double inSeconds = [[incoming objectForKey:@"seconds"] doubleValue];
+                double localSeconds = [[entry objectForKey:@"seconds"] doubleValue];
+                if (inSeconds > localSeconds) [entry setObject:@(inSeconds) forKey:@"seconds"];
+                // Fill missing metadata.
+                if (![[entry objectForKey:@"title"] length]) [entry setObject:incoming[@"title"] ?: @"" forKey:@"title"];
+                if (![[entry objectForKey:@"artist"] length]) [entry setObject:incoming[@"artist"] ?: @"" forKey:@"artist"];
+                if (![[entry objectForKey:@"album"] length]) [entry setObject:incoming[@"album"] ?: @"" forKey:@"album"];
+                if (![[entry objectForKey:@"thumbnailURL"] length]) [entry setObject:incoming[@"thumbnailURL"] ?: @"" forKey:@"thumbnailURL"];
+            }
+            [self writeStatsFileDict:dict];
+            changed = YES;
+        }
+    }
+
+    NSArray *listenedIds = payload[@"listenedIds"];
+    if ([listenedIds isKindOfClass:[NSArray class]]) {
+        NSMutableArray *ids = [NSMutableArray arrayWithArray:[self listenedSongIDs]];
+        BOOL idChanged = NO;
+        for (NSObject *obj in listenedIds) {
+            if (![obj isKindOfClass:[NSString class]]) continue;
+            NSString *vid = (NSString *)obj;
+            if (vid.length && ![ids containsObject:vid]) {
+                [ids addObject:vid];
+                idChanged = YES;
+            }
+        }
+        if (idChanged) {
+            [[NSUserDefaults standardUserDefaults] setObject:ids forKey:kLTListenedSongIDsKey];
+            changed = YES;
+        }
+    }
+
+    [self postPlaylistsChanged];
+    if (changed) {
+        LTLog(@"SYNC merged full payload (%d playlists)", (int)self.playlists.count);
+    }
+}
+
 @end

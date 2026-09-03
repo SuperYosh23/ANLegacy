@@ -208,6 +208,111 @@ static id LTPath(id root, id key, ...) {
     }];
 }
 
+- (void)searchVideosWithQuery:(NSString *)query
+                   completion:(void (^)(NSArray *tracks, NSError *error))completion {
+    if (!query.length) {
+        if (completion) completion(nil, [self errorWithCode:1 message:@"Empty search"]);
+        return;
+    }
+    NSMutableDictionary *body = [NSMutableDictionary dictionaryWithDictionary:@{
+        @"context": [self webContext],
+        @"query": query,
+    }];
+    NSString *p = [[self class] searchParamsForType:@"videos"];
+    if (p.length) [body setObject:p forKey:@"params"];
+
+    [self postToHost:@"www.youtube.com" path:@"search" body:body completion:^(id json, NSError *error) {
+        if (error || !json) {
+            if (completion) completion(nil, error);
+            return;
+        }
+        NSMutableArray *tracks = [NSMutableArray array];
+        [self enumerateRenderersIn:json key:@"videoRenderer" block:^(NSDictionary *renderer) {
+            LTTrack *track = [self trackFromVideoRenderer:renderer];
+            if (track) [tracks addObject:track];
+        }];
+        if (tracks.count) {
+            if (completion) completion(tracks, nil);
+            return;
+        }
+        NSMutableDictionary *fallbackBody = [NSMutableDictionary dictionaryWithDictionary:@{
+            @"context": [self androidContext],
+            @"query": query,
+        }];
+        if (p.length) [fallbackBody setObject:p forKey:@"params"];
+        [self postToHost:@"www.youtube.com" path:@"search" body:fallbackBody completion:^(id fallbackJson, NSError *fallbackError) {
+            if (fallbackError || !fallbackJson) {
+                if (completion) completion(tracks, nil);
+                return;
+            }
+            [self enumerateRenderersIn:fallbackJson key:@"compactVideoRenderer" block:^(NSDictionary *renderer) {
+                LTTrack *track = [self trackFromCompactVideoRenderer:renderer];
+                if (track) [tracks addObject:track];
+            }];
+            if (completion) completion(tracks, nil);
+        }];
+    }];
+}
+
+- (NSDictionary *)webContext {
+    return @{
+        @"client": @{
+            @"clientName": @"WEB",
+            @"clientVersion": @"2.20241112.00.00",
+            @"gl": @"US",
+            @"hl": @"en",
+        }
+    };
+}
+
+- (LTTrack *)trackFromVideoRenderer:(NSDictionary *)renderer {
+    NSString *videoId = [renderer objectForKey:@"videoId"];
+    if (![videoId isKindOfClass:[NSString class]] || !videoId.length) return nil;
+    id titleObj = [renderer objectForKey:@"title"];
+    NSString *title = [self textFromRuns:titleObj[@"runs"]];
+    if (!title.length) title = titleObj[@"simpleText"];
+    if (!title.length) return nil;
+
+    LTTrack *track = [[LTTrack alloc] init];
+    track.title = title;
+    track.videoId = videoId;
+    track.thumbnailURL = [self compatThumbnailURL:[self videoThumbnailURL:renderer] videoId:videoId];
+    NSString *lengthText = LTPath(renderer, @"lengthText", @"simpleText", nil);
+    if (![lengthText isKindOfClass:[NSString class]]) lengthText = LTPath(renderer, @"lengthText", @"runs", @0, @"text", nil);
+    if (lengthText.length) track.duration = [[self class] timeFromString:lengthText];
+    NSArray *ownerRuns = LTPath(renderer, @"ownerText", @"runs", nil);
+    NSArray *parts = [self filteredRuns:ownerRuns];
+    if (parts.count) track.artist = [parts objectAtIndex:0];
+    return track;
+}
+
+- (LTTrack *)trackFromCompactVideoRenderer:(NSDictionary *)renderer {
+    NSString *videoId = [renderer objectForKey:@"videoId"];
+    if (![videoId isKindOfClass:[NSString class]] || !videoId.length) return nil;
+    id titleObj = [renderer objectForKey:@"title"];
+    NSString *title = [self textFromRuns:titleObj[@"runs"]];
+    if (!title.length) title = titleObj[@"simpleText"];
+    if (!title.length) return nil;
+
+    LTTrack *track = [[LTTrack alloc] init];
+    track.title = title;
+    track.videoId = videoId;
+    track.thumbnailURL = [self compatThumbnailURL:[self videoThumbnailURL:renderer] videoId:videoId];
+    NSString *lengthText = LTPath(renderer, @"lengthText", @"simpleText", nil);
+    if (![lengthText isKindOfClass:[NSString class]]) lengthText = LTPath(renderer, @"lengthText", @"runs", @0, @"text", nil);
+    if (lengthText.length) track.duration = [[self class] timeFromString:lengthText];
+    NSArray *bylineRuns = LTPath(renderer, @"longBylineText", @"runs", nil);
+    NSArray *parts = [self filteredRuns:bylineRuns];
+    if (!parts.count) parts = [self filteredRuns:LTPath(renderer, @"shortBylineText", @"runs", nil)];
+    if (parts.count) track.artist = [parts objectAtIndex:0];
+    return track;
+}
+
+- (NSString *)videoThumbnailURL:(NSDictionary *)renderer {
+    NSArray *thumbs = LTPath(renderer, @"thumbnail", @"thumbnails", nil);
+    return [self largestThumbnailURLFromArray:thumbs];
+}
+
 - (NSArray *)parseSearchResults:(NSDictionary *)json {
     NSArray *sections = LTPath(json, @"contents", @"tabbedSearchResultsRenderer", @"tabs", @0,
                                @"tabRenderer", @"content", @"sectionListRenderer", @"contents", nil);

@@ -7,4 +7,6 @@
 + (CGFloat)speedMultiplier;
 + (void)setSpeedMultiplier:(CGFloat)multiplier;
 + (CGFloat)durationFor:(CGFloat)baseDuration;
++ (BOOL)animationsEnabled;
++ (void)setAnimationsEnabled:(BOOL)enabled;
 @end

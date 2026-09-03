@@ -14,6 +14,9 @@ extern NSString *const LTBrowserUserAgent;
 - (void)searchWithQuery:(NSString *)query type:(NSString *)type
              completion:(void (^)(NSArray *items, NSError *error))completion;
 
+- (void)searchVideosWithQuery:(NSString *)query
+                   completion:(void (^)(NSArray *tracks, NSError *error))completion;
+
 - (void)browseAlbum:(NSString *)browseId
          completion:(void (^)(NSDictionary *info, NSArray *tracks, NSError *error))completion;
 

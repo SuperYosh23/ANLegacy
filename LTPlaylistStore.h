@@ -76,4 +76,14 @@ extern NSString *const LTRecentsDidChangeNotification;
 - (NSArray *)syncArrayRepresentation;
 - (NSInteger)mergeSyncArray:(NSArray *)incomingArray;
 
+// Full-state sync used for phone-to-phone peer sync: playlists + library +
+// recents + listening stats + known-listened song ids.
+- (NSDictionary *)syncPayload;
+- (void)mergeSyncPayload:(NSDictionary *)payload;
+
+// Sub-representations composing the full payload.
+- (NSArray *)librarySyncArray;
+- (NSArray *)recentsSyncArray;
+- (NSDictionary *)statsSyncDict;
+
 @end

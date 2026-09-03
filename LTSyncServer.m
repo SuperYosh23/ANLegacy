@@ -6,7 +6,7 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 
-static NSString * const LTServiceType = @"_anlegacy-sync._tcp.";
+static NSString * const LTDefaultServiceType = @"_anlegacy-sync._tcp.";
 static const NSTimeInterval LTSyncIdleTimeout = 120.0;
 
 @interface LTSyncServer () <NSNetServiceDelegate>
@@ -19,6 +19,7 @@ static const NSTimeInterval LTSyncIdleTimeout = 120.0;
     BOOL _stopping;
     NSUInteger _port;
     NSNetService *_service;
+    NSString *_serviceType;
 }
 
 - (id)init {
@@ -31,6 +32,10 @@ static const NSTimeInterval LTSyncIdleTimeout = 120.0;
 
 - (NSUInteger)port {
     return _port;
+}
+
+- (NSString *)serviceType {
+    return _serviceType ?: LTDefaultServiceType;
 }
 
 - (BOOL)start:(NSError **)error {
@@ -110,7 +115,7 @@ static const NSTimeInterval LTSyncIdleTimeout = 120.0;
 // Runs on _netThread.
 - (void)publishServiceLoop {
     @autoreleasepool {
-        NSNetService *service = [[NSNetService alloc] initWithDomain:@"" type:LTServiceType name:@"" port:(NSInteger)_port];
+        NSNetService *service = [[NSNetService alloc] initWithDomain:@"" type:[self serviceType] name:@"" port:(NSInteger)_port];
         service.delegate = self;
         _service = service;
         [service scheduleInRunLoop:[NSRunLoop currentRunLoop] forMode:NSDefaultRunLoopMode];
@@ -155,25 +160,27 @@ static const NSTimeInterval LTSyncIdleTimeout = 120.0;
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
         NSMutableData *buffer = [NSMutableData data];
-        NSData *request = [self readRequestIntoBuffer:buffer fd:fd];
         NSString *method = @"", *path = @"";
         NSData *body = nil;
-        BOOL parsed = [self parseRequest:request method:&method path:&path body:&body];
-
+        BOOL parsed = NO;
         NSInteger status = 500;
         NSData *responseBody = nil;
-        if (!parsed) {
-            status = 400;
-        } else if (self.requestHandler) {
-            @try {
+        @try {
+            NSData *request = [self readRequestIntoBuffer:buffer fd:fd];
+            parsed = [self parseRequest:request method:&method path:&path body:&body];
+
+            if (!parsed) {
+                status = 400;
+            } else if (self.requestHandler) {
                 responseBody = self.requestHandler(method, path, body, &status);
                 if (status == 0) status = 200;
-            } @catch (NSException *e) {
-                LTLog(@"SYNC handler exception %@", e);
-                status = 500;
+            } else {
+                status = 404;
             }
-        } else {
-            status = 404;
+        } @catch (NSException *e) {
+            // Never let a malformed/oversized request crash the server.
+            LTLog(@"SYNC connection exception %@ %@", e.name, e.reason);
+            status = parsed ? 500 : 400;
         }
 
         if (!_stopping && self.onConnectionFinished) {

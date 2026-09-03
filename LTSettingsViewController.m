@@ -2,6 +2,7 @@
 #import "LTPlaylistStore.h"
 #import "LTPlayerController.h"
 #import "LTWirelessSync.h"
+#import "LTP2PSync.h"
 #import "LTTransitionSettings.h"
 #import "LTTransitionSpeedViewController.h"
 #import "LTRecentsTileSizeViewController.h"
@@ -12,14 +13,16 @@
 
 typedef NS_ENUM(NSInteger, LTSettingsSection) {
     LTSettingsSectionPlayback = 0,
-    LTSettingsSectionStorage,
-    LTSettingsSectionAbout,
+    LTSettingsSectionAppearance,
+    LTSettingsSectionData,
 };
 
 @interface LTSettingsViewController () <UITableViewDataSource, UITableViewDelegate, UIAlertViewDelegate, UIActionSheetDelegate>
 @property (nonatomic, strong) UITableView *tableView;
 @property (nonatomic, strong) UISwitch *awakeSwitch;
 @property (nonatomic, strong) UISwitch *kbpsSwitch;
+@property (nonatomic, strong) UISwitch *bgSwitch;
+@property (nonatomic, strong) UISwitch *animSwitch;
 @property (nonatomic, strong) UIAlertView *progressAlert;
 @property (nonatomic, assign) BOOL refreshingMetadata;
 @end
@@ -76,6 +79,44 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
 
 - (void)kbpsChanged:(id)sender {
     [[NSUserDefaults standardUserDefaults] setBool:self.kbpsSwitch.on forKey:@"LTShowKbpsCounter"];
+}
+
+- (UISwitch *)bgSwitch {
+    if (!_bgSwitch) {
+        _bgSwitch = [[UISwitch alloc] init];
+        _bgSwitch.on = [self artworkBackgroundEnabled];
+        [_bgSwitch addTarget:self action:@selector(bgChanged:) forControlEvents:UIControlEventValueChanged];
+    }
+    return _bgSwitch;
+}
+
+- (void)bgChanged:(id)sender {
+    [[NSUserDefaults standardUserDefaults] setBool:self.bgSwitch.on forKey:@"LTPlayerArtworkBackground"];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
+- (BOOL)artworkBackgroundEnabled {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    if ([defaults objectForKey:@"LTPlayerArtworkBackground"] == nil) {
+        BOOL modern = ([UIDevice currentDevice].systemVersion.intValue >= 7);
+        [defaults setBool:modern forKey:@"LTPlayerArtworkBackground"];
+        [defaults synchronize];
+        return modern;
+    }
+    return [defaults boolForKey:@"LTPlayerArtworkBackground"];
+}
+
+- (UISwitch *)animSwitch {
+    if (!_animSwitch) {
+        _animSwitch = [[UISwitch alloc] init];
+        _animSwitch.on = [LTTransitionSettings animationsEnabled];
+        [_animSwitch addTarget:self action:@selector(animChanged:) forControlEvents:UIControlEventValueChanged];
+    }
+    return _animSwitch;
+}
+
+- (void)animChanged:(id)sender {
+    [LTTransitionSettings setAnimationsEnabled:self.animSwitch.on];
 }
 
 #pragma mark - Storage
@@ -276,18 +317,18 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
     switch (section) {
-        case LTSettingsSectionPlayback: return @"Playback";
-        case LTSettingsSectionStorage: return @"Storage";
-        case LTSettingsSectionAbout: return @"About";
+        case LTSettingsSectionPlayback: return @"Playback options";
+        case LTSettingsSectionAppearance: return @"Appearance options";
+        case LTSettingsSectionData: return @"Data management";
         default: return @"";
     }
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     switch (section) {
-        case LTSettingsSectionPlayback: return 4;
-        case LTSettingsSectionStorage: return 4;
-        case LTSettingsSectionAbout: return 2;
+        case LTSettingsSectionPlayback: return 2;
+        case LTSettingsSectionAppearance: return 4;
+        case LTSettingsSectionData: return 5;
         default: return 0;
     }
 }
@@ -308,9 +349,21 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
             if (indexPath.row == 0) {
                 cell.textLabel.text = @"Keep Screen Awake";
                 cell.accessoryView = [self awakeSwitch];
-            } else if (indexPath.row == 1) {
+            } else {
                 cell.textLabel.text = @"Show kbps Counter";
                 cell.accessoryView = [self kbpsSwitch];
+            }
+            break;
+        }
+        case LTSettingsSectionAppearance: {
+            if (indexPath.row == 0) {
+                cell.textLabel.text = @"Album Art Background";
+                cell.detailTextLabel.text = @"";
+                cell.accessoryView = [self bgSwitch];
+            } else if (indexPath.row == 1) {
+                cell.textLabel.text = @"Enable Animations";
+                cell.detailTextLabel.text = @"";
+                cell.accessoryView = [self animSwitch];
             } else if (indexPath.row == 2) {
                 cell.textLabel.text = @"Transition Speed";
                 cell.detailTextLabel.text = [self speedLabel];
@@ -324,32 +377,25 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
             }
             break;
         }
-        case LTSettingsSectionStorage: {
+        case LTSettingsSectionData: {
             LTPlaylistStore *store = [LTPlaylistStore sharedStore];
             if (indexPath.row == 0) {
                 cell.textLabel.text = @"Offline Downloads";
                 cell.detailTextLabel.text = [NSString stringWithFormat:@"%d files", (int)[store offlineFileCount]];
             } else if (indexPath.row == 1) {
-                cell.textLabel.text = @"Refresh Metadata & Artwork";
+                cell.textLabel.text = @"Sync with Another Phone";
+                cell.detailTextLabel.text = @"";
                 cell.selectionStyle = UITableViewCellSelectionStyleBlue;
             } else if (indexPath.row == 2) {
+                cell.textLabel.text = @"Refresh Metadata & Artwork";
+                cell.selectionStyle = UITableViewCellSelectionStyleBlue;
+            } else if (indexPath.row == 3) {
                 cell.textLabel.text = @"Create AN Mini Instance (BETA)";
                 cell.selectionStyle = UITableViewCellSelectionStyleBlue;
             } else {
                 cell.textLabel.text = @"Clear Offline Downloads";
                 cell.textLabel.textColor = [UIColor redColor];
                 cell.selectionStyle = UITableViewCellSelectionStyleBlue;
-            }
-            break;
-        }
-        case LTSettingsSectionAbout: {
-            if (indexPath.row == 0) {
-                cell.textLabel.text = @"App";
-                cell.detailTextLabel.text = @"LegacyMusic";
-            } else {
-                cell.textLabel.text = @"Version";
-                NSString *version = [[[NSBundle mainBundle] infoDictionary] objectForKey:@"CFBundleVersion"];
-                cell.detailTextLabel.text = version.length ? version : @"0.1.0";
             }
             break;
         }
@@ -363,7 +409,7 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    if (indexPath.section == LTSettingsSectionPlayback) {
+    if (indexPath.section == LTSettingsSectionAppearance) {
         if (indexPath.row == 2) {
             LTTransitionSpeedViewController *vc = [[LTTransitionSpeedViewController alloc] init];
             [self.navigationController pushViewController:vc animated:YES];
@@ -373,12 +419,14 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
         }
         return;
     }
-    if (indexPath.section == LTSettingsSectionStorage) {
+    if (indexPath.section == LTSettingsSectionData) {
         if (indexPath.row == 1) {
-            [self refreshMetadataTapped];
+            [LTP2PSync beginFromViewController:self];
         } else if (indexPath.row == 2) {
-            [self exportToWebTapped];
+            [self refreshMetadataTapped];
         } else if (indexPath.row == 3) {
+            [self exportToWebTapped];
+        } else if (indexPath.row == 4) {
             [self clearDownloadsTapped];
         }
         return;

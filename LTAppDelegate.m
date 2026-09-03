@@ -12,7 +12,16 @@
 
 @implementation LTAppDelegate
 
+static void LTUncaughtExceptionHandler(NSException *e) {
+    NSString *path = @"/tmp/lt_crash.txt";
+    NSString *text = [NSString stringWithFormat:@"REASON: %@\nNAME: %@\nCALLSTACK:\n%@\n",
+                      e.reason, e.name, [e callStackSymbols]];
+    [text writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    LTLog(@"UNCAUGHT EXCEPTION %@ %@\n%@", e.name, e.reason, e.callStackSymbols);
+}
+
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
+    NSSetUncaughtExceptionHandler(&LTUncaughtExceptionHandler);
     AVAudioSession *session = [AVAudioSession sharedInstance];
     [session setCategory:AVAudioSessionCategoryPlayback error:NULL];
     [session setActive:YES error:NULL];

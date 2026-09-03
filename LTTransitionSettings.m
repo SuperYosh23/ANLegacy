@@ -1,8 +1,22 @@
 #import "LTTransitionSettings.h"
 
 static NSString *const LTTransitionSpeedKey = @"LTTransitionSpeed";
+static NSString *const LTAnimationsEnabledKey = @"LTAnimationsEnabled";
 
 @implementation LTTransitionSettings
+
++ (BOOL)animationsEnabled {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    if ([defaults objectForKey:LTAnimationsEnabledKey] == nil) {
+        [defaults setBool:YES forKey:LTAnimationsEnabledKey];
+        return YES;
+    }
+    return [defaults boolForKey:LTAnimationsEnabledKey];
+}
+
++ (void)setAnimationsEnabled:(BOOL)enabled {
+    [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:LTAnimationsEnabledKey];
+}
 
 + (CGFloat)speedMultiplier {
     id stored = [[NSUserDefaults standardUserDefaults] objectForKey:LTTransitionSpeedKey];

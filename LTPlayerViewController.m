@@ -1,4 +1,5 @@
 #import <QuartzCore/QuartzCore.h>
+#import <CoreGraphics/CoreGraphics.h>
 #import "LTPlayerViewController.h"
 #import "LTPlayerController.h"
 #import "LTQueueViewController.h"
@@ -7,6 +8,9 @@
 #import "LTLog.h"
 
 @interface LTPlayerViewController ()
+@property (nonatomic, strong) UIImageView *backgroundImageView;
+@property (nonatomic, strong) UIView *scrimView;
+@property (nonatomic, strong) NSCache *blurCache;
 @property (nonatomic, strong) UIImageView *artworkView;
 @property (nonatomic, strong) UIImageView *incomingArtworkView;
 @property (nonatomic, strong) UILabel *titleLabel;
@@ -40,6 +44,9 @@
     self.title = @"Now Playing";
     self.view.backgroundColor = [UIColor colorWithWhite:0.15f alpha:1.0f];
     LTLog(@"PLAYER_VC bounds=%d x %d", (int)self.view.bounds.size.width, (int)self.view.bounds.size.height);
+
+    self.blurCache = [[NSCache alloc] init];
+    [self applyArtworkBackgroundPref];
 
     self.incomingArtworkView = [[UIImageView alloc] init];
     self.incomingArtworkView.backgroundColor = [UIColor colorWithWhite:0.25f alpha:1.0f];
@@ -265,10 +272,10 @@
 
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
+    if (self.backgroundImageView) self.backgroundImageView.frame = self.view.bounds;
+    if (self.scrimView) self.scrimView.frame = self.view.bounds;
     [self layoutControls];
-}
-
-- (void)layoutControls {
+}- (void)layoutControls {
     if (self.panning) return;
     CGFloat width = self.view.bounds.size.width;
     CGFloat height = self.view.bounds.size.height;
@@ -313,6 +320,7 @@
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    [self applyArtworkBackgroundPref];
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(trackDidChange:)
                                                  name:LTPlayerTrackDidChangeNotification
@@ -344,6 +352,7 @@
         self.titleLabel.text = @"Nothing playing";
         self.artistLabel.text = @"";
         self.artworkView.image = nil;
+        if (self.backgroundImageView) self.backgroundImageView.image = nil;
         return;
     }
     self.titleLabel.text = track.title;
@@ -361,7 +370,7 @@
         NSString *artURL = [[LTYouTubeClient sharedClient] highResThumbnailURL:track.thumbnailURL];
         [[LTYouTubeClient sharedClient] loadImageWithURL:artURL completion:^(UIImage *image) {
             if (image && [track.videoId isEqualToString:[[LTPlayerController sharedController] currentTrack].videoId]) {
-                self.artworkView.image = image;
+                [self setArtworkImage:image forVideoId:track.videoId];
             }
         }];
     } else {
@@ -373,12 +382,160 @@
             NSString *artURL = [[LTYouTubeClient sharedClient] highResThumbnailURL:thumbnailURL];
             [[LTYouTubeClient sharedClient] loadImageWithURL:artURL completion:^(UIImage *image) {
                 if (image && [track.videoId isEqualToString:[[LTPlayerController sharedController] currentTrack].videoId]) {
-                    strongSelf.artworkView.image = image;
+                    [strongSelf setArtworkImage:image forVideoId:track.videoId];
                 }
             }];
         }];
     }
     [self refreshControls];
+}
+
+- (BOOL)artworkBackgroundEnabled {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    if ([defaults objectForKey:@"LTPlayerArtworkBackground"] == nil) {
+        BOOL modern = ([UIDevice currentDevice].systemVersion.intValue >= 7);
+        [defaults setBool:modern forKey:@"LTPlayerArtworkBackground"];
+        return modern;
+    }
+    return [defaults boolForKey:@"LTPlayerArtworkBackground"];
+}
+
+// Create or remove the album-art background/scrim based on the current toggle.
+// Called at load and again each time the view appears so changes apply live.
+- (void)applyArtworkBackgroundPref {
+    if ([self artworkBackgroundEnabled]) {
+        if (!self.backgroundImageView) {
+            self.backgroundImageView = [[UIImageView alloc] initWithFrame:self.view.bounds];
+            self.backgroundImageView.contentMode = UIViewContentModeScaleAspectFill;
+            self.backgroundImageView.clipsToBounds = YES;
+            self.backgroundImageView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+            [self.view insertSubview:self.backgroundImageView atIndex:0];
+
+            self.scrimView = [[UIView alloc] initWithFrame:self.view.bounds];
+            self.scrimView.backgroundColor = [UIColor colorWithWhite:0.0f alpha:0.30f];
+            self.scrimView.userInteractionEnabled = NO;
+            self.scrimView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+            [self.view insertSubview:self.scrimView aboveSubview:self.backgroundImageView];
+        }
+    } else {
+        [self.backgroundImageView removeFromSuperview];
+        self.backgroundImageView = nil;
+        [self.scrimView removeFromSuperview];
+        self.scrimView = nil;
+    }
+}
+
+- (void)setArtworkImage:(UIImage *)image forVideoId:(NSString *)videoId {
+    if (!image) return;
+    self.artworkView.image = image;
+    if (![self artworkBackgroundEnabled]) return;
+    UIImage *blurred = [self.blurCache objectForKey:videoId];
+    if (blurred) {
+        self.backgroundImageView.image = blurred;
+        return;
+    }
+    __weak LTPlayerViewController *weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+        UIImage *result = [self blurredImageFromImage:image];
+        if (!result) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            LTPlayerViewController *strongSelf = weakSelf;
+            if (!strongSelf) return;
+            NSString *currentId = [[LTPlayerController sharedController] currentTrack].videoId;
+            if (videoId.length && [videoId isEqualToString:currentId]) {
+                [strongSelf.blurCache setObject:result forKey:videoId];
+                strongSelf.backgroundImageView.image = result;
+                LTLog(@"PLAYER_BG bounds=%.0f x %.0f frame=%.0f,%.0f imgSz=%.0f x %.0f",
+                      strongSelf.view.bounds.size.width, strongSelf.view.bounds.size.height,
+                      strongSelf.backgroundImageView.frame.size.width, strongSelf.backgroundImageView.frame.size.height,
+                      result.size.width, result.size.height);
+            }
+        });
+    });
+}
+
+- (UIImage *)blurredImageFromImage:(UIImage *)image {
+    CGImageRef cgSrc = image.CGImage;
+    if (!cgSrc) return nil;
+
+    size_t srcW = CGImageGetWidth(cgSrc);
+    size_t srcH = CGImageGetHeight(cgSrc);
+    if (srcW < 2 || srcH < 2) return nil;
+
+    size_t maxDim = 100;
+    CGFloat ratio = (CGFloat)maxDim / MAX(srcW, srcH);
+    if (ratio > 1.0f) ratio = 1.0f;
+    size_t w = (size_t)MAX(2, (size_t)roundf(srcW * ratio));
+    size_t h = (size_t)MAX(2, (size_t)roundf(srcH * ratio));
+
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    uint8_t *buf = (uint8_t *)calloc(w * h * 4, 1);
+    CGContextRef ctx = CGBitmapContextCreate(buf, w, h, 8, w * 4, cs,
+                                             kCGImageAlphaPremultipliedLast | kCGBitmapByteOrderDefault);
+    CGColorSpaceRelease(cs);
+    if (!ctx) { free(buf); return nil; }
+
+    CGContextSetInterpolationQuality(ctx, kCGInterpolationHigh);
+    CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), cgSrc);
+    CGContextRelease(ctx);
+
+    size_t radius = (size_t)MAX(3, (size_t)(MIN(w, h) * 0.15));
+    uint8_t *tmp = (uint8_t *)calloc(w * h * 4, 1);
+    int passes = 3;
+
+    for (int p = 0; p < passes; p++) {
+        for (size_t y = 0; y < h; y++) {
+            for (size_t x = 0; x < w; x++) {
+                int32_t sR=0, sG=0, sB=0, sA=0;
+                int cnt = 0;
+                for (int d = -(int)radius; d <= (int)radius; d++) {
+                    size_t sx = x + d;
+                    if (sx >= w) continue;
+                    size_t i = (y * w + sx) * 4;
+                    sR += buf[i]; sG += buf[i+1]; sB += buf[i+2]; sA += buf[i+3];
+                    cnt++;
+                }
+                size_t i = (y * w + x) * 4;
+                tmp[i]   = (uint8_t)(sR / cnt);
+                tmp[i+1] = (uint8_t)(sG / cnt);
+                tmp[i+2] = (uint8_t)(sB / cnt);
+                tmp[i+3] = (uint8_t)(sA / cnt);
+            }
+        }
+        for (size_t y = 0; y < h; y++) {
+            for (size_t x = 0; x < w; x++) {
+                int32_t sR=0, sG=0, sB=0, sA=0;
+                int cnt = 0;
+                for (int d = -(int)radius; d <= (int)radius; d++) {
+                    size_t sy = y + d;
+                    if (sy >= h) continue;
+                    size_t i = (sy * w + x) * 4;
+                    sR += tmp[i]; sG += tmp[i+1]; sB += tmp[i+2]; sA += tmp[i+3];
+                    cnt++;
+                }
+                size_t i = (y * w + x) * 4;
+                buf[i]   = (uint8_t)(sR / cnt);
+                buf[i+1] = (uint8_t)(sG / cnt);
+                buf[i+2] = (uint8_t)(sB / cnt);
+                buf[i+3] = (uint8_t)(sA / cnt);
+            }
+        }
+    }
+    free(tmp);
+
+    CGColorSpaceRef cs2 = CGColorSpaceCreateDeviceRGB();
+    CGContextRef outCtx = CGBitmapContextCreate(NULL, w, h, 8, w * 4, cs2,
+                                                 kCGImageAlphaPremultipliedLast | kCGBitmapByteOrderDefault);
+    CGColorSpaceRelease(cs2);
+    if (!outCtx) { free(buf); return nil; }
+    memcpy(CGBitmapContextGetData(outCtx), buf, w * h * 4);
+    CGImageRef cgOut = CGBitmapContextCreateImage(outCtx);
+    CGContextRelease(outCtx);
+    free(buf);
+    UIImage *result = [UIImage imageWithCGImage:cgOut];
+    CGImageRelease(cgOut);
+    LTLog(@"PLAYER_BG blurred %zux%zu radius=%zu passes=%d", w, h, radius, passes);
+    return result;
 }
 
 - (void)refreshControls {

@@ -11,6 +11,9 @@
 // Called once after a client connection finishes being served.
 @property (nonatomic, copy) void (^onConnectionFinished)(NSString *method, NSString *path);
 
+// Bonjour service type to publish (e.g. @"_anlegacy-sync._tcp."). Set before start.
+@property (nonatomic, copy) NSString *serviceType;
+
 @property (nonatomic, readonly) NSUInteger port;
 
 - (BOOL)start:(NSError **)error;

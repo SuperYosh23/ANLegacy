@@ -55,17 +55,17 @@
     if (![self isPlaylistsMode]) {
         self.title = @"Search";
         self.searchBar = [[UISearchBar alloc] initWithFrame:CGRectMake(0, 0, bounds.size.width, 44)];
-        self.searchBar.placeholder = @"Search YouTube Music";
+        self.searchBar.placeholder = [self searchPlaceholderForType:self.type];
         self.searchBar.delegate = self;
         self.searchBar.showsCancelButton = YES;
         self.searchBar.autocorrectionType = UITextAutocorrectionTypeNo;
         self.searchBar.autocapitalizationType = UITextAutocapitalizationTypeNone;
         [self.view addSubview:self.searchBar];
 
-        NSArray *types = @[@"songs", @"albums", @"artists"];
+        NSArray *types = @[@"songs", @"videos", @"albums", @"artists"];
         NSUInteger defaultIndex = [types indexOfObject:self.type];
         if (defaultIndex == NSNotFound) defaultIndex = 0;
-        self.segControl = [[UISegmentedControl alloc] initWithItems:@[@"Songs", @"Albums", @"Artists"]];
+        self.segControl = [[UISegmentedControl alloc] initWithItems:@[@"Songs", @"Videos", @"Albums", @"Artists"]];
         self.segControl.selectedSegmentIndex = (NSInteger)defaultIndex;
         [self.segControl addTarget:self action:@selector(segmentChanged:) forControlEvents:UIControlEventValueChanged];
         self.segControl.frame = CGRectMake(8, 50, bounds.size.width - 16, 32);
@@ -124,15 +124,21 @@
     return self.type;
 }
 
+- (NSString *)searchPlaceholderForType:(NSString *)type {
+    if ([type isEqualToString:@"videos"]) return @"Search YouTube";
+    return @"Search YouTube Music";
+}
+
 #pragma mark - Segmented control
 
 - (void)segmentChanged:(id)sender {
-    NSArray *types = @[@"songs", @"albums", @"artists"];
+    NSArray *types = @[@"songs", @"videos", @"albums", @"artists"];
     NSInteger idx = self.segControl.selectedSegmentIndex;
     if (idx < 0 || idx >= (NSInteger)types.count) return;
     NSString *newType = [types objectAtIndex:(NSUInteger)idx];
     if ([newType isEqualToString:self.type]) return;
     self.type = newType;
+    self.searchBar.placeholder = [self searchPlaceholderForType:newType];
     self.currentQuery = nil;
     [self.results removeAllObjects];
     [self.tableView reloadData];
@@ -200,7 +206,7 @@
 
     NSString *type = [self currentType];
     __weak LTSearchViewController *weakSelf = self;
-    [[LTYouTubeClient sharedClient] searchWithQuery:query type:type completion:^(NSArray *items, NSError *error) {
+    void (^finish)(NSArray *, NSError *) = ^(NSArray *items, NSError *error) {
         LTSearchViewController *strongSelf = weakSelf;
         if (!strongSelf) return;
         strongSelf.loading = NO;
@@ -218,7 +224,12 @@
         [strongSelf.results addObjectsFromArray:items];
         [strongSelf.tableView reloadData];
         strongSelf.emptyLabel.hidden = YES;
-    }];
+    };
+    if ([type isEqualToString:@"videos"]) {
+        [[LTYouTubeClient sharedClient] searchVideosWithQuery:query completion:finish];
+    } else {
+        [[LTYouTubeClient sharedClient] searchWithQuery:query type:type completion:finish];
+    }
 }
 
 - (void)showSpinner:(BOOL)show {

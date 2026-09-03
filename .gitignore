@@ -17,3 +17,6 @@ xcuserdata/
 *.o
 *.a
 *.log
+
+# Built archives
+*.ipa
