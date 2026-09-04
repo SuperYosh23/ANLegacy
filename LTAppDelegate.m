@@ -7,6 +7,7 @@
 #import "LTPlayerController.h"
 #import "LTTabBarController.h"
 #import "LTGraphics.h"
+#import "LTDebugSettings.h"
 #import "LTLog.h"
 #import <AVFoundation/AVFoundation.h>
 
@@ -62,7 +63,58 @@ static void LTUncaughtExceptionHandler(NSException *e) {
     tabBar.viewControllers = controllers;
     self.window.rootViewController = tabBar;
     [self.window makeKeyAndVisible];
+    [LTAppDelegate applyDisplayModeAnimated:NO];
     return YES;
+}
+
++ (void)applyDisplayModeAnimated:(BOOL)animated {
+    UIWindow *window = [(LTAppDelegate *)[[UIApplication sharedApplication] delegate] window];
+    if (!window) return;
+    UIView *root = window.rootViewController.view;
+    if (!root) return;
+
+    if (animated) {
+        [UIView animateWithDuration:0.35f animations:^{
+            [LTAppDelegate applyDisplayModeOnce:window root:root];
+        }];
+    } else {
+        [LTAppDelegate applyDisplayModeOnce:window root:root];
+    }
+}
+
++ (void)applyDisplayModeOnce:(UIWindow *)window root:(UIView *)root {
+    CGSize screen = window.bounds.size;
+    BOOL forceNonWide = [LTDebugSettings forceNonWidescreen];
+    BOOL forceWide = [LTDebugSettings forceWidescreen];
+
+    CGFloat virtualW = screen.width;
+    CGFloat virtualH = screen.height;
+    if (forceNonWide) {
+        virtualW = 320.0f;
+        virtualH = 480.0f;
+    } else if (forceWide) {
+        virtualW = 320.0f;
+        virtualH = 568.0f;
+    }
+
+    BOOL forced = (virtualW != screen.width || virtualH != screen.height);
+
+    root.transform = CGAffineTransformMake(1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f);
+    if (forced) {
+        root.frame = CGRectMake(round((screen.width - virtualW) / 2.0f),
+                                round((screen.height - virtualH) / 2.0f),
+                                virtualW, virtualH);
+        CGFloat scale = MIN(screen.width / virtualW, screen.height / virtualH);
+        if (scale < 1.0f) {
+            root.transform = CGAffineTransformMakeScale(scale, scale);
+        }
+        window.backgroundColor = [UIColor blackColor];
+        root.autoresizingMask = UIViewAutoresizingNone;
+    } else {
+        root.frame = window.bounds;
+        window.backgroundColor = nil;
+        root.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    }
 }
 
 - (void)applicationWillResignActive:(UIApplication *)application {

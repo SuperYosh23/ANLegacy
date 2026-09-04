@@ -37,7 +37,9 @@ LegacyMusic_FILES = main.m \
 	LTLibrarySongsViewController.m \
 	LTSpinnerView.m \
 	LTStatsViewController.m \
-	LTStatsDetailViewController.m
+	LTStatsDetailViewController.m \
+	LTDebugMenuViewController.m \
+	LTDebugSettings.m
 LegacyMusic_FRAMEWORKS = UIKit Foundation CoreGraphics QuartzCore MediaPlayer
 LegacyMusic_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -Wno-objc-interface-ivars
 LegacyMusic_LDFLAGS =

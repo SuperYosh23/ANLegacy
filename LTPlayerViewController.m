@@ -5,6 +5,8 @@
 #import "LTQueueViewController.h"
 #import "LTYouTubeClient.h"
 #import "LTPlaylistStore.h"
+#import "LTGraphics.h"
+#import "LTDebugSettings.h"
 #import "LTLog.h"
 
 @interface LTPlayerViewController ()
@@ -15,6 +17,7 @@
 @property (nonatomic, strong) UIImageView *incomingArtworkView;
 @property (nonatomic, strong) UILabel *titleLabel;
 @property (nonatomic, strong) UILabel *artistLabel;
+@property (nonatomic, strong) UILabel *sourceLabel;
 @property (nonatomic, strong) UILabel *bitrateLabel;
 @property (nonatomic, strong) UISlider *progressSlider;
 @property (nonatomic, strong) UILabel *elapsedLabel;
@@ -77,6 +80,14 @@
     self.artistLabel.textColor = [UIColor colorWithWhite:0.8f alpha:1.0f];
     self.artistLabel.backgroundColor = [UIColor clearColor];
     [self.view addSubview:self.artistLabel];
+
+    self.sourceLabel = [[UILabel alloc] init];
+    self.sourceLabel.textAlignment = NSTextAlignmentLeft;
+    self.sourceLabel.font = [UIFont boldSystemFontOfSize:17];
+    self.sourceLabel.textColor = [UIColor colorWithWhite:0.9f alpha:1.0f];
+    self.sourceLabel.backgroundColor = [UIColor clearColor];
+    self.sourceLabel.text = @"";
+    [self.view addSubview:self.sourceLabel];
 
     self.bitrateLabel = [[UILabel alloc] init];
     self.bitrateLabel.textAlignment = NSTextAlignmentLeft;
@@ -275,51 +286,98 @@
     if (self.backgroundImageView) self.backgroundImageView.frame = self.view.bounds;
     if (self.scrimView) self.scrimView.frame = self.view.bounds;
     [self layoutControls];
-}- (void)layoutControls {
+}- (BOOL)isWidescreen {
+    if ([LTDebugSettings forceNonWidescreen]) return NO;
+    if ([LTDebugSettings forceWidescreen]) return YES;
+    return ([[UIScreen mainScreen] bounds].size.height >= 568.0f);
+}
+
+- (void)layoutControls {
     if (self.panning) return;
     CGFloat width = self.view.bounds.size.width;
     CGFloat height = self.view.bounds.size.height;
+    BOOL widescreen = [self isWidescreen];
 
-    self.titleLabel.frame = CGRectMake(16, 8, width - 32, 22);
-    self.artistLabel.frame = CGRectMake(16, 32, width - 32, 18);
-    self.bitrateLabel.frame = CGRectMake(16, height - 20, 90, 14);
+    CGFloat transportH = 40.0f;
+    CGFloat smallH = 30.0f;
+    CGFloat bottomPad = widescreen ? 9.0f : 4.0f;
+    CGFloat transportY = height - bottomPad - transportH;
+    CGFloat sliderH = 22.0f;
+    CGFloat sliderY = transportY - 8.0f - sliderH;
+    CGFloat timeY = sliderY - 4.0f - 16.0f;
 
-    CGFloat transportH = 44.0f;
-    CGFloat transportY = height - 6.0f - transportH;
-    CGFloat utilityH = 32.0f;
-    CGFloat utilityY = transportY - 10.0f - utilityH;
-    CGFloat sliderH = 23.0f;
-    CGFloat sliderY = utilityY - 10.0f - sliderH;
-    CGFloat timeY = sliderY - 5.0f - 16.0f;
+    if (!widescreen) {
+        transportY -= 5.0f;
+    }
 
-    CGFloat artworkTop = 52.0f;
-    CGFloat artworkBottom = timeY - 6.0f;
-    CGFloat artworkSize = MIN(width - 40.0f, artworkBottom - artworkTop);
-    if (artworkSize < 1.0f) artworkSize = 0.0f;
-    CGFloat artworkY = artworkTop + (artworkBottom - artworkTop - artworkSize) / 2.0f;
-    self.artworkView.frame = CGRectMake((width - artworkSize) / 2.0f, artworkY, artworkSize, artworkSize);
-    self.incomingArtworkView.frame = self.artworkView.frame;
-    self.spinner.center = self.artworkView.center;
+    if (widescreen) {
+        self.bitrateLabel.frame = CGRectMake(16, height - 20, 90, 14);
+        CGFloat topPad = 24.0f;
+        CGFloat queueSize = 30.0f;
+        self.queueButton.frame = CGRectMake(width - queueSize - 10, topPad, queueSize, queueSize);
+        self.sourceLabel.hidden = NO;
+        self.sourceLabel.frame = CGRectMake(12, topPad + 2.0f, width - queueSize - 28, 24);
+
+        CGFloat titleH = 22.0f;
+        CGFloat artistH = 16.0f;
+        CGFloat artistY = timeY - 5.0f - artistH;
+        CGFloat titleY = artistY - 2.0f - titleH;
+        CGFloat artBottom = titleY - 5.0f;
+        CGFloat artSize = width - 24.0f;
+        CGFloat artTop = artBottom - artSize;
+        if (artTop < 0) {
+            artTop = 0;
+            artSize = artBottom;
+        }
+        self.artworkView.frame = CGRectMake((width - artSize) / 2.0f, artTop, artSize, artSize);
+        self.incomingArtworkView.frame = self.artworkView.frame;
+        self.spinner.center = self.artworkView.center;
+
+        self.titleLabel.frame = CGRectMake(12, titleY, width - 24, titleH);
+        self.artistLabel.frame = CGRectMake(12, artistY, width - 24, artistH);
+    } else {
+        self.queueButton.hidden = NO;
+        self.sourceLabel.hidden = YES;
+        self.bitrateLabel.frame = CGRectMake(12, 12, 70, 14);
+        CGFloat titleY = 10.0f;
+        CGFloat titleH = 22.0f;
+        self.titleLabel.frame = CGRectMake(12, titleY, width - 24, titleH);
+        self.artistLabel.frame = CGRectMake(12, titleY + titleH + 2.0f, width - 24, 16);
+
+        CGFloat queueSize = 30.0f;
+        self.queueButton.frame = CGRectMake(width - queueSize - 8, titleY + (titleH - queueSize) / 2.0f, queueSize, queueSize);
+
+        CGFloat artworkTop = 54.0f;
+        CGFloat artworkBottom = timeY - 5.0f;
+        CGFloat artworkSize = MIN(width - 24.0f, artworkBottom - artworkTop);
+        if (artworkSize < 1.0f) artworkSize = 0.0f;
+        CGFloat artworkY = artworkTop + (artworkBottom - artworkTop - artworkSize) / 2.0f;
+        self.artworkView.frame = CGRectMake((width - artworkSize) / 2.0f, artworkY, artworkSize, artworkSize);
+        self.incomingArtworkView.frame = self.artworkView.frame;
+        self.spinner.center = self.artworkView.center;
+    }
 
     self.elapsedLabel.frame = CGRectMake(16, timeY, 50, 16);
     self.remainingLabel.frame = CGRectMake(width - 66, timeY, 50, 16);
     self.progressSlider.frame = CGRectMake(16, sliderY, width - 32, sliderH);
 
-    CGFloat transportWidth = transportH;
-    CGFloat transportStart = (width - (transportWidth * 3.0f + 32.0f)) / 2.0f;
-    self.prevButton.frame = CGRectMake(transportStart, transportY, transportWidth, transportWidth);
-    self.playButton.frame = CGRectMake(transportStart + transportWidth + 16.0f, transportY, transportWidth, transportWidth);
-    self.nextButton.frame = CGRectMake(transportStart + (transportWidth + 16.0f) * 2.0f, transportY, transportWidth, transportWidth);
+    CGFloat spacing = 22.0f;
+    CGFloat totalWidth = smallH * 2.0f + transportH * 3.0f + spacing * 4.0f;
+    CGFloat start = (width - totalWidth) / 2.0f;
+    CGFloat smallY = transportY + (transportH - smallH) / 2.0f;
 
-    CGFloat utilityWidth = utilityH;
-    CGFloat utilityStart = (width - (utilityWidth * 3.0f + 40.0f)) / 2.0f;
-    self.shuffleButton.frame = CGRectMake(utilityStart, utilityY, utilityWidth, utilityWidth);
-    self.repeatButton.frame = CGRectMake(utilityStart + utilityWidth + 20.0f, utilityY, utilityWidth, utilityWidth);
-    self.queueButton.frame = CGRectMake(utilityStart + (utilityWidth + 20.0f) * 2.0f, utilityY, utilityWidth, utilityWidth);
+    self.shuffleButton.frame = CGRectMake(start, smallY, smallH, smallH);
+    self.prevButton.frame = CGRectMake(start + smallH + spacing, transportY, transportH, transportH);
+    self.playButton.frame = CGRectMake(start + smallH + spacing + transportH + spacing, transportY, transportH, transportH);
+    self.nextButton.frame = CGRectMake(start + smallH + spacing + (transportH + spacing) * 2.0f, transportY, transportH, transportH);
+    self.repeatButton.frame = CGRectMake(start + smallH + spacing + (transportH + spacing) * 3.0f, smallY, smallH, smallH);
 }
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    self.navigationController.navigationBarHidden = YES;
+    self.navigationItem.rightBarButtonItem = nil;
+    [self refreshSourceLabel];
     [self applyArtworkBackgroundPref];
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(trackDidChange:)
@@ -363,6 +421,7 @@
         [artist appendString:track.album];
     }
     self.artistLabel.text = artist;
+    [self refreshSourceLabel];
 
     self.artworkView.image = nil;
     LTLog(@"PLAYER refresh track=%@ url=%@", track.title, track.thumbnailURL.length ? track.thumbnailURL : @"(none)");
@@ -388,6 +447,10 @@
         }];
     }
     [self refreshControls];
+}
+
+- (void)refreshSourceLabel {
+    self.sourceLabel.text = [[LTPlayerController sharedController] queueSourceName] ?: @"";
 }
 
 - (BOOL)artworkBackgroundEnabled {
@@ -436,7 +499,7 @@
     }
     __weak LTPlayerViewController *weakSelf = self;
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
-        UIImage *result = [self blurredImageFromImage:image];
+        UIImage *result = [LTGraphics blurredImageFromImage:image];
         if (!result) return;
         dispatch_async(dispatch_get_main_queue(), ^{
             LTPlayerViewController *strongSelf = weakSelf;
@@ -452,90 +515,6 @@
             }
         });
     });
-}
-
-- (UIImage *)blurredImageFromImage:(UIImage *)image {
-    CGImageRef cgSrc = image.CGImage;
-    if (!cgSrc) return nil;
-
-    size_t srcW = CGImageGetWidth(cgSrc);
-    size_t srcH = CGImageGetHeight(cgSrc);
-    if (srcW < 2 || srcH < 2) return nil;
-
-    size_t maxDim = 100;
-    CGFloat ratio = (CGFloat)maxDim / MAX(srcW, srcH);
-    if (ratio > 1.0f) ratio = 1.0f;
-    size_t w = (size_t)MAX(2, (size_t)roundf(srcW * ratio));
-    size_t h = (size_t)MAX(2, (size_t)roundf(srcH * ratio));
-
-    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
-    uint8_t *buf = (uint8_t *)calloc(w * h * 4, 1);
-    CGContextRef ctx = CGBitmapContextCreate(buf, w, h, 8, w * 4, cs,
-                                             kCGImageAlphaPremultipliedLast | kCGBitmapByteOrderDefault);
-    CGColorSpaceRelease(cs);
-    if (!ctx) { free(buf); return nil; }
-
-    CGContextSetInterpolationQuality(ctx, kCGInterpolationHigh);
-    CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), cgSrc);
-    CGContextRelease(ctx);
-
-    size_t radius = (size_t)MAX(3, (size_t)(MIN(w, h) * 0.15));
-    uint8_t *tmp = (uint8_t *)calloc(w * h * 4, 1);
-    int passes = 3;
-
-    for (int p = 0; p < passes; p++) {
-        for (size_t y = 0; y < h; y++) {
-            for (size_t x = 0; x < w; x++) {
-                int32_t sR=0, sG=0, sB=0, sA=0;
-                int cnt = 0;
-                for (int d = -(int)radius; d <= (int)radius; d++) {
-                    size_t sx = x + d;
-                    if (sx >= w) continue;
-                    size_t i = (y * w + sx) * 4;
-                    sR += buf[i]; sG += buf[i+1]; sB += buf[i+2]; sA += buf[i+3];
-                    cnt++;
-                }
-                size_t i = (y * w + x) * 4;
-                tmp[i]   = (uint8_t)(sR / cnt);
-                tmp[i+1] = (uint8_t)(sG / cnt);
-                tmp[i+2] = (uint8_t)(sB / cnt);
-                tmp[i+3] = (uint8_t)(sA / cnt);
-            }
-        }
-        for (size_t y = 0; y < h; y++) {
-            for (size_t x = 0; x < w; x++) {
-                int32_t sR=0, sG=0, sB=0, sA=0;
-                int cnt = 0;
-                for (int d = -(int)radius; d <= (int)radius; d++) {
-                    size_t sy = y + d;
-                    if (sy >= h) continue;
-                    size_t i = (sy * w + x) * 4;
-                    sR += tmp[i]; sG += tmp[i+1]; sB += tmp[i+2]; sA += tmp[i+3];
-                    cnt++;
-                }
-                size_t i = (y * w + x) * 4;
-                buf[i]   = (uint8_t)(sR / cnt);
-                buf[i+1] = (uint8_t)(sG / cnt);
-                buf[i+2] = (uint8_t)(sB / cnt);
-                buf[i+3] = (uint8_t)(sA / cnt);
-            }
-        }
-    }
-    free(tmp);
-
-    CGColorSpaceRef cs2 = CGColorSpaceCreateDeviceRGB();
-    CGContextRef outCtx = CGBitmapContextCreate(NULL, w, h, 8, w * 4, cs2,
-                                                 kCGImageAlphaPremultipliedLast | kCGBitmapByteOrderDefault);
-    CGColorSpaceRelease(cs2);
-    if (!outCtx) { free(buf); return nil; }
-    memcpy(CGBitmapContextGetData(outCtx), buf, w * h * 4);
-    CGImageRef cgOut = CGBitmapContextCreateImage(outCtx);
-    CGContextRelease(outCtx);
-    free(buf);
-    UIImage *result = [UIImage imageWithCGImage:cgOut];
-    CGImageRelease(cgOut);
-    LTLog(@"PLAYER_BG blurred %zux%zu radius=%zu passes=%d", w, h, radius, passes);
-    return result;
 }
 
 - (void)refreshControls {

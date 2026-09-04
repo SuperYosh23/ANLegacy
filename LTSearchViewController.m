@@ -556,6 +556,7 @@
             if ([[tracks objectAtIndex:i] isEqual:item]) { index = (NSInteger)i; break; }
         }
         [[LTPlayerController sharedController] playQueue:tracks atIndex:index];
+        [LTPlayerController sharedController].queueSourceName = self.searchBar.text ?: @"Search";
         [(LTTabBarController *)self.tabBarController showNowPlaying];
     } else if ([item isKindOfClass:[LTBrowseItem class]]) {
         LTBrowseItem *bi = item;

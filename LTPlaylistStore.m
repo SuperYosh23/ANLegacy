@@ -456,13 +456,61 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     [self writeStatsFileDict:dict];
 }
 
+- (void)clearListeningStats {
+    [[NSFileManager defaultManager] removeItemAtPath:[self statsFilePath] error:nil];
+    [[NSUserDefaults standardUserDefaults] removeObjectForKey:kLTListenedSongIDsKey];
+    [[NSNotificationCenter defaultCenter] postNotificationName:LTRecentsDidChangeNotification object:self];
+}
+
 - (NSArray *)statsEntries {
     NSMutableDictionary *dict = [self statsFileDict];
     NSDictionary *tracks = [dict objectForKey:@"tracks"];
-    if (![tracks isKindOfClass:[NSDictionary class]]) return @[];
-    NSMutableArray *entries = [NSMutableArray array];
+    if (![tracks isKindOfClass:[NSDictionary class]]) tracks = @{};
+
+    NSMutableDictionary *combined = [NSMutableDictionary dictionary];
     for (NSString *videoId in tracks) {
         NSDictionary *data = [tracks objectForKey:videoId];
+        if (![data isKindOfClass:[NSDictionary class]]) continue;
+        NSMutableDictionary *entry = [NSMutableDictionary dictionaryWithDictionary:data];
+        [combined setObject:entry forKey:videoId];
+    }
+
+    NSDictionary *received = [dict objectForKey:@"received"];
+    if ([received isKindOfClass:[NSDictionary class]]) {
+        for (NSString *fromDevice in received) {
+            // Heal old self-sync corruption (a ledger entry pointing at our own
+            // device id holding a copy of our own stats): ignore it so it can't
+            // keep inflating the displayed totals.
+            if ([fromDevice isEqualToString:[self syncDeviceId]]) continue;
+            NSDictionary *peer = [received objectForKey:fromDevice];
+            if (![peer isKindOfClass:[NSDictionary class]]) continue;
+            for (NSString *videoId in peer) {
+                NSDictionary *remote = [peer objectForKey:videoId];
+                if (![remote isKindOfClass:[NSDictionary class]]) continue;
+                NSMutableDictionary *entry = [combined objectForKey:videoId];
+                if (!entry) {
+                    entry = [NSMutableDictionary dictionary];
+                    entry[@"title"] = remote[@"title"] ?: @"";
+                    entry[@"artist"] = remote[@"artist"] ?: @"";
+                    entry[@"album"] = remote[@"album"] ?: @"";
+                    entry[@"thumbnailURL"] = remote[@"thumbnailURL"] ?: @"";
+                    entry[@"plays"] = @(0);
+                    entry[@"seconds"] = @(0.0);
+                    [combined setObject:entry forKey:videoId];
+                }
+                if (![[entry objectForKey:@"title"] length]) entry[@"title"] = remote[@"title"] ?: @"";
+                if (![[entry objectForKey:@"artist"] length]) entry[@"artist"] = remote[@"artist"] ?: @"";
+                if (![[entry objectForKey:@"album"] length]) entry[@"album"] = remote[@"album"] ?: @"";
+                if (![[entry objectForKey:@"thumbnailURL"] length]) entry[@"thumbnailURL"] = remote[@"thumbnailURL"] ?: @"";
+                entry[@"plays"] = @([[entry objectForKey:@"plays"] integerValue] + [[remote objectForKey:@"plays"] integerValue]);
+                entry[@"seconds"] = @([[entry objectForKey:@"seconds"] doubleValue] + [[remote objectForKey:@"seconds"] doubleValue]);
+            }
+        }
+    }
+
+    NSMutableArray *entries = [NSMutableArray array];
+    for (NSString *videoId in combined) {
+        NSDictionary *data = [combined objectForKey:videoId];
         LTStatsEntry *entry = [[LTStatsEntry alloc] init];
         entry.videoId = videoId;
         entry.title = [data objectForKey:@"title"];
@@ -924,10 +972,11 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
 }
 
 - (NSDictionary *)statsSyncDict {
-    NSMutableDictionary *dict = [self statsFileDict];
+    NSDictionary *dict = [self statsFileDict];
     NSDictionary *tracks = [dict objectForKey:@"tracks"];
-    if (![tracks isKindOfClass:[NSDictionary class]]) return dict;
-    // Trim the payload: only ship fields the other side needs to merge.
+    if (![tracks isKindOfClass:[NSDictionary class]]) tracks = @{};
+    // Only ship this phone's OWN listening stats. Received (synced) stats live
+    // in a separate per-device ledger and must not be re-exported.
     NSMutableDictionary *trimmedTracks = [NSMutableDictionary dictionary];
     for (NSString *videoId in tracks) {
         NSDictionary *entry = [tracks objectForKey:videoId];
@@ -941,8 +990,7 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
         trimmed[@"seconds"] = @([[entry objectForKey:@"seconds"] doubleValue]);
         [trimmedTracks setObject:trimmed forKey:videoId];
     }
-    [dict setObject:trimmedTracks forKey:@"tracks"];
-    return dict;
+    return @{@"tracks": trimmedTracks};
 }
 
 - (NSDictionary *)syncPayload {
@@ -1017,27 +1065,53 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     if ([stats isKindOfClass:[NSDictionary class]]) {
         NSDictionary *incomingTracks = [stats objectForKey:@"tracks"];
         if ([incomingTracks isKindOfClass:[NSDictionary class]]) {
+            NSString *fromDevice = [payload objectForKey:@"deviceId"];
+            BOOL hasPeerId = ([fromDevice isKindOfClass:[NSString class]] && fromDevice.length);
             NSMutableDictionary *dict = [self statsFileDict];
-            // Merge each incoming entry, taking the max plays/seconds so both
-            // devices' listening history is preserved rather than overwritten.
-            for (NSString *videoId in incomingTracks) {
-                NSDictionary *incoming = [incomingTracks objectForKey:videoId];
-                if (![incoming isKindOfClass:[NSDictionary class]]) continue;
-                NSMutableDictionary *entry = [self statsEntryForVideoId:videoId inDict:dict];
-                NSInteger inPlays = [[incoming objectForKey:@"plays"] integerValue];
-                NSInteger localPlays = [[entry objectForKey:@"plays"] integerValue];
-                if (inPlays > localPlays) [entry setObject:@(inPlays) forKey:@"plays"];
-                double inSeconds = [[incoming objectForKey:@"seconds"] doubleValue];
-                double localSeconds = [[entry objectForKey:@"seconds"] doubleValue];
-                if (inSeconds > localSeconds) [entry setObject:@(inSeconds) forKey:@"seconds"];
-                // Fill missing metadata.
-                if (![[entry objectForKey:@"title"] length]) [entry setObject:incoming[@"title"] ?: @"" forKey:@"title"];
-                if (![[entry objectForKey:@"artist"] length]) [entry setObject:incoming[@"artist"] ?: @"" forKey:@"artist"];
-                if (![[entry objectForKey:@"album"] length]) [entry setObject:incoming[@"album"] ?: @"" forKey:@"album"];
-                if (![[entry objectForKey:@"thumbnailURL"] length]) [entry setObject:incoming[@"thumbnailURL"] ?: @"" forKey:@"thumbnailURL"];
+            if (hasPeerId) {
+                // Echo guard: if the payload claims to be from THIS device, it is
+                // our own self-sync (see LTP2PSync self-discovery) — never create
+                // a self-referential ledger entry, it would inflate the totals.
+                if (![fromDevice isEqualToString:[self syncDeviceId]]) {
+                    // Ledger merge: save a snapshot of this peer's OWN stats keyed by
+                    // their device id. Combined totals = our own + each peer's own, so
+                    // re-syncing the same phones never double-counts previous syncs.
+                    NSMutableDictionary *received = [dict objectForKey:@"received"];
+                    if (![received isKindOfClass:[NSMutableDictionary class]]) {
+                        received = [NSMutableDictionary dictionary];
+                    }
+                    NSMutableDictionary *peerLedger = [NSMutableDictionary dictionary];
+                    for (NSString *videoId in incomingTracks) {
+                        NSDictionary *incoming = [incomingTracks objectForKey:videoId];
+                        if (![incoming isKindOfClass:[NSDictionary class]]) continue;
+                        [peerLedger setObject:[NSMutableDictionary dictionaryWithDictionary:incoming] forKey:videoId];
+                    }
+                    [received setObject:peerLedger forKey:fromDevice];
+                    [dict setObject:received forKey:@"received"];
+                    [self writeStatsFileDict:dict];
+                    changed = YES;
+                }
+            } else {
+                // Legacy merge without a peer id: sum into our own stats so no
+                // history is lost.
+                for (NSString *videoId in incomingTracks) {
+                    NSDictionary *incoming = [incomingTracks objectForKey:videoId];
+                    if (![incoming isKindOfClass:[NSDictionary class]]) continue;
+                    NSMutableDictionary *entry = [self statsEntryForVideoId:videoId inDict:dict];
+                    NSInteger inPlays = [[incoming objectForKey:@"plays"] integerValue];
+                    NSInteger localPlays = [[entry objectForKey:@"plays"] integerValue];
+                    [entry setObject:@(localPlays + inPlays) forKey:@"plays"];
+                    double inSeconds = [[incoming objectForKey:@"seconds"] doubleValue];
+                    double localSeconds = [[entry objectForKey:@"seconds"] doubleValue];
+                    [entry setObject:@(localSeconds + inSeconds) forKey:@"seconds"];
+                    if (![[entry objectForKey:@"title"] length]) [entry setObject:incoming[@"title"] ?: @"" forKey:@"title"];
+                    if (![[entry objectForKey:@"artist"] length]) [entry setObject:incoming[@"artist"] ?: @"" forKey:@"artist"];
+                    if (![[entry objectForKey:@"album"] length]) [entry setObject:incoming[@"album"] ?: @"" forKey:@"album"];
+                    if (![[entry objectForKey:@"thumbnailURL"] length]) [entry setObject:incoming[@"thumbnailURL"] ?: @"" forKey:@"thumbnailURL"];
+                }
+                [self writeStatsFileDict:dict];
+                changed = YES;
             }
-            [self writeStatsFileDict:dict];
-            changed = YES;
         }
     }
 

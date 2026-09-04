@@ -137,6 +137,7 @@
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     BOOL isSongs = (indexPath.section == 0 && self.topSongs.count);
     if (isSongs) {
+        [LTPlayerController sharedController].queueSourceName = self.title;
         [[LTPlayerController sharedController] playQueue:self.topSongs atIndex:indexPath.row];
         [(LTTabBarController *)self.tabBarController showNowPlaying];
     } else {

@@ -1,10 +1,14 @@
 #import "LTQueueViewController.h"
 #import "LTPlayerController.h"
+#import "LTYouTubeClient.h"
+#import "LTGraphics.h"
 #import "LTLog.h"
 
 @interface LTQueueViewController () <UITableViewDataSource, UITableViewDelegate>
 @property (nonatomic, strong) UITableView *tableView;
 @property (nonatomic, strong) UILabel *headerLabel;
+@property (nonatomic, strong) UIImageView *backgroundImageView;
+@property (nonatomic, strong) UIView *scrimView;
 @end
 
 @implementation LTQueueViewController
@@ -18,8 +22,8 @@
     self.view.backgroundColor = [UIColor colorWithWhite:0.15f alpha:1.0f];
 
     self.headerLabel = [[UILabel alloc] initWithFrame:CGRectMake(16, 8, self.view.bounds.size.width - 32, 24)];
-    self.headerLabel.font = [UIFont systemFontOfSize:13];
-    self.headerLabel.textColor = [UIColor colorWithWhite:0.8f alpha:1.0f];
+    self.headerLabel.font = [UIFont boldSystemFontOfSize:15];
+    self.headerLabel.textColor = [UIColor whiteColor];
     self.headerLabel.backgroundColor = [UIColor clearColor];
     [self.view addSubview:self.headerLabel];
 
@@ -30,10 +34,13 @@
     self.tableView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     self.tableView.backgroundColor = [UIColor clearColor];
     [self.view addSubview:self.tableView];
+
+    [self applyBackgroundPref];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    if (self.navigationController) self.navigationController.navigationBarHidden = NO;
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(queueDidChange:)
                                                  name:LTPlayerQueueDidChangeNotification
@@ -42,6 +49,7 @@
                                              selector:@selector(queueDidChange:)
                                                  name:LTPlayerTrackDidChangeNotification
                                                object:nil];
+    [self applyBackgroundPref];
     [self reloadQueue];
 }
 
@@ -65,6 +73,58 @@
     [self reloadQueue];
 }
 
+- (BOOL)artworkBackgroundEnabled {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    if ([defaults objectForKey:@"LTPlayerArtworkBackground"] == nil) {
+        BOOL modern = ([UIDevice currentDevice].systemVersion.intValue >= 7);
+        [defaults setBool:modern forKey:@"LTPlayerArtworkBackground"];
+        return modern;
+    }
+    return [defaults boolForKey:@"LTPlayerArtworkBackground"];
+}
+
+- (void)applyBackgroundPref {
+    if ([self artworkBackgroundEnabled]) {
+        if (!self.backgroundImageView) {
+            self.backgroundImageView = [[UIImageView alloc] initWithFrame:self.view.bounds];
+            self.backgroundImageView.contentMode = UIViewContentModeScaleAspectFill;
+            self.backgroundImageView.clipsToBounds = YES;
+            self.backgroundImageView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+            [self.view insertSubview:self.backgroundImageView atIndex:0];
+
+            self.scrimView = [[UIView alloc] initWithFrame:self.view.bounds];
+            self.scrimView.backgroundColor = [UIColor colorWithWhite:0.0f alpha:0.55f];
+            self.scrimView.userInteractionEnabled = NO;
+            self.scrimView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+            [self.view insertSubview:self.scrimView aboveSubview:self.backgroundImageView];
+        }
+        [self loadBackgroundArt];
+    } else {
+        [self.backgroundImageView removeFromSuperview];
+        self.backgroundImageView = nil;
+        [self.scrimView removeFromSuperview];
+        self.scrimView = nil;
+    }
+}
+
+- (void)loadBackgroundArt {
+    LTTrack *track = [[LTPlayerController sharedController] currentTrack];
+    if (!track || !track.thumbnailURL.length) return;
+    NSString *url = [[LTYouTubeClient sharedClient] highResThumbnailURL:track.thumbnailURL];
+    __weak LTQueueViewController *weakSelf = self;
+    [[LTYouTubeClient sharedClient] loadImageWithURL:url completion:^(UIImage *image) {
+        if (!image) return;
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+            UIImage *blurred = [LTGraphics blurredImageFromImage:image];
+            if (!blurred) return;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                LTQueueViewController *strongSelf = weakSelf;
+                if (strongSelf) strongSelf.backgroundImageView.image = blurred;
+            });
+        });
+    }];
+}
+
 #pragma mark - UITableViewDataSource
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
@@ -80,7 +140,7 @@
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:CellId];
     if (!cell) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:CellId];
-        cell.backgroundColor = [UIColor colorWithWhite:0.15f alpha:1.0f];
+        cell.backgroundColor = [UIColor colorWithWhite:0.15f alpha:0.6f];
         cell.textLabel.font = [UIFont systemFontOfSize:15];
         cell.textLabel.textColor = [UIColor whiteColor];
         cell.detailTextLabel.font = [UIFont systemFontOfSize:12];
@@ -90,9 +150,12 @@
     LTTrack *track = [[controller queue] objectAtIndex:(NSUInteger)indexPath.row];
     NSInteger idx = (NSInteger)indexPath.row;
     if (idx == controller.currentIndex) {
-        cell.textLabel.text = [NSString stringWithFormat:@"\u25B6  %@", track.title];
+        cell.imageView.image = [self scaledIcon:[UIImage imageNamed:@"IcoPlay"]];
+        cell.imageView.contentMode = UIViewContentModeCenter;
+        cell.textLabel.text = track.title;
         cell.textLabel.textColor = [UIColor colorWithRed:0.35f green:0.68f blue:1.0f alpha:1.0f];
     } else {
+        cell.imageView.image = nil;
         cell.textLabel.text = [NSString stringWithFormat:@"%d. %@", (int)idx + 1, track.title];
         cell.textLabel.textColor = [UIColor whiteColor];
     }
@@ -104,6 +167,17 @@
     }
     cell.detailTextLabel.text = detail;
     return cell;
+}
+
+- (UIImage *)scaledIcon:(UIImage *)image {
+    if (!image) return nil;
+    CGFloat s = [UIScreen mainScreen].scale;
+    CGSize size = CGSizeMake(14.0f, 14.0f);
+    UIGraphicsBeginImageContextWithOptions(size, NO, s);
+    [image drawInRect:CGRectMake(0, 0, size.width, size.height)];
+    UIImage *result = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return result;
 }
 
 #pragma mark - UITableViewDelegate

@@ -14,4 +14,6 @@
 + (UIImage *)checkmarkIcon;
 + (UIImage *)renameIcon;
 
++ (UIImage *)blurredImageFromImage:(UIImage *)image;
+
 @end

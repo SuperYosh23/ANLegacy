@@ -289,6 +289,7 @@ const CGFloat kHomeTileArtRatio = 104.0f / 116.0f;
         cell.onTrackTapped = ^(LTTrack *track) {
             LTHomeViewController *strongSelf = weakSelf;
             if (!strongSelf) return;
+            [LTPlayerController sharedController].queueSourceName = @"Home";
             [[LTPlayerController sharedController] playQueue:@[track] atIndex:0];
             [(LTTabBarController *)strongSelf.tabBarController showNowPlaying];
         };

@@ -9,12 +9,14 @@
 #import "LTWebExporter.h"
 #import "LTPlaylistSelectViewController.h"
 #import "LTHomeViewController.h"
+#import "LTDebugMenuViewController.h"
 #import "LTLog.h"
 
 typedef NS_ENUM(NSInteger, LTSettingsSection) {
     LTSettingsSectionPlayback = 0,
     LTSettingsSectionAppearance,
     LTSettingsSectionData,
+    LTSettingsSectionAbout,
 };
 
 @interface LTSettingsViewController () <UITableViewDataSource, UITableViewDelegate, UIAlertViewDelegate, UIActionSheetDelegate>
@@ -25,6 +27,7 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
 @property (nonatomic, strong) UISwitch *animSwitch;
 @property (nonatomic, strong) UIAlertView *progressAlert;
 @property (nonatomic, assign) BOOL refreshingMetadata;
+@property (nonatomic, assign) NSInteger versionTapCount;
 @end
 
 @implementation LTSettingsViewController
@@ -143,6 +146,22 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
         }
     }
     [[NSNotificationCenter defaultCenter] postNotificationName:LTPlaylistsDidChangeNotification object:store];
+    [self.tableView reloadData];
+}
+
+- (void)resetStatsTapped {
+    UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"Reset Listening Stats"
+                                                    message:@"This clears the Stats screen, the most-played list, the listening counter, any stats synced from other phones, and listening history. This cannot be undone."
+                                                   delegate:self
+                                          cancelButtonTitle:@"Cancel"
+                                          otherButtonTitles:@"Reset", nil];
+    alert.tag = 902;
+    [alert show];
+}
+
+- (void)resetListeningStats {
+    LTPlaylistStore *store = [LTPlaylistStore sharedStore];
+    [store clearListeningStats];
     [self.tableView reloadData];
 }
 
@@ -294,6 +313,9 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
     if (alertView.tag == 901 && buttonIndex == 1) {
         [self startMetadataRefresh];
     }
+    if (alertView.tag == 902 && buttonIndex == 1) {
+        [self resetListeningStats];
+    }
 }
 
 - (NSString *)speedLabel {
@@ -309,10 +331,19 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
     return [NSString stringWithFormat:@"%.0f pt", width];
 }
 
+- (void)handleVersionTap {
+    self.versionTapCount++;
+    if (self.versionTapCount >= 5) {
+        self.versionTapCount = 0;
+        LTDebugMenuViewController *vc = [[LTDebugMenuViewController alloc] init];
+        [self.navigationController pushViewController:vc animated:YES];
+    }
+}
+
 #pragma mark - UITableViewDataSource
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return 3;
+    return 4;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
@@ -320,6 +351,7 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
         case LTSettingsSectionPlayback: return @"Playback options";
         case LTSettingsSectionAppearance: return @"Appearance options";
         case LTSettingsSectionData: return @"Data management";
+        case LTSettingsSectionAbout: return @"About";
         default: return @"";
     }
 }
@@ -328,7 +360,8 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
     switch (section) {
         case LTSettingsSectionPlayback: return 2;
         case LTSettingsSectionAppearance: return 4;
-        case LTSettingsSectionData: return 5;
+        case LTSettingsSectionData: return 6;
+        case LTSettingsSectionAbout: return 2;
         default: return 0;
     }
 }
@@ -392,11 +425,28 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
             } else if (indexPath.row == 3) {
                 cell.textLabel.text = @"Create AN Mini Instance (BETA)";
                 cell.selectionStyle = UITableViewCellSelectionStyleBlue;
-            } else {
+            } else if (indexPath.row == 4) {
                 cell.textLabel.text = @"Clear Offline Downloads";
                 cell.textLabel.textColor = [UIColor redColor];
                 cell.selectionStyle = UITableViewCellSelectionStyleBlue;
+            } else {
+                cell.textLabel.text = @"Reset Listening Stats";
+                cell.textLabel.textColor = [UIColor redColor];
+                cell.selectionStyle = UITableViewCellSelectionStyleBlue;
             }
+            break;
+        }
+        case LTSettingsSectionAbout: {
+            if (indexPath.row == 0) {
+                cell.textLabel.text = @"App";
+                cell.detailTextLabel.text = @"audioNINJA Legacy";
+            } else {
+                cell.textLabel.text = @"Version";
+                NSString *version = [[[NSBundle mainBundle] infoDictionary] objectForKey:@"CFBundleVersion"];
+                cell.detailTextLabel.text = version.length ? version : @"0.1.0";
+            }
+            cell.accessoryView = nil;
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
             break;
         }
         default:
@@ -409,6 +459,10 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (indexPath.section == LTSettingsSectionAbout && indexPath.row == 1) {
+        [self handleVersionTap];
+        return;
+    }
     if (indexPath.section == LTSettingsSectionAppearance) {
         if (indexPath.row == 2) {
             LTTransitionSpeedViewController *vc = [[LTTransitionSpeedViewController alloc] init];
@@ -428,6 +482,8 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
             [self exportToWebTapped];
         } else if (indexPath.row == 4) {
             [self clearDownloadsTapped];
+        } else if (indexPath.row == 5) {
+            [self resetStatsTapped];
         }
         return;
     }

@@ -6,6 +6,8 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <net/if.h>
 #include <unistd.h>
 
 // Phone-to-phone sync over the local Wi-Fi network. Each phone publishes a
@@ -74,9 +76,13 @@ static NSMutableArray *LTP2PActiveSyncs;
                 *status = 409; // Conflict: version mismatch
                 return [strongSelf versionErrorJSON];
             }
+            // Replay this phone's PRE-merge state to the peer. The peer merges
+            // it (summing combined stats) and we merge the peer's raw payload
+            // here, so each phone's numbers are added exactly once.
+            NSDictionary *preMerge = [[LTPlaylistStore sharedStore] syncPayload];
             [[LTPlaylistStore sharedStore] mergeSyncPayload:incoming];
             [strongSelf markCompletedOnMain];
-            NSMutableDictionary *reply = [NSMutableDictionary dictionaryWithDictionary:[[LTPlaylistStore sharedStore] syncPayload]];
+            NSMutableDictionary *reply = [NSMutableDictionary dictionaryWithDictionary:preMerge];
             reply[@"appVersion"] = [strongSelf appVersion];
             NSData *json = [NSJSONSerialization dataWithJSONObject:reply options:0 error:&err];
             *status = 200;
@@ -221,8 +227,37 @@ static NSMutableArray *LTP2PActiveSyncs;
         [self.resolvingServices removeObject:sender];
         return;
     }
+    // A phone browsing for the sync service ALSO discovers its OWN published
+    // service. Syncing with ourselves would merge our own stats into a
+    // self-referential "received" ledger (inflating the totals) and never reach
+    // the peer. Skip any service that resolves to one of this device's own
+    // addresses.
+    if ([self isLocalAddress:host]) {
+        [self.resolvingServices removeObject:sender];
+        return;
+    }
     [self.resolvingServices removeObject:sender];
     [self postOurPayloadToHost:host port:(NSUInteger)port];
+}
+
+- (BOOL)isLocalAddress:(NSString *)host {
+    if (!host.length) return NO;
+    struct ifaddrs *interfaces = NULL;
+    if (getifaddrs(&interfaces) != 0) return NO;
+    BOOL isLocal = NO;
+    for (struct ifaddrs *ifaddr = interfaces; ifaddr && !isLocal; ifaddr = ifaddr->ifa_next) {
+        if (!ifaddr->ifa_addr) continue;
+        if (ifaddr->ifa_addr->sa_family != AF_INET) continue;
+        const struct sockaddr_in *in4 = (const struct sockaddr_in *)ifaddr->ifa_addr;
+        char buf[INET_ADDRSTRLEN];
+        if (inet_ntop(AF_INET, &in4->sin_addr, buf, sizeof(buf))) {
+            if ([host isEqualToString:[NSString stringWithUTF8String:buf]]) {
+                isLocal = YES;
+            }
+        }
+    }
+    freeifaddrs(interfaces);
+    return isLocal;
 }
 
 - (void)netService:(NSNetService *)sender didNotResolve:(NSDictionary *)errorDict {

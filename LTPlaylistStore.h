@@ -44,6 +44,7 @@ extern NSString *const LTRecentsDidChangeNotification;
 
 - (void)recordTrackPlay:(LTTrack *)track;
 - (void)recordListenedSeconds:(NSTimeInterval)seconds forTrack:(LTTrack *)track;
+- (void)clearListeningStats;
 - (NSArray *)mostPlayedTracks;
 - (NSArray *)topArtists;
 - (NSTimeInterval)totalListeningTime;

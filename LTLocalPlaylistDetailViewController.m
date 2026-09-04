@@ -241,6 +241,7 @@
 
 - (void)playAllTapped:(id)sender {
     if (!self.playlist.tracks.count) return;
+    [LTPlayerController sharedController].queueSourceName = self.playlist.name;
     [[LTPlayerController sharedController] playQueue:self.playlist.tracks atIndex:0];
     [LTPlayerController sharedController].repeatMode = LTRepeatModeAll;
     [(LTTabBarController *)self.tabBarController showNowPlaying];
@@ -248,6 +249,7 @@
 
 - (void)shuffleTapped:(id)sender {
     if (!self.playlist.tracks.count) return;
+    [LTPlayerController sharedController].queueSourceName = self.playlist.name;
     [[LTPlayerController sharedController] playQueue:self.playlist.tracks shuffle:YES];
     [LTPlayerController sharedController].repeatMode = LTRepeatModeAll;
     [(LTTabBarController *)self.tabBarController showNowPlaying];
@@ -539,6 +541,7 @@
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    [LTPlayerController sharedController].queueSourceName = self.playlist.name;
     [[LTPlayerController sharedController] playQueue:self.playlist.tracks atIndex:indexPath.row];
     [(LTTabBarController *)self.tabBarController showNowPlaying];
 }

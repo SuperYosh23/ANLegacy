@@ -270,4 +270,87 @@ static BOOL LTFAFontLoaded = NO;
     }];
 }
 
++ (UIImage *)blurredImageFromImage:(UIImage *)image {
+    CGImageRef cgSrc = image.CGImage;
+    if (!cgSrc) return nil;
+
+    size_t srcW = CGImageGetWidth(cgSrc);
+    size_t srcH = CGImageGetHeight(cgSrc);
+    if (srcW < 2 || srcH < 2) return nil;
+
+    size_t maxDim = 100;
+    CGFloat ratio = (CGFloat)maxDim / MAX(srcW, srcH);
+    if (ratio > 1.0f) ratio = 1.0f;
+    size_t w = (size_t)MAX(2, (size_t)roundf(srcW * ratio));
+    size_t h = (size_t)MAX(2, (size_t)roundf(srcH * ratio));
+
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    uint8_t *buf = (uint8_t *)calloc(w * h * 4, 1);
+    CGContextRef ctx = CGBitmapContextCreate(buf, w, h, 8, w * 4, cs,
+                                             kCGImageAlphaPremultipliedLast | kCGBitmapByteOrderDefault);
+    CGColorSpaceRelease(cs);
+    if (!ctx) { free(buf); return nil; }
+
+    CGContextSetInterpolationQuality(ctx, kCGInterpolationHigh);
+    CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), cgSrc);
+    CGContextRelease(ctx);
+
+    size_t radius = (size_t)MAX(3, (size_t)(MIN(w, h) * 0.15));
+    uint8_t *tmp = (uint8_t *)calloc(w * h * 4, 1);
+    int passes = 3;
+
+    for (int p = 0; p < passes; p++) {
+        for (size_t y = 0; y < h; y++) {
+            for (size_t x = 0; x < w; x++) {
+                int32_t sR=0, sG=0, sB=0, sA=0;
+                int cnt = 0;
+                for (int d = -(int)radius; d <= (int)radius; d++) {
+                    size_t sx = x + d;
+                    if (sx >= w) continue;
+                    size_t i = (y * w + sx) * 4;
+                    sR += buf[i]; sG += buf[i+1]; sB += buf[i+2]; sA += buf[i+3];
+                    cnt++;
+                }
+                size_t i = (y * w + x) * 4;
+                tmp[i]   = (uint8_t)(sR / cnt);
+                tmp[i+1] = (uint8_t)(sG / cnt);
+                tmp[i+2] = (uint8_t)(sB / cnt);
+                tmp[i+3] = (uint8_t)(sA / cnt);
+            }
+        }
+        for (size_t y = 0; y < h; y++) {
+            for (size_t x = 0; x < w; x++) {
+                int32_t sR=0, sG=0, sB=0, sA=0;
+                int cnt = 0;
+                for (int d = -(int)radius; d <= (int)radius; d++) {
+                    size_t sy = y + d;
+                    if (sy >= h) continue;
+                    size_t i = (sy * w + x) * 4;
+                    sR += tmp[i]; sG += tmp[i+1]; sB += tmp[i+2]; sA += tmp[i+3];
+                    cnt++;
+                }
+                size_t i = (y * w + x) * 4;
+                buf[i]   = (uint8_t)(sR / cnt);
+                buf[i+1] = (uint8_t)(sG / cnt);
+                buf[i+2] = (uint8_t)(sB / cnt);
+                buf[i+3] = (uint8_t)(sA / cnt);
+            }
+        }
+    }
+    free(tmp);
+
+    CGColorSpaceRef cs2 = CGColorSpaceCreateDeviceRGB();
+    CGContextRef outCtx = CGBitmapContextCreate(NULL, w, h, 8, w * 4, cs2,
+                                                 kCGImageAlphaPremultipliedLast | kCGBitmapByteOrderDefault);
+    CGColorSpaceRelease(cs2);
+    if (!outCtx) { free(buf); return nil; }
+    memcpy(CGBitmapContextGetData(outCtx), buf, w * h * 4);
+    CGImageRef cgOut = CGBitmapContextCreateImage(outCtx);
+    CGContextRelease(outCtx);
+    free(buf);
+    UIImage *result = [UIImage imageWithCGImage:cgOut];
+    CGImageRelease(cgOut);
+    return result;
+}
+
 @end

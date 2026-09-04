@@ -185,6 +185,7 @@ typedef NS_ENUM(NSInteger, LTLibrarySegment) {
     if (!self.songs.count) return;
     LTPlayerController *player = [LTPlayerController sharedController];
     player.repeatMode = LTRepeatModeAll;
+    player.queueSourceName = @"Library";
     [player playQueue:self.songs shuffle:YES];
     [(LTTabBarController *)self.tabBarController showNowPlaying];
 }
@@ -193,6 +194,7 @@ typedef NS_ENUM(NSInteger, LTLibrarySegment) {
     if (!self.songs.count) return;
     LTPlayerController *player = [LTPlayerController sharedController];
     player.repeatMode = LTRepeatModeAll;
+    player.queueSourceName = @"Library";
     [player playQueue:self.songs atIndex:0];
     [(LTTabBarController *)self.tabBarController showNowPlaying];
 }
@@ -458,6 +460,7 @@ typedef NS_ENUM(NSInteger, LTLibrarySegment) {
     id item = [items objectAtIndex:(NSUInteger)indexPath.row];
 
     if (self.currentSegment == LTLibrarySegmentSongs) {
+        [LTPlayerController sharedController].queueSourceName = @"Library";
         [[LTPlayerController sharedController] playQueue:self.songs atIndex:indexPath.row];
         [(LTTabBarController *)self.tabBarController showNowPlaying];
     } else if (self.currentSegment == LTLibrarySegmentPlaylists && [item isKindOfClass:[LTLocalPlaylist class]]) {

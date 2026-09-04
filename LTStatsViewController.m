@@ -234,6 +234,7 @@ static NSString *LTFormatDuration(NSTimeInterval seconds) {
     track.title = entry.title;
     track.artist = entry.artist;
     track.thumbnailURL = entry.thumbnailURL;
+    [LTPlayerController sharedController].queueSourceName = nil;
     [[LTPlayerController sharedController] playQueue:@[track] atIndex:0];
     [(LTTabBarController *)self.navigationController.tabBarController showNowPlaying];
 }
