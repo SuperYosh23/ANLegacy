@@ -786,6 +786,15 @@ static id LTPath(id root, id key, ...) {
             NSString *mime = [best objectForKey:@"mimeType"] ?: @"";
             BOOL muxed = ([mime rangeOfString:@"video/"].location != NSNotFound);
             BOOL hasN = ([url rangeOfString:@"&n="].location != NSNotFound || [url rangeOfString:@"?n="].location != NSNotFound);
+            self.lastFormatInfo = @{
+                @"videoId": videoId,
+                @"clientName": clientName,
+                @"itag": [best objectForKey:@"itag"] ?: @(0),
+                @"mimeType": mime,
+                @"bitrate": [best objectForKey:@"bitrate"] ?: @(0),
+                @"audioSampleRate": [best objectForKey:@"audioSampleRate"] ?: @"",
+                @"muxed": @(muxed),
+            };
             LTLog(@"STREAM client=%@ itag=%d kbps=%d muxed=%d videoId=%@ hasN=%d fullurl=%@", clientName, [[best objectForKey:@"itag"] intValue], (int)kbps, muxed, videoId, hasN, url);
             if (completion) completion(url, muxed, kbps, nil);
         } else {
@@ -803,6 +812,368 @@ static id LTPath(id root, id key, ...) {
         case 18: return 128;
         default: return 128;
     }
+}
+
+#pragma mark - Lyrics (YouTube captions)
+
+- (void)fetchLyricsForVideo:(NSString *)videoId
+                 completion:(void (^)(NSString *lyricsText, NSError *error))completion {
+    if (!videoId.length) {
+        if (completion) completion(nil, [self errorWithCode:1 message:@"Missing video id"]);
+        return;
+    }
+    [self loadCaptionTracksForVideo:videoId completion:^(NSString *captionURL, NSError *error) {
+        if (error || !captionURL.length) {
+            if (completion) completion(nil, error ?: [self errorWithCode:4 message:@"No lyrics available"]);
+            return;
+        }
+        [self fetchCaptionTextAtURL:captionURL completion:completion];
+    }];
+}
+
+// Ask the player endpoint for the video's caption track list and hand back the
+// baseUrl of the best (non-auto-generated preferred) caption track.
+- (void)loadCaptionTracksForVideo:(NSString *)videoId
+                       completion:(void (^)(NSString *captionURL, NSError *error))completion {
+    if (!videoId.length) {
+        if (completion) completion(nil, [self errorWithCode:1 message:@"Missing video id"]);
+        return;
+    }
+    [self loadCaptionTracksForVideo:videoId
+                            context:[self webContext]
+                      clientStrings:@"WEB"
+                         completion:completion];
+}
+
+- (void)loadCaptionTracksForVideo:(NSString *)videoId
+                          context:(NSDictionary *)context
+                    clientStrings:(NSString *)clientStrings
+                       completion:(void (^)(NSString *captionURL, NSError *error))completion {
+    NSDictionary *body = @{
+        @"context": context,
+        @"videoId": videoId,
+        @"racyCheckOk": @YES,
+        @"contentCheckOk": @YES,
+    };
+    [self postToHost:@"www.youtube.com" path:@"player" body:body completion:^(id json, NSError *error) {
+        if (error || !json) {
+            LTLog(@"LYRICS player error for videoId=%@ client=%@ error=%@", videoId, clientStrings, error ?: @"nil-json");
+            [self loadCaptionTracksWithFallback:videoId
+                          firstClientString:clientStrings
+                                  completion:completion];
+            return;
+        }
+        NSDictionary *captions = [json objectForKey:@"captions"];
+        NSDictionary *tracklist = [captions objectForKey:@"playerCaptionsTracklistRenderer"];
+        NSArray *tracks = [tracklist objectForKey:@"captionTracks"];
+        NSString *status = [[json objectForKey:@"playabilityStatus"] objectForKey:@"status"];
+        LTLog(@"LYRICS player captions client=%@ tracks=%d status=%@ videoId=%@", clientStrings, (int)[tracks count], status ?: @"?", videoId);
+        if (![tracks isKindOfClass:[NSArray class]] || tracks.count == 0) {
+            [self loadCaptionTracksWithFallback:videoId
+                          firstClientString:clientStrings
+                                  completion:completion];
+            return;
+        }
+        NSDictionary *choice = nil;
+        for (NSDictionary *candidate in tracks) {
+            if (![candidate isKindOfClass:[NSDictionary class]]) continue;
+            NSString *kind = [candidate objectForKey:@"kind"];
+            if (kind.length && ![kind isEqualToString:@"asr"]) {
+                if ([[candidate objectForKey:@"baseUrl"] length]) { choice = candidate; break; }
+            }
+        }
+        if (!choice) {
+            for (NSDictionary *candidate in tracks) {
+                if (![candidate isKindOfClass:[NSDictionary class]]) continue;
+                if ([[candidate objectForKey:@"baseUrl"] length]) { choice = candidate; break; }
+            }
+        }
+        NSString *baseUrl = [choice objectForKey:@"baseUrl"];
+        if (!baseUrl.length) {
+            [self loadCaptionTracksWithFallback:videoId
+                          firstClientString:clientStrings
+                                  completion:completion];
+            return;
+        }
+        if (completion) completion(baseUrl, nil);
+    }];
+}
+
+- (void)loadCaptionTracksWithFallback:(NSString *)videoId
+                  firstClientString:(NSString *)firstClientString
+                          completion:(void (^)(NSString *captionURL, NSError *error))completion {
+    if ([firstClientString isEqualToString:@"WEB"]) {
+        [self loadCaptionTracksForVideo:videoId
+                                context:[self iosContext]
+                          clientStrings:@"IOS"
+                             completion:completion];
+        return;
+    }
+    if ([firstClientString isEqualToString:@"IOS"]) {
+        [self loadCaptionTracksForVideo:videoId
+                                context:[self androidContext]
+                          clientStrings:@"ANDROID"
+                             completion:completion];
+        return;
+    }
+    LTLog(@"LYRICS trying watch page fallback for videoId=%@", videoId);
+    [self loadCaptionTracksFromWatchPage:videoId completion:completion];
+}
+
+- (void)loadCaptionTracksFromWatchPage:(NSString *)videoId
+                             completion:(void (^)(NSString *captionURL, NSError *error))completion {
+    NSString *urlString = [NSString stringWithFormat:@"https://www.youtube.com/watch?v=%@", videoId];
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlString]
+                                                           cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
+                                                       timeoutInterval:30.0];
+    [request setValue:LTBrowserUserAgent forHTTPHeaderField:@"User-Agent"];
+    [NSURLConnection sendAsynchronousRequest:request queue:[NSOperationQueue mainQueue]
+                           completionHandler:^(NSURLResponse *response, NSData *data, NSError *connectionError) {
+        if (connectionError || !data.length) {
+            LTLog(@"LYRICS watch page fetch error videoId=%@ err=%@", videoId, connectionError ?: @"no-data");
+            if (completion) completion(nil, connectionError ?: [self errorWithCode:6 message:@"Watch page fetch failed"]);
+            return;
+        }
+        NSString *html = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+        if (!html.length) {
+            if (completion) completion(nil, [self errorWithCode:6 message:@"Empty watch page"]);
+            return;
+        }
+        LTLog(@"LYRICS watch page html len=%d hasYT=%d consent=%d videoId=%@",
+              (int)html.length,
+              (int)[self occurrencesOf:@"ytInitialPlayerResponse" in:html],
+              [html rangeOfString:@"consent.youtube.com"].location != NSNotFound,
+              videoId);
+        NSString *playerJSON = [self extractYTInitialPlayerResponse:html];
+        LTLog(@"LYRICS watch page playerJSON len=%d hasCaptions=%d videoId=%@",
+              (int)playerJSON.length,
+              [playerJSON rangeOfString:@"\"captions\""].location != NSNotFound,
+              videoId);
+        if (!playerJSON.length) {
+            LTLog(@"LYRICS no ytInitialPlayerResponse in watch page for videoId=%@", videoId);
+            if (completion) completion(nil, [self errorWithCode:6 message:@"No player data in watch page"]);
+            return;
+        }
+        NSError *jsonErr = nil;
+        id obj = [NSJSONSerialization JSONObjectWithData:[playerJSON dataUsingEncoding:NSUTF8StringEncoding]
+                                                options:0 error:&jsonErr];
+        if (jsonErr || ![obj isKindOfClass:[NSDictionary class]]) {
+            LTLog(@"LYRICS watch page JSON parse failed for videoId=%@", videoId);
+            if (completion) completion(nil, jsonErr ?: [self errorWithCode:6 message:@"JSON parse failed"]);
+            return;
+        }
+        NSDictionary *captions = [obj objectForKey:@"captions"];
+        NSDictionary *tracklist = [captions objectForKey:@"playerCaptionsTracklistRenderer"];
+        NSArray *tracks = [tracklist objectForKey:@"captionTracks"];
+        LTLog(@"LYRICS watch page captions tracks=%d videoId=%@", (int)[tracks count], videoId);
+        if (![tracks isKindOfClass:[NSArray class]] || tracks.count == 0) {
+            if (completion) completion(nil, [self errorWithCode:4 message:@"No lyrics available"]);
+            return;
+        }
+        NSDictionary *choice = nil;
+        for (NSDictionary *candidate in tracks) {
+            if (![candidate isKindOfClass:[NSDictionary class]]) continue;
+            NSString *kind = [candidate objectForKey:@"kind"];
+            if (kind.length && ![kind isEqualToString:@"asr"]) {
+                if ([[candidate objectForKey:@"baseUrl"] length]) { choice = candidate; break; }
+            }
+        }
+        if (!choice) {
+            for (NSDictionary *candidate in tracks) {
+                if (![candidate isKindOfClass:[NSDictionary class]]) continue;
+                if ([[candidate objectForKey:@"baseUrl"] length]) { choice = candidate; break; }
+            }
+        }
+        NSString *baseUrl = [choice objectForKey:@"baseUrl"];
+        if (!baseUrl.length) {
+            if (completion) completion(nil, [self errorWithCode:4 message:@"No lyrics available"]);
+            return;
+        }
+        if (completion) completion(baseUrl, nil);
+    }];
+}
+
+- (NSInteger)occurrencesOf:(NSString *)needle in:(NSString *)haystack {
+    if (!needle.length || !haystack.length) return 0;
+    NSInteger count = 0;
+    NSUInteger searchFrom = 0;
+    while (YES) {
+        NSRange r = [haystack rangeOfString:needle options:NSLiteralSearch range:NSMakeRange(searchFrom, haystack.length - searchFrom)];
+        if (r.location == NSNotFound) break;
+        count++;
+        searchFrom = r.location + r.length;
+        if (searchFrom >= haystack.length) break;
+    }
+    return count;
+}
+
+- (NSString *)extractYTInitialPlayerResponse:(NSString *)html {
+    NSString *key = @"var ytInitialPlayerResponse = ";
+    NSRange start = [html rangeOfString:key];
+    if (start.location == NSNotFound) {
+        key = @"window[\"ytInitialPlayerResponse\"] = ";
+        start = [html rangeOfString:key];
+    }
+    if (start.location == NSNotFound) return nil;
+    NSUInteger offset = start.location + start.length;
+    if (offset >= html.length) return nil;
+    NSUInteger braceCount = 0;
+    BOOL inString = NO;
+    BOOL escaped = NO;
+    for (NSUInteger i = offset; i < html.length; i++) {
+        unichar c = [html characterAtIndex:i];
+        if (escaped) { escaped = NO; continue; }
+        if (c == '\\') { escaped = YES; continue; }
+        if (c == '"') { inString = !inString; continue; }
+        if (inString) continue;
+        if (c == '{') braceCount++;
+        else if (c == '}') {
+            if (braceCount == 0) break;
+            braceCount--;
+            if (braceCount == 0) {
+                return [html substringWithRange:NSMakeRange(offset, i + 1 - offset)];
+            }
+        }
+    }
+    return nil;
+}
+
+- (void)fetchCaptionTextAtURL:(NSString *)urlString
+                   completion:(void (^)(NSString *text, NSError *error))completion {
+    NSString *requestURL = urlString;
+    NSRange amp = [urlString rangeOfString:@"?"];
+    NSString *connector = (amp.location == NSNotFound) ? @"?" : @"&";
+    if ([urlString rangeOfString:@"fmt="].location == NSNotFound) {
+        requestURL = [urlString stringByAppendingString:[NSString stringWithFormat:@"%@fmt=1", connector]];
+    }
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:requestURL]
+                                                           cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
+                                                       timeoutInterval:30.0];
+    [request setValue:LTBrowserUserAgent forHTTPHeaderField:@"User-Agent"];
+    [NSURLConnection sendAsynchronousRequest:request queue:[NSOperationQueue mainQueue]
+                           completionHandler:^(NSURLResponse *response, NSData *data, NSError *connectionError) {
+        if (connectionError) {
+            if (completion) completion(nil, connectionError);
+            return;
+        }
+        NSString *raw = nil;
+        if (data.length) raw = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+        if (!raw.length) {
+            if (completion) completion(nil, [self errorWithCode:5 message:@"No caption data"]);
+            return;
+        }
+        NSArray *lines = nil;
+        if ([raw rangeOfString:@"<text"].location != NSNotFound) {
+            lines = [self parseCaptionLinesFromXML:raw];
+        }
+        if (!lines.count && [raw rangeOfString:@"}}" options:NSLiteralSearch].location != NSNotFound) {
+            lines = [self parseCaptionLinesFromJSON:raw];
+        }
+        if (!lines.count) {
+            lines = [self parseCaptionLinesFromVTT:raw];
+        }
+        if (!lines.count) {
+            if (completion) completion(nil, [self errorWithCode:5 message:@"No caption data"]);
+            return;
+        }
+        if (completion) completion([lines componentsJoinedByString:@"\n"], nil);
+    }];
+}
+
+- (NSArray *)parseCaptionLinesFromXML:(NSString *)raw {
+    NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:@"<text[^>]*>(.*?)</text>"
+                                                                           options:NSRegularExpressionDotMatchesLineSeparators
+                                                                             error:nil];
+    NSArray *matches = [regex matchesInString:raw options:0 range:NSMakeRange(0, raw.length)];
+    if (!matches.count) return nil;
+    NSMutableArray *lines = [NSMutableArray array];
+    for (NSTextCheckingResult *match in matches) {
+        NSRange range = [match rangeAtIndex:1];
+        if (range.location == NSNotFound) continue;
+        NSString *line = [raw substringWithRange:range];
+        line = [self decodeCaptionText:line];
+        line = [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (line.length && [line rangeOfString:@"[Music]"].location == NSNotFound) {
+            [lines addObject:line];
+        }
+    }
+    return lines.count ? lines : nil;
+}
+
+- (NSArray *)parseCaptionLinesFromJSON:(NSString *)raw {
+    NSData *data = [raw dataUsingEncoding:NSUTF8StringEncoding];
+    id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    if (![obj isKindOfClass:[NSDictionary class]]) return nil;
+    NSArray *events = [obj objectForKey:@"events"];
+    if (![events isKindOfClass:[NSArray class]]) return nil;
+    NSMutableArray *lines = [NSMutableArray array];
+    for (NSDictionary *event in events) {
+        if (![event isKindOfClass:[NSDictionary class]]) continue;
+        NSArray *segs = [event objectForKey:@"segs"];
+        if (![segs isKindOfClass:[NSArray class]]) continue;
+        NSMutableString *buffer = [NSMutableString string];
+        for (id seg in segs) {
+            if (![seg isKindOfClass:[NSDictionary class]]) continue;
+            NSString *utf8 = [seg objectForKey:@"utf8"];
+            if (utf8.length) [buffer appendString:utf8];
+        }
+        NSString *trimmed = [buffer stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (!trimmed.length) continue;
+        if ([trimmed rangeOfString:@"[Music]"].location != NSNotFound) continue;
+        [lines addObject:trimmed];
+    }
+    return lines.count ? lines : nil;
+}
+
+- (NSArray *)parseCaptionLinesFromVTT:(NSString *)raw {
+    NSArray *allLines = [raw componentsSeparatedByString:@"\n"];
+    NSMutableArray *lines = [NSMutableArray array];
+    for (NSString *line in allLines) {
+        NSString *candidate = [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (!candidate.length) continue;
+        if ([candidate hasPrefix:@"WEBVTT"]) continue;
+        if ([candidate rangeOfString:@"-->"].location != NSNotFound) continue;
+        if ([candidate hasPrefix:@"<c."]) continue;
+        NSString *stripped = [self stripVTTInlineTags:candidate];
+        if (stripped.length && [stripped rangeOfString:@"[Music]"].location == NSNotFound) {
+            [lines addObject:stripped];
+        }
+    }
+    return lines.count ? lines : nil;
+}
+
+- (NSString *)stripVTTInlineTags:(NSString *)line {
+    if ([line rangeOfString:@"<"].location == NSNotFound) return line;
+    NSMutableString *out = [line mutableCopy];
+    while (YES) {
+        NSRange open = [out rangeOfString:@"<"];
+        if (open.location == NSNotFound) break;
+        NSRange close = [out rangeOfString:@">" options:NSLiteralSearch range:NSMakeRange(open.location, out.length - open.location)];
+        if (close.location == NSNotFound) break;
+        [out deleteCharactersInRange:NSMakeRange(open.location, close.location - open.location + 1)];
+    }
+    return out;
+}
+
+- (NSString *)decodeCaptionText:(NSString *)raw {
+    if (!raw.length) return @"";
+    NSMutableString *result = [raw mutableCopy];
+    NSArray *pairs = @[
+        @[@"&amp;", @"&"],
+        @[@"&lt;", @"<"],
+        @[@"&gt;", @">"],
+        @[@"&quot;", @"\""],
+        @[@"&#39;", @"'"],
+        @[@"&nbsp;", @" "],
+        @[@"♪", @""],
+    ];
+    for (NSArray *pair in pairs) {
+        [result replaceOccurrencesOfString:[pair objectAtIndex:0]
+                                withString:[pair objectAtIndex:1]
+                                   options:NSLiteralSearch
+                                     range:NSMakeRange(0, result.length)];
+    }
+    return result;
 }
 
 #pragma mark - Metadata

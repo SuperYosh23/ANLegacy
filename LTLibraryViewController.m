@@ -17,16 +17,18 @@ typedef NS_ENUM(NSInteger, LTLibrarySegment) {
     LTLibrarySegmentAlbums,
 };
 
-@interface LTLibraryViewController () <UITableViewDataSource, UITableViewDelegate, UIAlertViewDelegate>
+@interface LTLibraryViewController () <UITableViewDataSource, UITableViewDelegate, UIAlertViewDelegate, UISearchBarDelegate>
 @property (nonatomic, strong) UISegmentedControl *segControl;
+@property (nonatomic, strong) UISearchBar *songSearchBar;
 @property (nonatomic, strong) UITableView *tableView;
 @property (nonatomic, strong) UILabel *emptyLabel;
 @property (nonatomic, assign) NSInteger currentSegment;
 @property (nonatomic, strong) NSMutableArray *playlists;
 @property (nonatomic, strong) NSMutableArray *songs;
+@property (nonatomic, strong) NSArray *displayedSongs;
 @property (nonatomic, strong) NSArray *artists;
 @property (nonatomic, strong) NSArray *albums;
-@property (nonatomic, assign) NSInteger pendingRemoveRow;
+@property (nonatomic, strong) LTTrack *pendingRemoveTrack;
 @property (nonatomic, assign) BOOL ignorePlaylistChanges;
 @end
 
@@ -51,6 +53,15 @@ typedef NS_ENUM(NSInteger, LTLibrarySegment) {
     [self.view addSubview:self.segControl];
 
     CGFloat tableY = 42.0f;
+    self.songSearchBar = [[UISearchBar alloc] initWithFrame:CGRectMake(0, tableY, bounds.size.width, 44)];
+    self.songSearchBar.placeholder = @"Search Songs";
+    self.songSearchBar.delegate = self;
+    self.songSearchBar.autocorrectionType = UITextAutocorrectionTypeNo;
+    self.songSearchBar.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    self.songSearchBar.showsCancelButton = YES;
+    self.songSearchBar.hidden = YES;
+    [self.view addSubview:self.songSearchBar];
+
     self.tableView = [[UITableView alloc] initWithFrame:CGRectMake(0, tableY, bounds.size.width, bounds.size.height - tableY)
                                                   style:UITableViewStylePlain];
     self.tableView.dataSource = self;
@@ -132,11 +143,30 @@ typedef NS_ENUM(NSInteger, LTLibrarySegment) {
 - (NSArray *)currentItems {
     switch (self.currentSegment) {
         case LTLibrarySegmentPlaylists: return self.playlists;
-        case LTLibrarySegmentSongs: return self.songs;
+        case LTLibrarySegmentSongs: return self.displayedSongs ?: self.songs;
         case LTLibrarySegmentArtists: return [self sortedByName:self.artists];
         case LTLibrarySegmentAlbums: return [self sortedByName:self.albums];
     }
     return nil;
+}
+
+- (void)applySongFilter {
+    NSString *query = self.songSearchBar.text;
+    query = [query stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (!query.length) {
+        self.displayedSongs = self.songs;
+        return;
+    }
+    NSMutableArray *filtered = [NSMutableArray array];
+    for (LTTrack *track in self.songs) {
+        NSString *title = track.title.length ? track.title : @"";
+        NSString *artist = track.artist.length ? track.artist : @"";
+        if ([title rangeOfString:query options:NSCaseInsensitiveSearch].location != NSNotFound ||
+            [artist rangeOfString:query options:NSCaseInsensitiveSearch].location != NSNotFound) {
+            [filtered addObject:track];
+        }
+    }
+    self.displayedSongs = filtered;
 }
 
 - (BOOL)isUnknownAlbumPlaceholder:(NSString *)name {
@@ -151,6 +181,13 @@ typedef NS_ENUM(NSInteger, LTLibrarySegment) {
 
 - (void)reloadForSegment {
     [self updateRightBarButton];
+    [self applySongFilter];
+    BOOL songsSegment = (self.currentSegment == LTLibrarySegmentSongs);
+    self.songSearchBar.hidden = !songsSegment;
+    if (songsSegment) [self.songSearchBar resignFirstResponder];
+    CGRect bounds = self.view.bounds;
+    CGFloat tableY = songsSegment ? 90.0f : 42.0f;
+    self.tableView.frame = CGRectMake(0, tableY, bounds.size.width, bounds.size.height - tableY);
     [self.tableView reloadData];
     [self refreshEmptyState];
 }
@@ -210,7 +247,11 @@ typedef NS_ENUM(NSInteger, LTLibrarySegment) {
             self.emptyLabel.text = @"No playlists yet.\nTap + to create one.";
             break;
         case LTLibrarySegmentSongs:
-            self.emptyLabel.text = @"No downloaded songs yet.\nUse the download button in Search or in a playlist.";
+            if ([[[self.songSearchBar text] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] length]) {
+                self.emptyLabel.text = @"No songs match your search.";
+            } else {
+                self.emptyLabel.text = @"No downloaded songs yet.\nUse the download button in Search or in a playlist.";
+            }
             break;
         case LTLibrarySegmentArtists:
         case LTLibrarySegmentAlbums:
@@ -219,6 +260,30 @@ typedef NS_ENUM(NSInteger, LTLibrarySegment) {
             break;
     }
     self.emptyLabel.hidden = NO;
+}
+
+#pragma mark - UISearchBarDelegate
+
+- (void)searchBarTextDidBeginEditing:(UISearchBar *)searchBar {
+    searchBar.showsCancelButton = YES;
+}
+
+- (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)searchText {
+    [self applySongFilter];
+    [self.tableView reloadData];
+    [self refreshEmptyState];
+}
+
+- (void)searchBarCancelButtonClicked:(UISearchBar *)searchBar {
+    searchBar.text = @"";
+    [searchBar resignFirstResponder];
+    [self applySongFilter];
+    [self.tableView reloadData];
+    [self refreshEmptyState];
+}
+
+- (void)searchBarSearchButtonClicked:(UISearchBar *)searchBar {
+    [searchBar resignFirstResponder];
 }
 
 #pragma mark - Actions
@@ -265,10 +330,9 @@ typedef NS_ENUM(NSInteger, LTLibrarySegment) {
 
 - (void)alertView:(UIAlertView *)alertView clickedButtonAtIndex:(NSInteger)buttonIndex {
     if (alertView.tag == 620 && buttonIndex == 1) {
-        NSInteger row = self.pendingRemoveRow;
-        self.pendingRemoveRow = -1;
-        if (row >= 0 && row < (NSInteger)self.songs.count) {
-            LTTrack *track = [self.songs objectAtIndex:(NSUInteger)row];
+        if (self.pendingRemoveTrack) {
+            LTTrack *track = self.pendingRemoveTrack;
+            self.pendingRemoveTrack = nil;
             LTLog(@"LIB remove download %@ title=%@", track.videoId, track.title);
             [[LTPlaylistStore sharedStore] removeDownloadsForTracks:@[track]];
         }
@@ -407,10 +471,11 @@ typedef NS_ENUM(NSInteger, LTLibrarySegment) {
 - (void)rowRemoveTapped:(id)sender {
     UIButton *button = (UIButton *)sender;
     NSInteger row = button.tag;
-    if (row < 0 || row >= (NSInteger)self.songs.count) return;
-    LTTrack *track = [self.songs objectAtIndex:(NSUInteger)row];
+    NSArray *items = [self currentItems];
+    if (row < 0 || row >= (NSInteger)items.count) return;
+    LTTrack *track = [items objectAtIndex:(NSUInteger)row];
     if (![[LTPlaylistStore sharedStore] isTrackDownloaded:track]) return;
-    self.pendingRemoveRow = row;
+    self.pendingRemoveTrack = track;
     UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"Remove Download"
                                                     message:[NSString stringWithFormat:@"Remove \"%@\" from your offline downloads?", track.title]
                                                    delegate:self
@@ -461,7 +526,7 @@ typedef NS_ENUM(NSInteger, LTLibrarySegment) {
 
     if (self.currentSegment == LTLibrarySegmentSongs) {
         [LTPlayerController sharedController].queueSourceName = @"Library";
-        [[LTPlayerController sharedController] playQueue:self.songs atIndex:indexPath.row];
+        [[LTPlayerController sharedController] playQueue:[self currentItems] atIndex:indexPath.row];
         [(LTTabBarController *)self.tabBarController showNowPlaying];
     } else if (self.currentSegment == LTLibrarySegmentPlaylists && [item isKindOfClass:[LTLocalPlaylist class]]) {
         LTLocalPlaylistDetailViewController *detail = [[LTLocalPlaylistDetailViewController alloc] initWithPlaylist:item];

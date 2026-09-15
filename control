@@ -1,6 +1,6 @@
 Package: com.legacymusic.app
 Name: audioNINJA Legacy
-Version: 8
+Version: 9
 Architecture: iphoneos-arm
 Description: YouTube Music client for legacy iOS devices
 Maintainer: superyosh23

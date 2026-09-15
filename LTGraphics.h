@@ -2,6 +2,9 @@
 
 @interface LTGraphics : NSObject
 
++ (void)loadFARegisteredFontsIfNeeded;
++ (UIFont *)fontAwesomeFontWithSize:(CGFloat)size;
+
 + (UIImage *)homeIcon;
 + (UIImage *)searchIcon;
 + (UIImage *)popularIcon;

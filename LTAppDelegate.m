@@ -8,6 +8,7 @@
 #import "LTTabBarController.h"
 #import "LTGraphics.h"
 #import "LTDebugSettings.h"
+#import "LTiPodViewController.h"
 #import "LTLog.h"
 #import <AVFoundation/AVFoundation.h>
 
@@ -32,6 +33,17 @@ static void LTUncaughtExceptionHandler(NSException *e) {
 
     self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
 
+    if ([LTiPodViewController isEnabled]) {
+        self.window.rootViewController = [[LTiPodViewController alloc] init];
+    } else {
+        self.window.rootViewController = [LTAppDelegate makeTabBarController];
+    }
+    [self.window makeKeyAndVisible];
+    [LTAppDelegate applyDisplayModeAnimated:NO];
+    return YES;
+}
+
++ (UITabBarController *)makeTabBarController {
     NSMutableArray *controllers = [NSMutableArray array];
 
     LTHomeViewController *home = [[LTHomeViewController alloc] init];
@@ -61,10 +73,7 @@ static void LTUncaughtExceptionHandler(NSException *e) {
 
     UITabBarController *tabBar = [[LTTabBarController alloc] init];
     tabBar.viewControllers = controllers;
-    self.window.rootViewController = tabBar;
-    [self.window makeKeyAndVisible];
-    [LTAppDelegate applyDisplayModeAnimated:NO];
-    return YES;
+    return tabBar;
 }
 
 + (void)applyDisplayModeAnimated:(BOOL)animated {

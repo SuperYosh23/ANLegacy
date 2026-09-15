@@ -397,8 +397,7 @@
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (self.showingHistory) {
-        NSUInteger count = [[[LTPlaylistStore sharedStore] searchHistory] count];
-        return count ? (NSInteger)count + 1 : 0;
+        return (NSInteger)[[[LTPlaylistStore sharedStore] searchHistory] count];
     }
     return (NSInteger)self.results.count;
 }
@@ -412,20 +411,6 @@
     if (self.showingHistory) {
         static NSString *HistoryCellId = @"LTHistoryCell";
         NSArray *history = [[LTPlaylistStore sharedStore] searchHistory];
-        NSInteger clearRow = (NSInteger)history.count;
-        if (indexPath.row == clearRow) {
-            UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:HistoryCellId];
-            if (!cell) {
-                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:HistoryCellId];
-            }
-            cell.textLabel.text = @"Clear Search History";
-            cell.textLabel.textAlignment = NSTextAlignmentCenter;
-            cell.textLabel.textColor = [UIColor grayColor];
-            cell.textLabel.font = [UIFont systemFontOfSize:14];
-            cell.imageView.image = nil;
-            cell.accessoryView = nil;
-            return cell;
-        }
         UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:HistoryCellId];
         if (!cell) {
             cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:HistoryCellId];
@@ -539,11 +524,6 @@
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     if (self.showingHistory) {
         NSArray *history = [[LTPlaylistStore sharedStore] searchHistory];
-        if (indexPath.row >= (NSInteger)history.count) {
-            [[LTPlaylistStore sharedStore] clearSearchHistory];
-            [self showSearchHistory];
-            return;
-        }
         self.searchBar.text = [history objectAtIndex:(NSUInteger)indexPath.row];
         [self performSearch];
         return;

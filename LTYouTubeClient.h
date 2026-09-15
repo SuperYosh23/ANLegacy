@@ -11,6 +11,11 @@ extern NSString *const LTBrowserUserAgent;
 
 @property (nonatomic, copy) NSString *visitorData;
 
+// Populated when a stream format is successfully selected by
+// streamURLForVideo:completion:. Keys: videoId, clientName, itag,
+// mimeType, bitrate (bps), audioSampleRate, muxed.
+@property (nonatomic, copy) NSDictionary *lastFormatInfo;
+
 - (void)searchWithQuery:(NSString *)query type:(NSString *)type
              completion:(void (^)(NSArray *items, NSError *error))completion;
 
@@ -36,6 +41,9 @@ extern NSString *const LTBrowserUserAgent;
 
 - (void)loadImageWithURL:(NSString *)urlString
               completion:(void (^)(UIImage *image))completion;
+
+- (void)fetchLyricsForVideo:(NSString *)videoId
+                 completion:(void (^)(NSString *lyricsText, NSError *error))completion;
 
 - (NSString *)highResThumbnailURL:(NSString *)urlString;
 

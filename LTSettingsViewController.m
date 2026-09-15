@@ -10,6 +10,7 @@
 #import "LTPlaylistSelectViewController.h"
 #import "LTHomeViewController.h"
 #import "LTDebugMenuViewController.h"
+#import "LTiPodViewController.h"
 #import "LTLog.h"
 
 typedef NS_ENUM(NSInteger, LTSettingsSection) {
@@ -25,6 +26,7 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
 @property (nonatomic, strong) UISwitch *kbpsSwitch;
 @property (nonatomic, strong) UISwitch *bgSwitch;
 @property (nonatomic, strong) UISwitch *animSwitch;
+@property (nonatomic, strong) UISwitch *ipodSwitch;
 @property (nonatomic, strong) UIAlertView *progressAlert;
 @property (nonatomic, assign) BOOL refreshingMetadata;
 @property (nonatomic, assign) NSInteger versionTapCount;
@@ -122,6 +124,20 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
     [LTTransitionSettings setAnimationsEnabled:self.animSwitch.on];
 }
 
+- (UISwitch *)ipodSwitch {
+    if (!_ipodSwitch) {
+        _ipodSwitch = [[UISwitch alloc] init];
+        _ipodSwitch.on = [LTiPodViewController isEnabled];
+        [_ipodSwitch addTarget:self action:@selector(ipodChanged:) forControlEvents:UIControlEventValueChanged];
+    }
+    return _ipodSwitch;
+}
+
+- (void)ipodChanged:(id)sender {
+    [LTiPodViewController setEnabled:self.ipodSwitch.on];
+    [LTiPodViewController applyiPodModeAnimated:YES];
+}
+
 #pragma mark - Storage
 
 - (void)clearDownloadsTapped {
@@ -147,6 +163,16 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
     }
     [[NSNotificationCenter defaultCenter] postNotificationName:LTPlaylistsDidChangeNotification object:store];
     [self.tableView reloadData];
+}
+
+- (void)clearSearchHistoryTapped {
+    UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"Clear Search History"
+                                                    message:@"Remove all saved search terms?"
+                                                   delegate:self
+                                          cancelButtonTitle:@"Cancel"
+                                          otherButtonTitles:@"Clear", nil];
+    alert.tag = 903;
+    [alert show];
 }
 
 - (void)resetStatsTapped {
@@ -316,6 +342,10 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
     if (alertView.tag == 902 && buttonIndex == 1) {
         [self resetListeningStats];
     }
+    if (alertView.tag == 903 && buttonIndex == 1) {
+        [[LTPlaylistStore sharedStore] clearSearchHistory];
+        [self.tableView reloadData];
+    }
 }
 
 - (NSString *)speedLabel {
@@ -359,8 +389,8 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     switch (section) {
         case LTSettingsSectionPlayback: return 2;
-        case LTSettingsSectionAppearance: return 4;
-        case LTSettingsSectionData: return 6;
+        case LTSettingsSectionAppearance: return 5;
+        case LTSettingsSectionData: return 7;
         case LTSettingsSectionAbout: return 2;
         default: return 0;
     }
@@ -402,6 +432,10 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
                 cell.detailTextLabel.text = [self speedLabel];
                 cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
                 cell.selectionStyle = UITableViewCellSelectionStyleBlue;
+            } else if (indexPath.row == 3) {
+                cell.textLabel.text = @"iPod Mode";
+                cell.detailTextLabel.text = @"";
+                cell.accessoryView = [self ipodSwitch];
             } else {
                 cell.textLabel.text = @"Recents Tile Size";
                 cell.detailTextLabel.text = [self tileSizeLabel];
@@ -429,8 +463,12 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
                 cell.textLabel.text = @"Clear Offline Downloads";
                 cell.textLabel.textColor = [UIColor redColor];
                 cell.selectionStyle = UITableViewCellSelectionStyleBlue;
-            } else {
+            } else if (indexPath.row == 5) {
                 cell.textLabel.text = @"Reset Listening Stats";
+                cell.textLabel.textColor = [UIColor redColor];
+                cell.selectionStyle = UITableViewCellSelectionStyleBlue;
+            } else {
+                cell.textLabel.text = @"Clear Search History";
                 cell.textLabel.textColor = [UIColor redColor];
                 cell.selectionStyle = UITableViewCellSelectionStyleBlue;
             }
@@ -467,7 +505,7 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
         if (indexPath.row == 2) {
             LTTransitionSpeedViewController *vc = [[LTTransitionSpeedViewController alloc] init];
             [self.navigationController pushViewController:vc animated:YES];
-        } else if (indexPath.row == 3) {
+        } else if (indexPath.row == 4) {
             LTRecentsTileSizeViewController *vc = [[LTRecentsTileSizeViewController alloc] init];
             [self.navigationController pushViewController:vc animated:YES];
         }
@@ -484,6 +522,8 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
             [self clearDownloadsTapped];
         } else if (indexPath.row == 5) {
             [self resetStatsTapped];
+        } else if (indexPath.row == 6) {
+            [self clearSearchHistoryTapped];
         }
         return;
     }
