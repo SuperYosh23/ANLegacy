@@ -23,6 +23,7 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
 @property (nonatomic, copy) void (^downloadCompletion)(void);
 @property (nonatomic, assign) BOOL downloading;
 @property (nonatomic, strong) NSMutableArray *libraryTracks;
+@property (nonatomic, strong) NSMutableDictionary *artistAvatarURLs;
 @end
 
 @implementation LTStatsEntry
@@ -45,9 +46,11 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
         _playlists = [NSMutableArray array];
         _downloadQueue = [NSMutableArray array];
         _libraryTracks = [NSMutableArray array];
+        _artistAvatarURLs = [NSMutableDictionary dictionary];
         [self ensureDirectories];
         [self loadPlaylists];
         [self loadLibrary];
+        [self loadArtistAvatars];
     }
     return self;
 }
@@ -104,6 +107,40 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
 
 - (void)postPlaylistsChanged {
     [[NSNotificationCenter defaultCenter] postNotificationName:LTPlaylistsDidChangeNotification object:self];
+}
+
+#pragma mark - Artist avatars
+
+- (NSString *)artistAvatarsFilePath {
+    return [[self baseDirectory] stringByAppendingPathComponent:@"artistAvatars.plist"];
+}
+
+- (void)loadArtistAvatars {
+    NSDictionary *plist = [NSDictionary dictionaryWithContentsOfFile:[self artistAvatarsFilePath]];
+    if ([plist isKindOfClass:[NSDictionary class]]) {
+        [_artistAvatarURLs addEntriesFromDictionary:plist];
+    }
+    LTLog(@"STORE loaded %d artist avatars", (int)_artistAvatarURLs.count);
+}
+
+- (void)saveArtistAvatars {
+    [_artistAvatarURLs writeToFile:[self artistAvatarsFilePath] atomically:YES];
+}
+
+- (NSString *)artistAvatarKeyForName:(NSString *)name {
+    NSString *trimmed = [name stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    return [trimmed lowercaseString];
+}
+
+- (NSString *)artistAvatarURLForName:(NSString *)name {
+    if (!name.length) return nil;
+    return [_artistAvatarURLs objectForKey:[self artistAvatarKeyForName:name]];
+}
+
+- (void)setArtistAvatarURL:(NSString *)url forName:(NSString *)name {
+    if (!name.length || !url.length) return;
+    [_artistAvatarURLs setObject:url forKey:[self artistAvatarKeyForName:name]];
+    [self saveArtistAvatars];
 }
 
 #pragma mark - Library

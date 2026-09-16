@@ -224,11 +224,34 @@
         [strongSelf.results addObjectsFromArray:items];
         [strongSelf.tableView reloadData];
         strongSelf.emptyLabel.hidden = YES;
+        if ([type isEqualToString:@"artists"]) {
+            [strongSelf upgradeArtistAvatars];
+        }
     };
     if ([type isEqualToString:@"videos"]) {
         [[LTYouTubeClient sharedClient] searchVideosWithQuery:query completion:finish];
     } else {
         [[LTYouTubeClient sharedClient] searchWithQuery:query type:type completion:finish];
+    }
+}
+
+- (void)upgradeArtistAvatars {
+    for (NSUInteger i = 0; i < self.results.count; i++) {
+        id item = [self.results objectAtIndex:i];
+        if (![item isKindOfClass:[LTBrowseItem class]]) continue;
+        LTBrowseItem *bi = item;
+        if (bi.kind != LTBrowseKindArtist || !bi.browseId.length) continue;
+        __weak LTSearchViewController *weakSelf = self;
+        [[LTYouTubeClient sharedClient] channelAvatarURLForBrowseId:bi.browseId completion:^(NSString *avatarURL) {
+            LTSearchViewController *strongSelf = weakSelf;
+            if (!strongSelf || !avatarURL.length) return;
+            NSString *square = [[LTYouTubeClient sharedClient] channelAvatarURL:avatarURL size:160];
+            bi.thumbnailURL = square;
+            if (i < strongSelf.results.count && [strongSelf.results objectAtIndex:i] == bi) {
+                [strongSelf.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:(NSInteger)i inSection:0]]
+                                            withRowAnimation:UITableViewRowAnimationNone];
+            }
+        }];
     }
 }
 

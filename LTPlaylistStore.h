@@ -68,6 +68,9 @@ extern NSString *const LTRecentsDidChangeNotification;
 - (void)resolveThumbnailForTrack:(LTTrack *)track
                       completion:(void (^)(NSString *thumbnailURL))completion;
 
+- (NSString *)artistAvatarURLForName:(NSString *)name;
+- (void)setArtistAvatarURL:(NSString *)url forName:(NSString *)name;
+
 - (void)recordBitrateKbps:(NSInteger)kbps forVideoId:(NSString *)videoId;
 - (NSInteger)bitrateKbpsForVideoId:(NSString *)videoId;
 

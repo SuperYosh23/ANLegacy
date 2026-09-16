@@ -50,7 +50,9 @@
 
 - (void)loadContent {
     __weak LTArtistViewController *weakSelf = self;
-    [[LTYouTubeClient sharedClient] browseArtist:self.browseId completion:^(NSDictionary *info, NSArray *topSongs, NSArray *albums, NSError *error) {
+    __block BOOL avatarApplied = NO;
+    [[LTYouTubeClient sharedClient] browseArtist:self.browseId
+                                     completion:^(NSDictionary *info, NSArray *topSongs, NSArray *albums, NSError *error) {
         LTArtistViewController *strongSelf = weakSelf;
         if (!strongSelf) return;
         if (error) {
@@ -67,8 +69,15 @@
         strongSelf.albums = albums;
         if (info[@"title"]) strongSelf.headerView.titleLabel.text = info[@"title"];
         if (info[@"subtitle"]) strongSelf.headerView.subtitleLabel.text = info[@"subtitle"];
-        [strongSelf.headerView setArtworkURL:info[@"thumbnail"]];
+        if (!avatarApplied) [strongSelf.headerView setArtworkURL:info[@"thumbnail"]];
         [strongSelf.tableView reloadData];
+    }
+    avatarURL:^(NSString *avatarURL) {
+        LTArtistViewController *strongSelf = weakSelf;
+        if (!strongSelf || !avatarURL.length) return;
+        NSString *square = [[LTYouTubeClient sharedClient] channelAvatarURL:avatarURL size:720];
+        avatarApplied = YES;
+        [strongSelf.headerView setArtworkURL:square];
     }];
 }
 

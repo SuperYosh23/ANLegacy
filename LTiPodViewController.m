@@ -1071,7 +1071,11 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
 - (void)playScrollClickForOffset:(CGFloat)offset {
     if (!self.scrollClickReady) [self prepareScrollClick];
     if (!self.scrollClickID) return;
-    NSInteger row = (NSInteger)floorf(offset / [LTiPodListView rowHeight] + 0.5f);
+    // The on-screen highlight row is floor(contentOffset / rowHeight) — see
+    // LTiPodListView.selectedIndex. Fire feedback only when that row changes,
+    // so effects never precede the visible indicator.
+    NSInteger row = (NSInteger)floorf(offset / [LTiPodListView rowHeight]);
+    if (row < 0) row = 0;
     if (row == self.lastClickRow) return;
     self.lastClickRow = row;
     if ([self clickSoundEnabled]) AudioServicesPlaySystemSound(self.scrollClickID);

@@ -30,6 +30,7 @@ typedef NS_ENUM(NSInteger, LTLibrarySegment) {
 @property (nonatomic, strong) NSArray *albums;
 @property (nonatomic, strong) LTTrack *pendingRemoveTrack;
 @property (nonatomic, assign) BOOL ignorePlaylistChanges;
+@property (nonatomic, strong) NSMutableSet *attemptedArtistAvatars;
 @end
 
 @implementation LTLibraryViewController
@@ -42,6 +43,7 @@ typedef NS_ENUM(NSInteger, LTLibrarySegment) {
     self.title = @"Library";
     self.view.backgroundColor = [UIColor whiteColor];
     self.currentSegment = LTLibrarySegmentPlaylists;
+    self.attemptedArtistAvatars = [NSMutableSet set];
 
     CGRect bounds = self.view.bounds;
     self.segControl = [[UISegmentedControl alloc] initWithItems:@[@"Playlists", @"Songs", @"Artists", @"Albums"]];
@@ -421,7 +423,8 @@ typedef NS_ENUM(NSInteger, LTLibrarySegment) {
         NSDictionary *bucket = item;
         NSArray *tracks = [bucket objectForKey:@"tracks"];
         NSString *name = [bucket objectForKey:@"name"];
-        if (self.currentSegment == LTLibrarySegmentArtists) {
+        BOOL isArtist = (self.currentSegment == LTLibrarySegmentArtists);
+        if (isArtist) {
             cell.textLabel.text = name;
             cell.detailTextLabel.text = [NSString stringWithFormat:@"%d song%@", (int)tracks.count, tracks.count == 1 ? @"" : @"s"];
         } else {
@@ -430,18 +433,51 @@ typedef NS_ENUM(NSInteger, LTLibrarySegment) {
             cell.detailTextLabel.text = [NSString stringWithFormat:@"%@   %d song%@",
                                          artist, (int)tracks.count, tracks.count == 1 ? @"" : @"s"];
         }
-        if (tracks.count) {
-            LTTrack *first = [tracks objectAtIndex:0];
-            if (first.thumbnailURL.length) {
-                NSString *artURL = [[LTYouTubeClient sharedClient] highResThumbnailURL:first.thumbnailURL];
-                __weak UITableViewCell *weakCell = cell;
-                [[LTYouTubeClient sharedClient] loadImageWithURL:artURL completion:^(UIImage *image) {
-                    if (image) weakCell.imageView.image = image;
-                }];
+        NSString *avatarURL = isArtist ? [[LTPlaylistStore sharedStore] artistAvatarURLForName:name] : nil;
+        if (avatarURL.length) {
+            NSString *artURL = [[LTYouTubeClient sharedClient] channelAvatarURL:avatarURL size:120];
+            __weak UITableViewCell *weakCell = cell;
+            [[LTYouTubeClient sharedClient] loadImageWithURL:artURL completion:^(UIImage *image) {
+                UITableViewCell *strongCell = weakCell;
+                if (image && [strongCell.textLabel.text isEqualToString:name]) strongCell.imageView.image = image;
+            }];
+        } else {
+            if (isArtist) [self resolveAvatarForArtistName:name];
+            if (tracks.count) {
+                LTTrack *first = [tracks objectAtIndex:0];
+                if (first.thumbnailURL.length) {
+                    NSString *artURL = [[LTYouTubeClient sharedClient] highResThumbnailURL:first.thumbnailURL];
+                    __weak UITableViewCell *weakCell = cell;
+                    [[LTYouTubeClient sharedClient] loadImageWithURL:artURL completion:^(UIImage *image) {
+                        if (image) weakCell.imageView.image = image;
+                    }];
+                }
             }
         }
     }
     return cell;
+}
+
+- (void)resolveAvatarForArtistName:(NSString *)name {
+    if (!name.length) return;
+    NSString *key = [name lowercaseString];
+    if ([self.attemptedArtistAvatars containsObject:key]) return;
+    [self.attemptedArtistAvatars addObject:key];
+    __weak LTLibraryViewController *weakSelf = self;
+    [[LTYouTubeClient sharedClient] resolveArtistAvatarForName:name completion:^(NSString *avatarURL) {
+        LTLibraryViewController *strongSelf = weakSelf;
+        if (!strongSelf || !avatarURL.length) return;
+        if (strongSelf.currentSegment != LTLibrarySegmentArtists) return;
+        NSArray *items = [strongSelf currentItems];
+        for (NSUInteger i = 0; i < items.count; i++) {
+            id candidate = [items objectAtIndex:i];
+            if (![candidate isKindOfClass:[NSDictionary class]]) continue;
+            if (![[candidate objectForKey:@"name"] isEqualToString:name]) continue;
+            [strongSelf.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:(NSInteger)i inSection:0]]
+                                        withRowAnimation:UITableViewRowAnimationNone];
+            break;
+        }
+    }];
 }
 
 - (UIButton *)removeAccessoryButtonForRow:(NSInteger)row {

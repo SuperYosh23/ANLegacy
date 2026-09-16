@@ -29,7 +29,14 @@ extern NSString *const LTBrowserUserAgent;
             completion:(void (^)(NSDictionary *info, NSArray *tracks, NSError *error))completion;
 
 - (void)browseArtist:(NSString *)browseId
-          completion:(void (^)(NSDictionary *info, NSArray *topSongs, NSArray *albums, NSError *error))completion;
+          completion:(void (^)(NSDictionary *info, NSArray *topSongs, NSArray *albums, NSError *error))completion
+          avatarURL:(void (^)(NSString *avatarURL))avatarBlock;
+
+- (void)channelAvatarURLForBrowseId:(NSString *)browseId
+                         completion:(void (^)(NSString *avatarURL))completion;
+
+- (void)resolveArtistAvatarForName:(NSString *)name
+                        completion:(void (^)(NSString *avatarURL))completion;
 
 - (void)fetchTrendingSongsWithCompletion:(void (^)(NSArray *tracks, NSError *error))completion;
 
@@ -46,5 +53,7 @@ extern NSString *const LTBrowserUserAgent;
                  completion:(void (^)(NSString *lyricsText, NSError *error))completion;
 
 - (NSString *)highResThumbnailURL:(NSString *)urlString;
+
+- (NSString *)channelAvatarURL:(NSString *)urlString size:(NSInteger)size;
 
 @end

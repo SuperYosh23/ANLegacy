@@ -31,6 +31,9 @@ static id LTPath(id root, id key, ...) {
 
 @interface LTYouTubeClient ()
 @property (nonatomic, strong) NSCache *imageCache;
+@property (nonatomic, strong) NSMutableDictionary *channelAvatarCache;
+@property (nonatomic, strong) NSMutableDictionary *pendingChannelAvatars;
+@property (nonatomic, strong) NSMutableDictionary *pendingNameAvatars;
 @end
 
 @implementation LTYouTubeClient
@@ -48,6 +51,9 @@ static id LTPath(id root, id key, ...) {
     self = [super init];
     if (self) {
         _imageCache = [[NSCache alloc] init];
+        _channelAvatarCache = [NSMutableDictionary dictionary];
+        _pendingChannelAvatars = [NSMutableDictionary dictionary];
+        _pendingNameAvatars = [NSMutableDictionary dictionary];
     }
     return self;
 }
@@ -377,6 +383,9 @@ static id LTPath(id root, id key, ...) {
         bi.title = title;
         bi.kind = [self kindForBrowseId:browseId];
         bi.thumbnailURL = [self thumbnailFromItem:item];
+        if (bi.kind == LTBrowseKindArtist) {
+            bi.thumbnailURL = [self squareAvatarURL:bi.thumbnailURL size:160];
+        }
         NSArray *subRuns = flex.count > 1 ? [self runsFromFlexColumn:[flex objectAtIndex:1]] : nil;
         bi.subtitle = [self textFromRuns:subRuns];
         return bi;
@@ -394,7 +403,7 @@ static id LTPath(id root, id key, ...) {
             if (completion) completion(nil, nil, error);
             return;
         }
-        NSDictionary *info = [self headerInfo:json];
+        NSDictionary *info = [self headerInfo:json squareThumbnail:NO];
         NSArray *tracks = [self tracksFromShelf:json];
         if (completion) completion(info, tracks, nil);
     }];
@@ -408,25 +417,147 @@ static id LTPath(id root, id key, ...) {
             if (completion) completion(nil, nil, error);
             return;
         }
-        NSDictionary *info = [self headerInfo:json];
+        NSDictionary *info = [self headerInfo:json squareThumbnail:NO];
         NSArray *tracks = [self tracksFromPlaylistShelf:json];
         if (completion) completion(info, tracks, nil);
     }];
 }
 
 - (void)browseArtist:(NSString *)browseId
-          completion:(void (^)(NSDictionary *info, NSArray *topSongs, NSArray *albums, NSError *error))completion {
+          completion:(void (^)(NSDictionary *info, NSArray *topSongs, NSArray *albums, NSError *error))completion
+          avatarURL:(void (^)(NSString *avatarURL))avatarBlock {
     NSDictionary *body = @{@"context": [self webRemixContext], @"browseId": browseId};
     [self postToHost:@"music.youtube.com" path:@"browse" body:body completion:^(id json, NSError *error) {
         if (error || !json) {
             if (completion) completion(nil, nil, nil, error);
             return;
         }
-        NSDictionary *info = [self headerInfo:json];
+        NSDictionary *info = [self headerInfo:json squareThumbnail:YES];
         NSArray *topSongs = [self artistTopSongs:json];
         NSArray *albums = [self artistAlbums:json];
         if (completion) completion(info, topSongs, albums, nil);
     }];
+    if (avatarBlock) {
+        [self channelAvatarURLForBrowseId:browseId completion:avatarBlock];
+    }
+}
+
+- (void)channelAvatarURLForBrowseId:(NSString *)browseId
+                         completion:(void (^)(NSString *avatarURL))completion {
+    if (!completion) return;
+    if (![browseId isKindOfClass:[NSString class]] || ![browseId hasPrefix:@"UC"]) {
+        completion(nil);
+        return;
+    }
+    NSString *cached = [self.channelAvatarCache objectForKey:browseId];
+    if (cached.length) {
+        completion(cached);
+        return;
+    }
+    NSMutableArray *pending = [self.pendingChannelAvatars objectForKey:browseId];
+    if (!pending) {
+        pending = [NSMutableArray array];
+        [self.pendingChannelAvatars setObject:pending forKey:browseId];
+    }
+    [pending addObject:completion];
+    if (pending.count > 1) return;
+
+    NSDictionary *body = @{@"context": [self webContext], @"browseId": browseId};
+    [self postToHost:@"www.youtube.com" path:@"browse" body:body completion:^(id json, NSError *error) {
+        NSString *avatarURL = nil;
+        if (!error && [json isKindOfClass:[NSDictionary class]]) {
+            NSArray *thumbs = LTPath(json, @"metadata", @"channelMetadataRenderer", @"avatar", @"thumbnails", nil);
+            avatarURL = [self largestThumbnailURLFromArray:thumbs];
+            if (!avatarURL.length) {
+                thumbs = LTPath(json, @"microformat", @"microformatDataRenderer", @"thumbnail", @"thumbnails", nil);
+                avatarURL = [self largestThumbnailURLFromArray:thumbs];
+            }
+        }
+        if (avatarURL.length) {
+            [self.channelAvatarCache setObject:avatarURL forKey:browseId];
+        }
+        NSArray *waiters = [self.pendingChannelAvatars objectForKey:browseId] ?: @[];
+        [self.pendingChannelAvatars removeObjectForKey:browseId];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            for (void (^waiter)(NSString *) in waiters) {
+                waiter(avatarURL);
+            }
+        });
+    }];
+}
+
+- (void)resolveArtistAvatarForName:(NSString *)name
+                        completion:(void (^)(NSString *avatarURL))completion {
+    if (!completion) return;
+    NSString *trimmed = [name stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (!trimmed.length) {
+        completion(nil);
+        return;
+    }
+    NSString *key = [trimmed lowercaseString];
+    NSString *cached = [[LTPlaylistStore sharedStore] artistAvatarURLForName:trimmed];
+    if (cached.length) {
+        completion(cached);
+        return;
+    }
+    NSMutableArray *pending = [self.pendingNameAvatars objectForKey:key];
+    if (!pending) {
+        pending = [NSMutableArray array];
+        [self.pendingNameAvatars setObject:pending forKey:key];
+    }
+    [pending addObject:completion];
+    if (pending.count > 1) return;
+
+    __weak LTYouTubeClient *weakSelf = self;
+    [self searchWithQuery:trimmed type:@"artists" completion:^(NSArray *items, NSError *error) {
+        LTYouTubeClient *strongSelf = weakSelf;
+        if (!strongSelf) return;
+        NSString *browseId = nil;
+        NSString *partialId = nil;
+        for (id item in items) {
+            if (![item isKindOfClass:[LTBrowseItem class]]) continue;
+            LTBrowseItem *bi = item;
+            if (bi.kind != LTBrowseKindArtist || !bi.browseId.length) continue;
+            if ([[bi.title lowercaseString] isEqualToString:key]) { browseId = bi.browseId; break; }
+            if (!partialId && [bi.title rangeOfString:trimmed options:NSCaseInsensitiveSearch].location != NSNotFound) {
+                partialId = bi.browseId;
+            }
+        }
+        if (!browseId.length) browseId = partialId;
+
+        void (^finish)(NSString *) = ^(NSString *avatarURL) {
+            NSString *final = avatarURL;
+            if (final.length) {
+                final = [strongSelf channelAvatarURL:final size:160];
+                [[LTPlaylistStore sharedStore] setArtistAvatarURL:final forName:trimmed];
+            }
+            NSArray *waiters = [strongSelf.pendingNameAvatars objectForKey:key] ?: @[];
+            [strongSelf.pendingNameAvatars removeObjectForKey:key];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                for (void (^waiter)(NSString *) in waiters) {
+                    waiter(final);
+                }
+            });
+        };
+        if (!browseId.length) {
+            finish(nil);
+            return;
+        }
+        [strongSelf channelAvatarURLForBrowseId:browseId completion:finish];
+    }];
+}
+
+- (NSString *)channelAvatarURL:(NSString *)urlString size:(NSInteger)size {
+    if (![urlString isKindOfClass:[NSString class]] || !urlString.length) return urlString;
+    NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:@"=s\\d+[a-z0-9_-]*(?=\\?|$)"
+                                                                           options:0 error:nil];
+    if ([regex rangeOfFirstMatchInString:urlString options:0 range:NSMakeRange(0, urlString.length)].location != NSNotFound) {
+        NSMutableString *result = [urlString mutableCopy];
+        [regex replaceMatchesInString:result options:0 range:NSMakeRange(0, result.length)
+                         withTemplate:[NSString stringWithFormat:@"=s%ld", (long)size]];
+        return result;
+    }
+    return urlString;
 }
 
 #pragma mark - Trending
@@ -475,7 +606,7 @@ static id LTPath(id root, id key, ...) {
     return fallback ?: @"";
 }
 
-- (NSDictionary *)headerInfo:(NSDictionary *)json {
+- (NSDictionary *)headerInfo:(NSDictionary *)json squareThumbnail:(BOOL)square {
     NSString *title = nil, *subtitle = nil, *thumb = nil;
 
     id immersive = LTPath(json, @"header", @"musicImmersiveHeaderRenderer", nil);
@@ -512,6 +643,8 @@ static id LTPath(id root, id key, ...) {
             thumb = [self thumbnailFromHeader:detail];
         }
     }
+
+    if (square && thumb.length) thumb = [self squareAvatarURL:thumb size:720];
 
     NSMutableDictionary *info = [NSMutableDictionary dictionary];
     if (title.length) [info setObject:title forKey:@"title"];
@@ -1458,6 +1591,25 @@ static UIImage *LTTrimmedArtworkImage(UIImage *image, BOOL allowCenterCrop) {
 - (NSString *)thumbnailFromItem:(NSDictionary *)item {
     NSArray *thumbs = LTPath(item, @"thumbnail", @"musicThumbnailRenderer", @"thumbnail", @"thumbnails", nil);
     return [self largestThumbnailURLFromArray:thumbs];
+}
+
+- (NSString *)squareAvatarURL:(NSString *)urlString size:(NSInteger)size {
+    if (![urlString isKindOfClass:[NSString class]] || !urlString.length) return urlString;
+    // yt3/lh3 service resolves size params against the ORIGINAL uploaded
+    // square avatar, so rewriting the (possibly landscape-banner) spec to a
+    // square request yields the artist's actual profile icon.
+    NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:@"=w\\d+-h\\d+[a-z0-9_\\-]*$"
+                                                                           options:0 error:nil];
+    NSString *squareSpec = [NSString stringWithFormat:@"=w%ld-h%ld-p-l90-rj", (long)size, (long)size];
+    if ([regex rangeOfFirstMatchInString:urlString options:0 range:NSMakeRange(0, urlString.length)].location != NSNotFound) {
+        NSMutableString *result = [urlString mutableCopy];
+        [regex replaceMatchesInString:result options:0 range:NSMakeRange(0, result.length) withTemplate:squareSpec];
+        return result;
+    }
+    if ([urlString rangeOfString:@"googleusercontent.com"].location != NSNotFound) {
+        return [urlString stringByAppendingString:squareSpec];
+    }
+    return urlString;
 }
 
 - (NSString *)compatThumbnailURL:(NSString *)urlString videoId:(NSString *)videoId {
