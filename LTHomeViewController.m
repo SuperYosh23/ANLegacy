@@ -7,6 +7,7 @@
 #import "LTMediaCell.h"
 #import "LTYouTubeClient.h"
 #import "LTModel.h"
+#import "LTTheme.h"
 #import <QuartzCore/QuartzCore.h>
 
 #pragma mark - Recently played horizontal strip
@@ -54,7 +55,7 @@ const CGFloat kHomeTileArtRatio = 104.0f / 116.0f;
         if ([_scrollView respondsToSelector:@selector(setAlwaysBounceVertical:)]) {
             _scrollView.alwaysBounceVertical = NO;
         }
-        _scrollView.backgroundColor = [UIColor whiteColor];
+        _scrollView.backgroundColor = [LTTheme background];
         _scrollView.autoresizingMask = UIViewAutoresizingFlexibleWidth;
         [self.contentView addSubview:_scrollView];
     }
@@ -68,6 +69,9 @@ const CGFloat kHomeTileArtRatio = 104.0f / 116.0f;
 
 - (void)setTracks:(NSArray *)tracks {
     _tracks = tracks;
+    _scrollView.backgroundColor = [LTTheme background];
+    self.backgroundColor = [LTTheme background];
+    self.contentView.backgroundColor = [LTTheme background];
     for (UIView *view in _scrollView.subviews) {
         [view removeFromSuperview];
     }
@@ -81,7 +85,7 @@ const CGFloat kHomeTileArtRatio = 104.0f / 116.0f;
 
         UIButton *imageButton = [UIButton buttonWithType:UIButtonTypeCustom];
         imageButton.frame = CGRectMake(0, 0, tileWidth, artH);
-        imageButton.backgroundColor = [UIColor colorWithWhite:0.9f alpha:1.0f];
+        imageButton.backgroundColor = [LTTheme placeholder];
         imageButton.layer.cornerRadius = 8.0f;
         imageButton.clipsToBounds = YES;
         imageButton.tag = (NSInteger)index;
@@ -103,13 +107,13 @@ const CGFloat kHomeTileArtRatio = 104.0f / 116.0f;
         UILabel *titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(2, artH + 4, tileWidth - 4, 26)];
         titleLabel.font = [UIFont boldSystemFontOfSize:12];
         titleLabel.numberOfLines = 2;
-        titleLabel.textColor = [UIColor darkGrayColor];
+        titleLabel.textColor = [LTTheme text];
         titleLabel.text = track.title;
         [tile addSubview:titleLabel];
 
         UILabel *artistLabel = [[UILabel alloc] initWithFrame:CGRectMake(2, artH + 30, tileWidth - 4, 12)];
         artistLabel.font = [UIFont systemFontOfSize:11];
-        artistLabel.textColor = [UIColor grayColor];
+        artistLabel.textColor = [LTTheme secondaryText];
         artistLabel.text = track.artist.length ? track.artist : @"Unknown Artist";
         [tile addSubview:artistLabel];
 
@@ -148,7 +152,7 @@ const CGFloat kHomeTileArtRatio = 104.0f / 116.0f;
         self.edgesForExtendedLayout = UIRectEdgeNone;
     }
     self.title = @"Home";
-    self.view.backgroundColor = [UIColor whiteColor];
+    self.view.backgroundColor = [LTTheme background];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Stats"
                                                                              style:UIBarButtonItemStyleBordered
                                                                             target:self
@@ -160,13 +164,14 @@ const CGFloat kHomeTileArtRatio = 104.0f / 116.0f;
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
     self.tableView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    self.tableView.backgroundColor = [LTTheme background];
     self.tableView.tableHeaderView = [self buildBanner];
     [self.view addSubview:self.tableView];
 
     self.emptyLabel = [[UILabel alloc] initWithFrame:CGRectMake(24, 190, bounds.size.width - 48, 60)];
     self.emptyLabel.textAlignment = NSTextAlignmentCenter;
     self.emptyLabel.font = [UIFont systemFontOfSize:15];
-    self.emptyLabel.textColor = [UIColor grayColor];
+    self.emptyLabel.textColor = [LTTheme secondaryText];
     self.emptyLabel.numberOfLines = 0;
     self.emptyLabel.hidden = YES;
     [self.view addSubview:self.emptyLabel];
@@ -226,6 +231,13 @@ const CGFloat kHomeTileArtRatio = 104.0f / 116.0f;
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+    [super traitCollectionDidChange:previousTraitCollection];
+    self.view.backgroundColor = [LTTheme background];
+    self.tableView.backgroundColor = [LTTheme background];
+    [self.tableView reloadData];
 }
 
 - (void)reloadData {
@@ -303,7 +315,7 @@ const CGFloat kHomeTileArtRatio = 104.0f / 116.0f;
         cell = [[LTMediaCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:CellId];
         cell.textLabel.font = [UIFont boldSystemFontOfSize:15];
         cell.detailTextLabel.font = [UIFont systemFontOfSize:12];
-        cell.detailTextLabel.textColor = [UIColor grayColor];
+        cell.detailTextLabel.textColor = [LTTheme secondaryText];
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     }
     LTLocalPlaylist *playlist = [self.playlists objectAtIndex:(NSUInteger)indexPath.row];

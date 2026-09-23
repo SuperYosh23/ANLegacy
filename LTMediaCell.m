@@ -1,7 +1,13 @@
 #import "LTMediaCell.h"
 #import "LTYouTubeClient.h"
+#import "LTTextUtils.h"
 
-@implementation LTMediaCell
+@implementation LTMediaCell {
+    NSString *_cachedFullTitle;
+    CGFloat _cachedMaxWidth;
+    UIFont *_cachedFont;
+    NSString *_cachedTruncatedText;
+}
 
 - (id)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier {
     self = [super initWithStyle:style reuseIdentifier:reuseIdentifier];
@@ -28,6 +34,33 @@
                                                 self.bounds.size.width - CGRectGetMaxX(self.imageView.frame) - 16.0f,
                                                 self.detailTextLabel.frame.size.height);
     }
+    [self lt_updateTruncatedTitle];
+}
+
+- (void)lt_updateTruncatedTitle {
+    UILabel *label = self.textLabel;
+    if (!label) return;
+    NSString *full = label.text;
+    if (_cachedFullTitle.length && [full isEqualToString:_cachedTruncatedText]) {
+        full = _cachedFullTitle;
+    }
+    if (!full.length) return;
+    CGFloat maxWidth = self.bounds.size.width * LTListTitleWidthFraction - label.frame.origin.x;
+    if (maxWidth <= 0.0f) return;
+    UIFont *font = label.font;
+    if ([full isEqualToString:_cachedFullTitle] &&
+        maxWidth == _cachedMaxWidth &&
+        (font == _cachedFont || [font isEqual:_cachedFont])) {
+        if (![label.text isEqualToString:_cachedTruncatedText]) {
+            label.text = _cachedTruncatedText;
+        }
+        return;
+    }
+    _cachedFullTitle = [full copy];
+    _cachedMaxWidth = maxWidth;
+    _cachedFont = font;
+    _cachedTruncatedText = LTTruncatedTextToWidth(full, font, maxWidth);
+    label.text = _cachedTruncatedText;
 }
 
 - (void)setImageFromURL:(NSString *)urlString {

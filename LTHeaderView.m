@@ -1,5 +1,6 @@
 #import "LTHeaderView.h"
 #import "LTYouTubeClient.h"
+#import "LTTheme.h"
 
 #define LT_PADDING 12.0f
 
@@ -9,7 +10,7 @@
     self = [super initWithFrame:CGRectMake(0, 0, width, 200)];
     if (self) {
         _artworkView = [[UIImageView alloc] initWithFrame:CGRectMake((width - 140) / 2.0f, 16, 140, 140)];
-        _artworkView.backgroundColor = [UIColor lightGrayColor];
+        _artworkView.backgroundColor = [LTTheme placeholder];
         _artworkView.contentMode = UIViewContentModeScaleAspectFill;
         _artworkView.clipsToBounds = YES;
         [self addSubview:_artworkView];
@@ -23,7 +24,7 @@
         _subtitleLabel = [[UILabel alloc] initWithFrame:CGRectMake(LT_PADDING, 182, width - LT_PADDING * 2, 16)];
         _subtitleLabel.textAlignment = NSTextAlignmentCenter;
         _subtitleLabel.font = [UIFont systemFontOfSize:13];
-        _subtitleLabel.textColor = [UIColor grayColor];
+        _subtitleLabel.textColor = [LTTheme secondaryText];
         _subtitleLabel.backgroundColor = [UIColor clearColor];
         [self addSubview:_subtitleLabel];
     }

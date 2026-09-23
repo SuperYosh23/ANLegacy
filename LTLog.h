@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import "LTFilePaths.h"
 
 static inline void LTLog(NSString *format, ...) {
     va_list args;
@@ -6,7 +7,7 @@ static inline void LTLog(NSString *format, ...) {
     NSString *msg = [[NSString alloc] initWithFormat:format arguments:args];
     va_end(args);
     NSLog(@"%@", msg);
-    NSString *path = @"/tmp/legacymusic.log";
+    NSString *path = [LTTempDirectory() stringByAppendingPathComponent:@"legacymusic.log"];
     NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:path];
     if (!fh) {
         [[NSFileManager defaultManager] createFileAtPath:path contents:nil attributes:nil];

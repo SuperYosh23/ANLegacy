@@ -5,6 +5,11 @@
 + (void)loadFARegisteredFontsIfNeeded;
 + (UIFont *)fontAwesomeFontWithSize:(CGFloat)size;
 
++ (void)registerBundledFontsIfNeeded;
++ (UIImage *)glyphIcon:(unichar)glyph size:(CGFloat)size color:(UIColor *)color;
++ (UIImage *)repeatIconOfSize:(CGFloat)size color:(UIColor *)color;
++ (UIImage *)repeatOneIconOfSize:(CGFloat)size color:(UIColor *)color;
+
 + (UIImage *)homeIcon;
 + (UIImage *)searchIcon;
 + (UIImage *)popularIcon;

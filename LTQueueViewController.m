@@ -3,6 +3,7 @@
 #import "LTYouTubeClient.h"
 #import "LTGraphics.h"
 #import "LTLog.h"
+#import "LTSimpleCell.h"
 
 @interface LTQueueViewController () <UITableViewDataSource, UITableViewDelegate>
 @property (nonatomic, strong) UITableView *tableView;
@@ -139,7 +140,7 @@
     static NSString *CellId = @"LTQueueCell";
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:CellId];
     if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:CellId];
+        cell = [[LTSimpleCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:CellId];
         cell.backgroundColor = [UIColor colorWithWhite:0.15f alpha:0.6f];
         cell.textLabel.font = [UIFont systemFontOfSize:15];
         cell.textLabel.textColor = [UIColor whiteColor];

@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
 #import "LTModel.h"
 
 extern NSString *const LTPlaylistsDidChangeNotification;

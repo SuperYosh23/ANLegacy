@@ -1,5 +1,6 @@
 #import "LTPlaylistSelectViewController.h"
 #import "LTPlaylistStore.h"
+#import "LTSimpleCell.h"
 
 @interface LTPlaylistSelectViewController ()
 @property (nonatomic, strong) UITableView *tableView;
@@ -94,7 +95,7 @@
     static NSString *CellId = @"LTPlaylistSelectCell";
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:CellId];
     if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:CellId];
+        cell = [[LTSimpleCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:CellId];
         cell.backgroundColor = [UIColor colorWithWhite:0.15f alpha:1.0f];
         cell.textLabel.textColor = [UIColor whiteColor];
         cell.detailTextLabel.textColor = [UIColor lightGrayColor];

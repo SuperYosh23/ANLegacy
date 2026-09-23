@@ -11,6 +11,8 @@
 #import "LTLocalPlaylistDetailViewController.h"
 #import "LTSpinnerView.h"
 #import "LTGraphics.h"
+#import "LTSimpleCell.h"
+#import "LTTheme.h"
 #import <QuartzCore/QuartzCore.h>
 
 @interface LTSearchViewController () <UISearchBarDelegate, UITableViewDataSource, UITableViewDelegate,
@@ -47,7 +49,7 @@
     if ([self respondsToSelector:@selector(setEdgesForExtendedLayout:)]) {
         self.edgesForExtendedLayout = UIRectEdgeNone;
     }
-    self.view.backgroundColor = [UIColor whiteColor];
+    self.view.backgroundColor = [LTTheme background];
 
     CGRect bounds = self.view.bounds;
     CGFloat tableY = 0;
@@ -69,6 +71,7 @@
         self.segControl.selectedSegmentIndex = (NSInteger)defaultIndex;
         [self.segControl addTarget:self action:@selector(segmentChanged:) forControlEvents:UIControlEventValueChanged];
         self.segControl.frame = CGRectMake(8, 50, bounds.size.width - 16, 32);
+        self.segControl.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleRightMargin | UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleBottomMargin;
         [self.view addSubview:self.segControl];
 
         tableY = 88;
@@ -81,15 +84,37 @@
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
     self.tableView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    self.tableView.backgroundColor = [LTTheme background];
     [self.view addSubview:self.tableView];
 
     self.emptyLabel = [[UILabel alloc] initWithFrame:CGRectMake(24, 120, bounds.size.width - 48, 60)];
     self.emptyLabel.textAlignment = NSTextAlignmentCenter;
     self.emptyLabel.font = [UIFont systemFontOfSize:15];
-    self.emptyLabel.textColor = [UIColor grayColor];
+    self.emptyLabel.textColor = [LTTheme secondaryText];
     self.emptyLabel.numberOfLines = 0;
     self.emptyLabel.hidden = YES;
     [self.view addSubview:self.emptyLabel];
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    CGRect bounds = self.view.bounds;
+    CGFloat width = bounds.size.width;
+    if (width < 1.0f) return;
+
+    BOOL searchMode = ![self isPlaylistsMode];
+    if (searchMode) {
+        UIFont *font = (width < 360.0f) ? [UIFont boldSystemFontOfSize:9]
+                                        : [UIFont boldSystemFontOfSize:11];
+        [self.segControl setTitleTextAttributes:@{UITextAttributeFont: font}
+                                       forState:UIControlStateNormal];
+        self.segControl.frame = CGRectMake(8, 50, width - 16, 32);
+        self.searchBar.frame = CGRectMake(0, 0, width, 44);
+    }
+
+    CGFloat tableY = searchMode ? 88.0f : 46.0f;
+    self.tableView.frame = CGRectMake(0, tableY, width, bounds.size.height - tableY);
+    self.emptyLabel.frame = CGRectMake(24, tableY + 80, width - 48, 120);
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -114,6 +139,14 @@
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+    [super traitCollectionDidChange:previousTraitCollection];
+    self.view.backgroundColor = [LTTheme background];
+    self.tableView.backgroundColor = [LTTheme background];
+    self.emptyLabel.textColor = [LTTheme secondaryText];
+    [self.tableView reloadData];
 }
 
 - (BOOL)isPlaylistsMode {
@@ -436,13 +469,13 @@
         NSArray *history = [[LTPlaylistStore sharedStore] searchHistory];
         UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:HistoryCellId];
         if (!cell) {
-            cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:HistoryCellId];
+            cell = [[LTSimpleCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:HistoryCellId];
             cell.textLabel.font = [UIFont systemFontOfSize:15];
-            cell.textLabel.textColor = [UIColor blackColor];
+            cell.textLabel.textColor = [LTTheme text];
         }
         cell.textLabel.textAlignment = NSTextAlignmentLeft;
         cell.textLabel.text = [history objectAtIndex:(NSUInteger)indexPath.row];
-        cell.textLabel.textColor = [UIColor blackColor];
+        cell.textLabel.textColor = [LTTheme text];
         cell.imageView.image = [LTGraphics searchIcon];
         cell.accessoryView = nil;
         return cell;
@@ -454,7 +487,7 @@
         cell = [[LTMediaCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:CellId];
         cell.textLabel.font = [UIFont boldSystemFontOfSize:15];
         cell.detailTextLabel.font = [UIFont systemFontOfSize:12];
-        cell.detailTextLabel.textColor = [UIColor grayColor];
+        cell.detailTextLabel.textColor = [LTTheme secondaryText];
     }
     id item = [self.results objectAtIndex:(NSUInteger)indexPath.row];
     if ([item isKindOfClass:[LTTrack class]]) {

@@ -6,11 +6,14 @@
 #import "LTTransitionSettings.h"
 #import "LTTransitionSpeedViewController.h"
 #import "LTRecentsTileSizeViewController.h"
+#import "LTOneHandedMode.h"
+#import "LTOneHandedModeViewController.h"
 #import "LTWebExporter.h"
 #import "LTPlaylistSelectViewController.h"
 #import "LTHomeViewController.h"
 #import "LTDebugMenuViewController.h"
 #import "LTiPodViewController.h"
+#import "LTTheme.h"
 #import "LTLog.h"
 
 typedef NS_ENUM(NSInteger, LTSettingsSection) {
@@ -18,6 +21,7 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
     LTSettingsSectionAppearance,
     LTSettingsSectionData,
     LTSettingsSectionAbout,
+    LTSettingsSectionCredits,
 };
 
 @interface LTSettingsViewController () <UITableViewDataSource, UITableViewDelegate, UIAlertViewDelegate, UIActionSheetDelegate>
@@ -40,7 +44,7 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
         self.edgesForExtendedLayout = UIRectEdgeNone;
     }
     self.title = @"Settings";
-    self.view.backgroundColor = [UIColor groupTableViewBackgroundColor];
+    self.view.backgroundColor = [LTTheme groupedBackground];
 
     CGRect bounds = self.view.bounds;
     self.tableView = [[UITableView alloc] initWithFrame:CGRectMake(0, 0, bounds.size.width, bounds.size.height)
@@ -48,12 +52,25 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
     self.tableView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    self.tableView.backgroundColor = [LTTheme groupedBackground];
     [self.view addSubview:self.tableView];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    [self applyTheme];
     [self.tableView reloadData];
+}
+
+- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+    [super traitCollectionDidChange:previousTraitCollection];
+    [self applyTheme];
+    [self.tableView reloadData];
+}
+
+- (void)applyTheme {
+    self.view.backgroundColor = [LTTheme groupedBackground];
+    self.tableView.backgroundColor = [LTTheme groupedBackground];
 }
 
 #pragma mark - Controls
@@ -373,7 +390,7 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
 #pragma mark - UITableViewDataSource
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return 4;
+    return 5;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
@@ -382,6 +399,7 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
         case LTSettingsSectionAppearance: return @"Appearance options";
         case LTSettingsSectionData: return @"Data management";
         case LTSettingsSectionAbout: return @"About";
+        case LTSettingsSectionCredits: return @"Credits";
         default: return @"";
     }
 }
@@ -389,9 +407,10 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     switch (section) {
         case LTSettingsSectionPlayback: return 2;
-        case LTSettingsSectionAppearance: return 5;
+        case LTSettingsSectionAppearance: return [LTOneHandedMode isSupported] ? 6 : 5;
         case LTSettingsSectionData: return 7;
         case LTSettingsSectionAbout: return 2;
+        case LTSettingsSectionCredits: return 3;
         default: return 0;
     }
 }
@@ -405,7 +424,7 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
     cell.accessoryView = nil;
     cell.accessoryType = UITableViewCellAccessoryNone;
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
-    cell.textLabel.textColor = [UIColor blackColor];
+    cell.textLabel.textColor = [LTTheme text];
 
     switch (indexPath.section) {
         case LTSettingsSectionPlayback: {
@@ -436,9 +455,14 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
                 cell.textLabel.text = @"iPod Mode";
                 cell.detailTextLabel.text = @"";
                 cell.accessoryView = [self ipodSwitch];
-            } else {
+            } else if (indexPath.row == 4) {
                 cell.textLabel.text = @"Recents Tile Size";
                 cell.detailTextLabel.text = [self tileSizeLabel];
+                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                cell.selectionStyle = UITableViewCellSelectionStyleBlue;
+            } else {
+                cell.textLabel.text = @"One-Handed Mode";
+                cell.detailTextLabel.text = [LTOneHandedMode currentLabel];
                 cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
                 cell.selectionStyle = UITableViewCellSelectionStyleBlue;
             }
@@ -487,6 +511,16 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
             cell.selectionStyle = UITableViewCellSelectionStyleNone;
             break;
         }
+        case LTSettingsSectionCredits: {
+            NSArray *names = @[ @"SuperYosh23", @"OpenCode", @"Packboy" ];
+            NSArray *roles = @[ @"App concept and design", @"AI Coding Agent", @"App Icon" ];
+            cell.textLabel.text = [names objectAtIndex:(NSUInteger)indexPath.row];
+            cell.detailTextLabel.text = [roles objectAtIndex:(NSUInteger)indexPath.row];
+            cell.accessoryView = nil;
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+            cell.detailTextLabel.textColor = [LTTheme secondaryText];
+            break;
+        }
         default:
             break;
     }
@@ -507,6 +541,9 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
             [self.navigationController pushViewController:vc animated:YES];
         } else if (indexPath.row == 4) {
             LTRecentsTileSizeViewController *vc = [[LTRecentsTileSizeViewController alloc] init];
+            [self.navigationController pushViewController:vc animated:YES];
+        } else if (indexPath.row == 5) {
+            LTOneHandedModeViewController *vc = [[LTOneHandedModeViewController alloc] init];
             [self.navigationController pushViewController:vc animated:YES];
         }
         return;

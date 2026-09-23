@@ -42,6 +42,22 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
     return shared;
 }
 
+- (float)volume {
+    NSNumber *saved = [[NSUserDefaults standardUserDefaults] objectForKey:@"LTPlaybackVolume"];
+    return saved ? [saved floatValue] : 1.0f;
+}
+
+- (void)setVolume:(float)volume {
+    if (volume < 0.0f) volume = 0.0f;
+    if (volume > 1.0f) volume = 1.0f;
+    [[NSUserDefaults standardUserDefaults] setObject:@(volume) forKey:@"LTPlaybackVolume"];
+    self.audioPlayer.volume = volume;
+    // AVPlayer only gained -volume in iOS 7; guard for older devices (3GS/iOS 6).
+    if ([self.moviePlayer respondsToSelector:@selector(setVolume:)]) {
+        self.moviePlayer.volume = volume;
+    }
+}
+
 - (id)init {
     self = [super init];
     if (self) {
@@ -434,6 +450,7 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
     }
     self.audioPlayer = player;
     self.audioPlayer.delegate = self;
+    self.audioPlayer.volume = self.volume;
     [self.audioPlayer prepareToPlay];
     [self updateNowPlayingInfo];
     [self playMovie];
@@ -450,6 +467,9 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
                                                  name:AVPlayerItemDidPlayToEndTimeNotification
                                                object:item];
     self.moviePlayer = [[AVPlayer alloc] initWithPlayerItem:item];
+    if ([self.moviePlayer respondsToSelector:@selector(setVolume:)]) {
+        self.moviePlayer.volume = self.volume; // iOS 7+ only
+    }
     [self updateNowPlayingInfo];
     [self playMovie];
 }
@@ -465,7 +485,7 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
     [self.streamConnection cancel];
     self.streamConnection = nil;
     self.streamData = [NSMutableData data];
-    NSString *path = self.pendingMuxed ? @"/tmp/lt_track.mp4" : @"/tmp/lt_track.m4a";
+    NSString *path = [LTTempDirectory() stringByAppendingPathComponent:(self.pendingMuxed ? @"lt_track.mp4" : @"lt_track.m4a")];
     [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
 
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlString]
@@ -518,7 +538,7 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
         [[NSNotificationCenter defaultCenter] postNotificationName:LTPlayerStateDidChangeNotification object:self];
         return;
     }
-    NSString *path = self.pendingMuxed ? @"/tmp/lt_track.mp4" : @"/tmp/lt_track.m4a";
+    NSString *path = [LTTempDirectory() stringByAppendingPathComponent:(self.pendingMuxed ? @"lt_track.mp4" : @"lt_track.m4a")];
     [self.streamData writeToFile:path atomically:YES];
     LTLog(@"WROTE file, playing %@", self.streamVideoId);
     [self loadLocalFileAtPath:path];

@@ -6,16 +6,18 @@
 #import "LTPlayerViewController.h"
 #import "LTPlayerController.h"
 #import "LTTabBarController.h"
+#import "LTSplitContainerViewController.h"
 #import "LTGraphics.h"
 #import "LTDebugSettings.h"
 #import "LTiPodViewController.h"
+#import "LTOneHandedMode.h"
 #import "LTLog.h"
 #import <AVFoundation/AVFoundation.h>
 
 @implementation LTAppDelegate
 
 static void LTUncaughtExceptionHandler(NSException *e) {
-    NSString *path = @"/tmp/lt_crash.txt";
+    NSString *path = [LTTempDirectory() stringByAppendingPathComponent:@"lt_crash.txt"];
     NSString *text = [NSString stringWithFormat:@"REASON: %@\nNAME: %@\nCALLSTACK:\n%@\n",
                       e.reason, e.name, [e callStackSymbols]];
     [text writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
@@ -36,14 +38,24 @@ static void LTUncaughtExceptionHandler(NSException *e) {
     if ([LTiPodViewController isEnabled]) {
         self.window.rootViewController = [[LTiPodViewController alloc] init];
     } else {
-        self.window.rootViewController = [LTAppDelegate makeTabBarController];
+        self.window.rootViewController = [LTAppDelegate standardRootViewController];
     }
     [self.window makeKeyAndVisible];
     [LTAppDelegate applyDisplayModeAnimated:NO];
     return YES;
 }
 
-+ (UITabBarController *)makeTabBarController {
+// The standard tab-bar root, wrapped in the iPad split container when running
+// on iPad. Kept in sync with LTiPodViewController.makeStandardRoot.
++ (UIViewController *)standardRootViewController {
+    LTTabBarController *tabBar = [LTAppDelegate makeTabBarController];
+    if ([LTSplitContainerViewController isSupported]) {
+        return [[LTSplitContainerViewController alloc] initWithTabController:tabBar];
+    }
+    return tabBar;
+}
+
++ (LTTabBarController *)makeTabBarController {
     NSMutableArray *controllers = [NSMutableArray array];
 
     LTHomeViewController *home = [[LTHomeViewController alloc] init];
@@ -71,7 +83,7 @@ static void LTUncaughtExceptionHandler(NSException *e) {
     UINavigationController *nowPlayingNav = [[UINavigationController alloc] initWithRootViewController:nowPlaying];
     [controllers addObject:nowPlayingNav];
 
-    UITabBarController *tabBar = [[LTTabBarController alloc] init];
+    LTTabBarController *tabBar = [[LTTabBarController alloc] init];
     tabBar.viewControllers = controllers;
     return tabBar;
 }
@@ -92,13 +104,20 @@ static void LTUncaughtExceptionHandler(NSException *e) {
 }
 
 + (void)applyDisplayModeOnce:(UIWindow *)window root:(UIView *)root {
-    CGSize screen = window.bounds.size;
+    CGRect screen = window.bounds;
+    // One-handed mode takes priority: it draws the classic 320x480 layout, but
+    // pinned to a bottom corner instead of centered.
+    BOOL oneHanded = [LTOneHandedMode isActive];
     BOOL forceNonWide = [LTDebugSettings forceNonWidescreen];
     BOOL forceWide = [LTDebugSettings forceWidescreen];
 
-    CGFloat virtualW = screen.width;
-    CGFloat virtualH = screen.height;
-    if (forceNonWide) {
+    CGFloat virtualW = screen.size.width;
+    CGFloat virtualH = screen.size.height;
+    if (oneHanded) {
+        CGSize handSize = [LTOneHandedMode virtualSize];
+        virtualW = handSize.width;
+        virtualH = handSize.height;
+    } else if (forceNonWide) {
         virtualW = 320.0f;
         virtualH = 480.0f;
     } else if (forceWide) {
@@ -106,14 +125,18 @@ static void LTUncaughtExceptionHandler(NSException *e) {
         virtualH = 568.0f;
     }
 
-    BOOL forced = (virtualW != screen.width || virtualH != screen.height);
+    BOOL forced = (virtualW != screen.size.width || virtualH != screen.size.height);
 
     root.transform = CGAffineTransformMake(1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f);
     if (forced) {
-        root.frame = CGRectMake(round((screen.width - virtualW) / 2.0f),
-                                round((screen.height - virtualH) / 2.0f),
-                                virtualW, virtualH);
-        CGFloat scale = MIN(screen.width / virtualW, screen.height / virtualH);
+        if (oneHanded) {
+            root.frame = [LTOneHandedMode frameInBounds:screen];
+        } else {
+            root.frame = CGRectMake(round((screen.size.width - virtualW) / 2.0f),
+                                    round((screen.size.height - virtualH) / 2.0f),
+                                    virtualW, virtualH);
+        }
+        CGFloat scale = MIN(screen.size.width / virtualW, screen.size.height / virtualH);
         if (scale < 1.0f) {
             root.transform = CGAffineTransformMakeScale(scale, scale);
         }

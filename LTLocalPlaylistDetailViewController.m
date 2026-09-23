@@ -7,6 +7,7 @@
 #import "LTCustomActionSheet.h"
 #import "LTGraphics.h"
 #import "LTSpinnerView.h"
+#import "LTTheme.h"
 #import "LTLog.h"
 
 #define kHeaderHeight 96.0f
@@ -46,12 +47,13 @@
         self.edgesForExtendedLayout = UIRectEdgeNone;
     }
     self.title = self.playlist.name;
-    self.view.backgroundColor = [UIColor whiteColor];
+    self.view.backgroundColor = [LTTheme background];
 
     self.tableView = [[UITableView alloc] initWithFrame:self.view.bounds style:UITableViewStylePlain];
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
     self.tableView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    self.tableView.backgroundColor = [LTTheme background];
     if ([self.tableView respondsToSelector:@selector(setSeparatorInset:)]) {
         self.tableView.separatorInset = UIEdgeInsetsMake(0, 60, 0, 0);
     }
@@ -84,19 +86,34 @@
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
+- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+    [super traitCollectionDidChange:previousTraitCollection];
+    self.view.backgroundColor = [LTTheme background];
+    self.tableView.backgroundColor = [LTTheme background];
+    self.tableView.tableHeaderView.backgroundColor = [LTTheme background];
+    self.artworkImageView.backgroundColor = [LTTheme placeholder];
+    self.trackCountLabel.textColor = [LTTheme secondaryText];
+    UIColor *fill = [LTTheme fill];
+    self.playAllButton.backgroundColor = fill;
+    self.shuffleButton.backgroundColor = fill;
+    self.downloadButton.backgroundColor = fill;
+    self.renameButton.backgroundColor = fill;
+    [self.tableView reloadData];
+}
+
 #pragma mark - Header
 
 - (void)buildHeaderView {
     CGFloat w = self.view.bounds.size.width;
 
     UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0, w, kHeaderHeight)];
-    container.backgroundColor = [UIColor whiteColor];
+    container.backgroundColor = [LTTheme background];
 
     CGFloat pad = 12.0f;
 
     // Artwork (left side, square)
     _artworkImageView = [[UIImageView alloc] initWithFrame:CGRectMake(pad, pad, kArtworkSize, kArtworkSize)];
-    _artworkImageView.backgroundColor = [UIColor colorWithWhite:0.92f alpha:1.0f];
+    _artworkImageView.backgroundColor = [LTTheme placeholder];
     _artworkImageView.contentMode = UIViewContentModeScaleAspectFill;
     _artworkImageView.clipsToBounds = YES;
     _artworkImageView.layer.cornerRadius = 6.0f;
@@ -120,7 +137,7 @@
     // Track count
     _trackCountLabel = [[UILabel alloc] initWithFrame:CGRectMake(textX, y, textW, 16)];
     _trackCountLabel.font = [UIFont systemFontOfSize:12];
-    _trackCountLabel.textColor = [UIColor grayColor];
+    _trackCountLabel.textColor = [LTTheme secondaryText];
     [container addSubview:_trackCountLabel];
 
     y += 20.0f;
@@ -162,7 +179,7 @@
     button.frame = frame;
     [button setImage:[self scaledIcon:icon] forState:UIControlStateNormal];
     button.imageView.contentMode = UIViewContentModeCenter;
-    button.backgroundColor = [UIColor colorWithWhite:0.95f alpha:1.0f];
+    button.backgroundColor = [LTTheme fill];
     button.layer.cornerRadius = 6.0f;
     button.clipsToBounds = YES;
     return button;
@@ -429,7 +446,7 @@
         cell = [[LTMediaCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:CellId];
         cell.textLabel.font = [UIFont boldSystemFontOfSize:15];
         cell.detailTextLabel.font = [UIFont systemFontOfSize:12];
-        cell.detailTextLabel.textColor = [UIColor grayColor];
+        cell.detailTextLabel.textColor = [LTTheme secondaryText];
         cell.accessoryType = UITableViewCellAccessoryNone;
     }
     LTTrack *track = [self.playlist.tracks objectAtIndex:(NSUInteger)indexPath.row];

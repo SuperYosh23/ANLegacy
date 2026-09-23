@@ -7,6 +7,7 @@
 #import "LTTabBarController.h"
 #import "LTPlayerController.h"
 #import "LTSongMenu.h"
+#import "LTTheme.h"
 
 @interface LTArtistViewController () <UIActionSheetDelegate>
 @property (nonatomic, copy) NSString *browseId;
@@ -34,18 +35,26 @@
     if ([self respondsToSelector:@selector(setEdgesForExtendedLayout:)]) {
         self.edgesForExtendedLayout = UIRectEdgeNone;
     }
-    self.view.backgroundColor = [UIColor whiteColor];
+    self.view.backgroundColor = [LTTheme groupedBackground];
 
     self.tableView = [[UITableView alloc] initWithFrame:self.view.bounds style:UITableViewStyleGrouped];
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
     self.tableView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    self.tableView.backgroundColor = [LTTheme groupedBackground];
     [self.view addSubview:self.tableView];
 
     self.headerView = [[LTHeaderView alloc] initWithWidth:self.view.bounds.size.width];
     self.tableView.tableHeaderView = self.headerView;
 
     [self loadContent];
+}
+
+- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+    [super traitCollectionDidChange:previousTraitCollection];
+    self.view.backgroundColor = [LTTheme groupedBackground];
+    self.tableView.backgroundColor = [LTTheme groupedBackground];
+    [self.tableView reloadData];
 }
 
 - (void)loadContent {
@@ -110,7 +119,7 @@
         cell = [[LTMediaCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:cellId];
         cell.textLabel.font = [UIFont boldSystemFontOfSize:15];
         cell.detailTextLabel.font = [UIFont systemFontOfSize:12];
-        cell.detailTextLabel.textColor = [UIColor grayColor];
+        cell.detailTextLabel.textColor = [LTTheme secondaryText];
     }
     if (isSongs) {
         LTTrack *track = [self.topSongs objectAtIndex:(NSUInteger)indexPath.row];

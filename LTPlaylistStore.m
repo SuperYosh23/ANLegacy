@@ -56,7 +56,7 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
 }
 
 - (NSString *)baseDirectory {
-    return @"/var/mobile/Documents/LegacyMusic";
+    return LTDataDirectory();
 }
 
 - (NSString *)audioDirectory {
@@ -161,7 +161,7 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
 
 - (void)saveLibrary {
     NSMutableArray *plist = [NSMutableArray array];
-    for (LTTrack *track in self.libraryTracks) {
+    for (LTTrack *track in [self.libraryTracks copy]) {
         [plist addObject:[track dictionaryRepresentation]];
     }
     [plist writeToFile:[self libraryFilePath] atomically:YES];
@@ -169,7 +169,7 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
 
 - (void)addTrackToLibrary:(LTTrack *)track {
     if (!track.videoId.length) return;
-    for (LTTrack *existing in self.libraryTracks) {
+    for (LTTrack *existing in [self.libraryTracks copy]) {
         if ([existing.videoId isEqualToString:track.videoId]) {
             if (!existing.title.length && track.title.length) existing.title = track.title;
             if (!existing.artist.length && track.artist.length) existing.artist = track.artist;
@@ -916,7 +916,7 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
         NSString *name = playlistDict[@"name"];
         if (!playlistId.length || !name.length) continue;
         LTLocalPlaylist *existing = nil;
-        for (LTLocalPlaylist *p in _playlists) {
+        for (LTLocalPlaylist *p in [_playlists copy]) {
             if ([p.identifier isEqualToString:playlistId]) { existing = p; break; }
         }
         BOOL created = NO;

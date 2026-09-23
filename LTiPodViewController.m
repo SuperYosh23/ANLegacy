@@ -6,6 +6,7 @@
 #import "LTModel.h"
 #import "LTGraphics.h"
 #import "LTLog.h"
+#import "LTSafeArea.h"
 #import <math.h>
 #import <AudioToolbox/AudioToolbox.h>
 #import <dlfcn.h>
@@ -320,12 +321,12 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
 
 + (UIViewController *)standardRootViewController {
     // Rebuild the standard tab-bar root (kept in sync with LTAppDelegate).
-    return [LTAppDelegate makeTabBarController];
+    return [LTAppDelegate standardRootViewController];
 }
 
 // Root controller returned when iPod mode is OFF. Exposed via LTAppDelegate.
 + (UIViewController *)makeStandardRoot {
-    return [LTAppDelegate makeTabBarController];
+    return [LTAppDelegate standardRootViewController];
 }
 
 #pragma mark - Lifecycle
@@ -383,6 +384,10 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
     [self stopClock];
 }
 
+- (BOOL)prefersStatusBarHidden {
+    return YES;
+}
+
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     [self.momentumTimer invalidate];
@@ -395,18 +400,27 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
     CGFloat w = b.size.width;
     CGFloat h = b.size.height;
 
-    CGFloat screenTop = roundf(h * 0.04f);
-    CGFloat screenH = roundf(h * 0.33f);
+    // Keep the LCD and click wheel inside the safe area on notched devices
+    // (the graphite housing background still fills the whole screen).
+    CGFloat topInset = LTSafeAreaTop(self.view);
+    CGFloat bottomInset = LTSafeAreaBottom(self.view);
+    CGFloat usableH = h - topInset - bottomInset;
+    if (usableH < 1.0f) usableH = h;
+
+    CGFloat screenTop = topInset + roundf(usableH * 0.04f);
+    CGFloat screenH = roundf(usableH * 0.33f);
     CGFloat screenX = roundf(w * 0.05f);
     CGFloat screenW = w - screenX * 2.0f;
     self.screenPanel.frame = CGRectMake(screenX, screenTop, screenW, screenH);
     self.listHost.frame = CGRectInset(self.screenPanel.bounds, 3.0f, 3.0f);
 
-    CGFloat wheelD = roundf(h * 0.50f);
-    CGFloat wheelY = screenTop + screenH + roundf(h * 0.03f);
-    if (wheelY + wheelD > h - roundf(h * 0.03f)) {
-        wheelD = h - roundf(h * 0.03f) - wheelY;
+    CGFloat wheelD = roundf(usableH * 0.50f);
+    CGFloat wheelY = screenTop + screenH + roundf(usableH * 0.03f);
+    CGFloat wheelBottomLimit = h - bottomInset - roundf(usableH * 0.03f);
+    if (wheelY + wheelD > wheelBottomLimit) {
+        wheelD = wheelBottomLimit - wheelY;
     }
+    if (wheelD < 1.0f) wheelD = 1.0f;
     self.wheelView.frame = CGRectMake(roundf((w - wheelD) / 2.0f), wheelY, wheelD, wheelD);
     LTLog(@"iPod wheel frame=%@", NSStringFromCGRect(self.wheelView.frame));
 
@@ -968,7 +982,7 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
     [self stopMomentum];
     CGFloat rowH = [LTiPodListView rowHeight];
     CGFloat delta = degrees / 18.0f * rowH; // 18° per row feels closest to real
-    if (fabsf(delta) < 0.5f) return;
+    if (fabs(delta) < 0.5f) return;
     CGFloat target = self.listView.contentOffset + delta;
     CGFloat max = [self maxContentOffset];
     if (target < 0) target = 0;
@@ -979,7 +993,10 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
 }
 
 - (void)adjustVolumeByDegrees:(CGFloat)degrees {
-    MPMusicPlayerController *player = [MPMusicPlayerController applicationMusicPlayer];
+    // Adjust our own audio output instead of MPMusicPlayerController: the
+    // latter synchronously talks to MediaRemote/RemotePlayerService on the
+    // main thread and deadlocks (watchdog 0x8badf00d) on iOS 12.
+    LTPlayerController *player = [LTPlayerController sharedController];
     float v = player.volume;
     v += degrees / 18.0f * 0.05f; // a 360° spin sweeps ~1 volume
     if (v < 0) v = 0;
@@ -1112,7 +1129,7 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
 #pragma mark - Momentum
 
 - (void)startMomentumWithVelocity:(CGFloat)degreesPerSecond {
-    if (fabsf(degreesPerSecond) < 40.0f) {
+    if (fabs(degreesPerSecond) < 40.0f) {
         [self.listView snapSelection];
         return;
     }
@@ -1262,6 +1279,7 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
 
 - (void)iPodWheel:(LTiPodWheelView *)wheel buttonPressed:(LTiPodWheelButton)button {
     [self stopMomentum];
+    if ([self vibesEnabled]) [self playScrollHaptic]; // same short pulse as scrolling
     switch (button) {
         case LTiPodWheelButtonMenu:
             [self popPane];
@@ -1744,7 +1762,7 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
     centerX = bw / 2.0f;
     centerY = bh / 2.0f;
     wheelR = MIN(bw, bh) / 2.0f;
-    if (fabsf(wheelR - loggedR) > 0.5f) {
+    if (fabs(wheelR - loggedR) > 0.5f) {
         loggedR = wheelR;
         LTLog(@"iPod wheel metrics bounds=(%.0f,%.0f) r=%.0f", bw, bh, wheelR);
     }
@@ -1759,7 +1777,7 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
 }
 
 - (void)drawRect:(CGRect)rect {
-    if (fabsf(wheelR) < 0.001f) [self prepareMetrics];
+    if (fabs(wheelR) < 0.001f) [self prepareMetrics];
     CGContextRef ctx = UIGraphicsGetCurrentContext();
     CGFloat selectR = [self selectRadius];
 
@@ -1859,7 +1877,7 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
 
 - (void)touchesBegan:(NSSet *)touches withEvent:(UIEvent *)event {
     [super touchesBegan:touches withEvent:event];
-    if (fabsf(wheelR) < 0.001f) [self prepareMetrics];
+    if (fabs(wheelR) < 0.001f) [self prepareMetrics];
     UITouch *touch = [touches anyObject];
     CGPoint p = [touch locationInView:self];
     BOOL ring = [self isRingZone:p];
@@ -1911,7 +1929,7 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
         }
         lastMoveTime = now;
     }
-    if (fabsf(accumulated) >= kIPodScrollMinDegrees) {
+    if (fabs(accumulated) >= kIPodScrollMinDegrees) {
         CGFloat send = accumulated;
         accumulated = 0.0f;
         LTLog(@"iPod wheel rot %.1f° vel=%.0f", send, scrollVelocity);
@@ -1932,7 +1950,7 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
         return;
     }
     // A press on the ring that barely rotated is a button tap.
-    CGFloat rotated = fabsf([self unwrapDelta:[self angleAtPoint:p] - gestureStartAngle]);
+    CGFloat rotated = fabs([self unwrapDelta:[self angleAtPoint:p] - gestureStartAngle]);
     CGFloat moved = sqrtf(powf(p.x - gestureStartPoint.x, 2) + powf(p.y - gestureStartPoint.y, 2));
     if (rotated < 0.4f && moved < 8.0f) {
         LTiPodWheelButton button = [self buttonAtPoint:p];
@@ -1942,7 +1960,7 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
         }
         return;
     }
-    if (fabsf(accumulated) >= kIPodScrollMinDegrees) {
+    if (fabs(accumulated) >= kIPodScrollMinDegrees) {
         [self.delegate iPodWheel:self scrolledByDegrees:accumulated];
     }
     accumulated = 0.0f;

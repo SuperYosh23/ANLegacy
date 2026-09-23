@@ -8,20 +8,34 @@
 #import "LTPlaylistStore.h"
 #import "LTGraphics.h"
 #import "LTDebugSettings.h"
+#import "LTOneHandedMode.h"
 #import "LTLog.h"
+#import "LTSafeArea.h"
+#import "LTSimpleCell.h"
+
+static BOOL sHasShownSwipeHint = NO;
 
 @interface LTPlayerViewController () <UIScrollViewDelegate, UITableViewDataSource, UITableViewDelegate, UIGestureRecognizerDelegate>
-@property (nonatomic, strong) UIScrollView *pageScrollView;
 @property (nonatomic, strong) UIPanGestureRecognizer *swipePan;
+@property (nonatomic, strong) UIPanGestureRecognizer *mainVerticalPan;
+@property (nonatomic, strong) UIPanGestureRecognizer *queueDrag;
+@property (nonatomic, strong) UIPanGestureRecognizer *statsDrag;
 @property (nonatomic, strong) UIView *mainPane;
 @property (nonatomic, strong) UIView *queuePane;
 @property (nonatomic, strong) UIView *statsPane;
+@property (nonatomic, strong) UIView *queueHandle;
+@property (nonatomic, strong) UIView *statsHandle;
 @property (nonatomic, strong) UILabel *queueHeader;
 @property (nonatomic, strong) UITableView *queueTable;
 @property (nonatomic, strong) UILabel *statsTitle;
 @property (nonatomic, strong) UITextView *statsText;
 @property (nonatomic, strong) UILabel *pagesHint;
-@property (nonatomic, assign) NSInteger pagerPage;
+@property (nonatomic, assign) BOOL queueDrawerOpen;
+@property (nonatomic, assign) BOOL statsDrawerOpen;
+@property (nonatomic, assign) BOOL draggingDrawer;
+@property (nonatomic, assign) NSInteger activeDragIndex;
+@property (nonatomic, assign) BOOL dragIndexResolved;
+@property (nonatomic, assign) CGFloat drawerDragStartY;
 @property (nonatomic, strong) UIImageView *backgroundImageView;
 @property (nonatomic, strong) UIView *scrimView;
 @property (nonatomic, strong) NSCache *blurCache;
@@ -41,11 +55,15 @@
 @property (nonatomic, strong) UIButton *repeatButton;
 @property (nonatomic, strong) UIActivityIndicatorView *spinner;
 @property (nonatomic, strong) NSTimer *timer;
+@property (nonatomic, strong) NSTimer *swipeHintTimer;
+@property (nonatomic, assign) BOOL showingSwipeHint;
 @property (nonatomic, assign) BOOL scrubbing;
 @property (nonatomic, assign) BOOL panning;
+@property (nonatomic, assign) CGPoint artworkRestingCenter;
 @property (nonatomic, assign) CGFloat panBaseX;
 @property (nonatomic, assign) BOOL panCommitted;
 @property (nonatomic, assign) NSInteger panSwipeDir;
+@property (nonatomic, assign) NSInteger lastGlyphMode;
 @end
 
 @implementation LTPlayerViewController
@@ -57,37 +75,39 @@
     }
     self.title = @"Now Playing";
     self.view.backgroundColor = [UIColor colorWithWhite:0.15f alpha:1.0f];
-    LTLog(@"PLAYER_VC bounds=%d x %d", (int)self.view.bounds.size.width, (int)self.view.bounds.size.height);
+    // The queue/stats drawers slide in from the edges. Without clipping their
+    // closed frames (which sit just outside the view) would render over the
+    // tab bar / navigation chrome.
+    self.view.clipsToBounds = YES;
+    LTLog(@"PLAYER_VC bounds=%d x %d screenH=%d tall=%d",
+          (int)self.view.bounds.size.width, (int)self.view.bounds.size.height,
+          (int)[[UIScreen mainScreen] bounds].size.height, (int)[self isTallScreen]);
 
     self.blurCache = [[NSCache alloc] init];
     [self applyArtworkBackgroundPref];
 
-    // Vertical pager: queue (top), main (middle), stats (bottom).
+    // Main pane is always full-screen. Queue and stats are overlay drawers that
+    // slide in from the top and bottom edges over the main pane.
     CGFloat W = self.view.bounds.size.width;
     CGFloat H = self.view.bounds.size.height;
-    self.pageScrollView = [[UIScrollView alloc] initWithFrame:CGRectMake(0, 0, W, H)];
-    self.pageScrollView.pagingEnabled = YES;
-    self.pageScrollView.directionalLockEnabled = YES;
-    self.pageScrollView.showsHorizontalScrollIndicator = NO;
-    self.pageScrollView.showsVerticalScrollIndicator = NO;
-    self.pageScrollView.backgroundColor = [UIColor clearColor];
-    [self.view addSubview:self.pageScrollView];
+    CGFloat drawerH = [self drawerHeight];
 
-    self.queuePane = [[UIView alloc] initWithFrame:CGRectMake(0, 0, W, H)];
-    self.queuePane.backgroundColor = [UIColor colorWithWhite:0.10f alpha:0.85f];
-    [self.pageScrollView addSubview:self.queuePane];
-
-    self.mainPane = [[UIView alloc] initWithFrame:CGRectMake(0, H, W, H)];
+    self.mainPane = [[UIView alloc] initWithFrame:CGRectMake(0, 0, W, H)];
     self.mainPane.backgroundColor = [UIColor clearColor];
-    [self.pageScrollView addSubview:self.mainPane];
+    [self.view addSubview:self.mainPane];
 
-    self.statsPane = [[UIView alloc] initWithFrame:CGRectMake(0, H * 2.0f, W, H)];
-    self.statsPane.backgroundColor = [UIColor colorWithWhite:0.10f alpha:0.85f];
-    [self.pageScrollView addSubview:self.statsPane];
+    self.queuePane = [[UIView alloc] initWithFrame:CGRectMake(0, -drawerH, W, drawerH)];
+    self.queuePane.backgroundColor = [UIColor colorWithWhite:0.10f alpha:0.97f];
+    self.queuePane.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [self.view addSubview:self.queuePane];
 
-    self.pageScrollView.contentSize = CGSizeMake(W, H * 3.0f);
-    self.pageScrollView.contentOffset = CGPointMake(0, H);
-    self.pagerPage = 1;
+    self.statsPane = [[UIView alloc] initWithFrame:CGRectMake(0, H, W, drawerH)];
+    self.statsPane.backgroundColor = [UIColor colorWithWhite:0.10f alpha:0.97f];
+    self.statsPane.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [self.view addSubview:self.statsPane];
+
+    self.queueDrawerOpen = NO;
+    self.statsDrawerOpen = NO;
 
     self.incomingArtworkView = [[UIImageView alloc] init];
     self.incomingArtworkView.backgroundColor = [UIColor colorWithWhite:0.25f alpha:1.0f];
@@ -180,9 +200,10 @@
     self.pagesHint = [[UILabel alloc] init];
     self.pagesHint.text = @"Swipe down for queue   \u00B7   Swipe up for stats";
     self.pagesHint.textAlignment = NSTextAlignmentCenter;
-    self.pagesHint.font = [UIFont systemFontOfSize:10];
+    self.pagesHint.font = [UIFont boldSystemFontOfSize:12];
     self.pagesHint.textColor = [UIColor colorWithWhite:0.85f alpha:0.85f];
     self.pagesHint.backgroundColor = [UIColor clearColor];
+    self.pagesHint.hidden = YES;
     [self.mainPane addSubview:self.pagesHint];
 
     [self layoutControls];
@@ -190,6 +211,8 @@
     [self buildStatsPane];
     [self layoutPages];
     [self setupSwipeGestures];
+    [self applyTransportImages];
+    self.lastGlyphMode = NSNotFound;
 }
 
 - (void)setupSwipeGestures {
@@ -199,7 +222,19 @@
     pan.delegate = self;
     self.swipePan = pan;
     [self.mainPane addGestureRecognizer:pan];
-    [self.pageScrollView.panGestureRecognizer requireGestureRecognizerToFail:pan];
+
+    self.mainVerticalPan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(mainVerticalPan:)];
+    self.mainVerticalPan.delegate = self;
+    self.mainVerticalPan.cancelsTouchesInView = NO;
+    [self.mainPane addGestureRecognizer:self.mainVerticalPan];
+
+    self.queueDrag = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(drawerDragged:)];
+    self.queueDrag.delegate = self;
+    [self.queuePane addGestureRecognizer:self.queueDrag];
+
+    self.statsDrag = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(drawerDragged:)];
+    self.statsDrag.delegate = self;
+    [self.statsPane addGestureRecognizer:self.statsDrag];
 }
 
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
@@ -207,19 +242,199 @@
         CGPoint v = [self.swipePan velocityInView:self.mainPane];
         return fabs(v.x) > fabs(v.y);
     }
+    if (gestureRecognizer == self.mainVerticalPan) {
+        CGPoint v = [self.mainVerticalPan velocityInView:self.mainPane];
+        return fabs(v.y) > fabs(v.x);
+    }
+    if (gestureRecognizer == self.queueDrag || gestureRecognizer == self.statsDrag) {
+        CGPoint v = [(UIPanGestureRecognizer *)gestureRecognizer velocityInView:self.view];
+        return fabs(v.y) >= fabs(v.x);
+    }
     return YES;
+}
+
+// Drawer drags must only start outside the scrollable middle region, so the
+// queue table / stats text keep their normal scrolling. Touches on the handle
+// strips and empty drawer margins move the drawer instead.
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch {
+    if (gestureRecognizer == self.queueDrag && self.queueTable) {
+        CGPoint p = [touch locationInView:self.queueTable];
+        return !CGRectContainsPoint(self.queueTable.bounds, p);
+    }
+    if (gestureRecognizer == self.statsDrag && self.statsText) {
+        CGPoint p = [touch locationInView:self.statsText];
+        return !CGRectContainsPoint(self.statsText.bounds, p);
+    }
+    return YES;
+}
+
+- (CGFloat)drawerHeight {
+    CGFloat h = self.view.bounds.size.height;
+    CGFloat drawerH = floorf(h * 0.70f);
+    if (drawerH < 120.0f) drawerH = h;
+    return drawerH;
+}
+
+- (void)queueHandleTapped:(UITapGestureRecognizer *)tap {
+    [self setQueueDrawerOpen:NO animated:YES];
+}
+
+- (void)statsHandleTapped:(UITapGestureRecognizer *)tap {
+    [self setStatsDrawerOpen:NO animated:YES];
+}
+
+- (void)setQueueDrawerOpen:(BOOL)open animated:(BOOL)animated {
+    if (open && self.statsDrawerOpen) {
+        [self setStatsDrawerOpen:NO animated:animated];
+    }
+    self.queueDrawerOpen = open;
+    CGFloat drawerH = [self drawerHeight];
+    CGRect target = self.queuePane.frame;
+    target.size.height = drawerH;
+    target.origin.y = open ? 0.0f : -drawerH;
+    void (^updates)(void) = ^{ self.queuePane.frame = target; };
+    if (animated) {
+        [UIView animateWithDuration:0.28 animations:updates];
+    } else {
+        updates();
+    }
+}
+
+- (void)setStatsDrawerOpen:(BOOL)open animated:(BOOL)animated {
+    if (open && self.queueDrawerOpen) {
+        [self setQueueDrawerOpen:NO animated:animated];
+    }
+    self.statsDrawerOpen = open;
+    CGFloat h = self.view.bounds.size.height;
+    CGFloat drawerH = [self drawerHeight];
+    CGRect target = self.statsPane.frame;
+    target.size.height = drawerH;
+    target.origin.y = open ? (h - drawerH) : h;
+    void (^updates)(void) = ^{ self.statsPane.frame = target; };
+    if (animated) {
+        [UIView animateWithDuration:0.28 animations:updates];
+    } else {
+        updates();
+    }
+}
+
+#pragma mark - Interactive drawer dragging
+
+// A drag can come from a drawer's own handle pan or from a vertical pan on the
+// main view; both drive the same interactive slide.
+- (void)beginDrawerDragAtIndex:(NSInteger)index {
+    self.activeDragIndex = index;
+    self.draggingDrawer = YES;
+    UIView *drawer = (index == 0) ? self.queuePane : self.statsPane;
+    self.drawerDragStartY = drawer.frame.origin.y;
+}
+
+- (void)updateDrawerDragWithTranslation:(CGFloat)ty {
+    BOOL isQueue = (self.activeDragIndex == 0);
+    UIView *drawer = isQueue ? self.queuePane : self.statsPane;
+    CGFloat h = self.view.bounds.size.height;
+    CGFloat drawerH = [self drawerHeight];
+    CGFloat minY = isQueue ? -drawerH : (h - drawerH);
+    CGFloat maxY = isQueue ? 0.0f : h;
+    CGFloat y = self.drawerDragStartY + ty;
+    if (y < minY) y = minY + (y - minY) * 0.35f;
+    if (y > maxY) y = maxY + (y - maxY) * 0.35f;
+    drawer.frame = CGRectMake(0, y, drawer.frame.size.width, drawerH);
+}
+
+- (void)endDrawerDragWithVelocity:(CGFloat)vy {
+    BOOL isQueue = (self.activeDragIndex == 0);
+    UIView *drawer = isQueue ? self.queuePane : self.statsPane;
+    CGFloat h = self.view.bounds.size.height;
+    CGFloat drawerH = [self drawerHeight];
+    CGFloat openY = isQueue ? 0.0f : (h - drawerH);
+    CGFloat closedY = isQueue ? -drawerH : h;
+    self.draggingDrawer = NO;
+    CGFloat projected = drawer.frame.origin.y + vy * 0.15f;
+    BOOL open;
+    if (isQueue) {
+        open = projected > closedY + (openY - closedY) * 0.5f;
+    } else {
+        open = projected < closedY + (openY - closedY) * 0.5f;
+    }
+    if (isQueue) {
+        [self setQueueDrawerOpen:open animated:YES];
+    } else {
+        [self setStatsDrawerOpen:open animated:YES];
+    }
+}
+
+- (void)drawerDragged:(UIPanGestureRecognizer *)pan {
+    NSInteger index = (pan == self.queueDrag) ? 0 : 1;
+    switch (pan.state) {
+        case UIGestureRecognizerStateBegan:
+            [self beginDrawerDragAtIndex:index];
+            break;
+        case UIGestureRecognizerStateChanged:
+            [self updateDrawerDragWithTranslation:[pan translationInView:self.view].y];
+            break;
+        case UIGestureRecognizerStateEnded:
+        case UIGestureRecognizerStateCancelled:
+        case UIGestureRecognizerStateFailed:
+            [self endDrawerDragWithVelocity:[pan velocityInView:self.view].y];
+            break;
+        default:
+            break;
+    }
+}
+
+// Vertical drag anywhere on the now-playing view: pulls a drawer in from the
+// matching edge, or pushes an already-open drawer back out.
+- (void)mainVerticalPan:(UIPanGestureRecognizer *)pan {
+    switch (pan.state) {
+        case UIGestureRecognizerStateBegan: {
+            self.dragIndexResolved = NO;
+            if (self.queueDrawerOpen) {
+                [self beginDrawerDragAtIndex:0];
+                self.dragIndexResolved = YES;
+            } else if (self.statsDrawerOpen) {
+                [self beginDrawerDragAtIndex:1];
+                self.dragIndexResolved = YES;
+            }
+            break;
+        }
+        case UIGestureRecognizerStateChanged: {
+            CGFloat ty = [pan translationInView:self.view].y;
+            if (!self.dragIndexResolved) {
+                if (fabs(ty) < 8.0f) break;
+                [self beginDrawerDragAtIndex:(ty > 0.0f) ? 0 : 1];
+                self.dragIndexResolved = YES;
+            }
+            [self updateDrawerDragWithTranslation:ty];
+            break;
+        }
+        case UIGestureRecognizerStateEnded:
+        case UIGestureRecognizerStateCancelled:
+        case UIGestureRecognizerStateFailed:
+            if (self.dragIndexResolved) {
+                [self endDrawerDragWithVelocity:[pan velocityInView:self.view].y];
+            }
+            self.dragIndexResolved = NO;
+            break;
+        default:
+            break;
+    }
 }
 
 - (void)handlePan:(UIPanGestureRecognizer *)pan {
     UIView *view = self.view;
     CGPoint translation = [pan translationInView:view];
     CGFloat width = view.bounds.size.width;
-    CGFloat maxDrag = width * 0.5f;
+    // On iPad side-by-side the artwork lives in its own left column, so the
+    // swipe spans that column rather than the whole screen.
+    CGFloat dragSpan = [self isSideBySide] ? self.artworkView.bounds.size.width : width;
+    CGFloat maxDrag = dragSpan * 0.5f;
 
     switch (pan.state) {
         case UIGestureRecognizerStateBegan: {
             self.panning = YES;
-            self.panBaseX = width / 2.0f;
+            self.artworkRestingCenter = self.artworkView.center;
+            self.panBaseX = self.artworkRestingCenter.x;
             self.panCommitted = NO;
             self.panSwipeDir = 0;
             break;
@@ -253,11 +468,11 @@
             self.panning = NO;
             CGFloat tx = translation.x + [pan velocityInView:view].x * 0.2f;
             CGFloat velocity = fabs([pan velocityInView:view].x);
-            BOOL commit = (fabs(tx) > width * 0.18f) || velocity > 750.0f;
+            BOOL commit = (fabs(tx) > dragSpan * 0.22f) || velocity > 750.0f;
             if (commit && self.panSwipeDir != 0) {
                 self.panCommitted = YES;
                 CGFloat dirOff = (self.panSwipeDir > 0) ? 1.0f : -1.0f;
-                CGFloat offX = (width / 2.0f) * dirOff + self.artworkView.bounds.size.width * dirOff;
+                CGFloat offX = self.panBaseX * dirOff + self.artworkView.bounds.size.width * dirOff;
                 [UIView animateWithDuration:0.18f animations:^{
                     self.artworkView.center = CGPointMake(self.panBaseX + offX, self.artworkView.center.y);
                     self.artworkView.alpha = 0.0f;
@@ -269,6 +484,12 @@
                         [[LTPlayerController sharedController] previousTrack];
                     } else {
                         [[LTPlayerController sharedController] nextTrack];
+                    }
+                    // refreshTrack cleared the art while it starts loading the
+                    // new track; hand the preview that was sliding in back over
+                    // so the area is never blank while the high-res loads.
+                    if (self.incomingArtworkView.image) {
+                        self.artworkView.image = self.incomingArtworkView.image;
                     }
                     [self resetArtworkPresentation];
                 }];
@@ -318,15 +539,21 @@
     }];
 }
 
+// Restores the artwork (and the incoming preview) to the resting position the
+// layout gave them. The base is captured at pan start / layout time, never
+// from the live view center: after a commit animation the artwork sits far
+// off-screen, so deriving a base from it would park the art out of view.
 - (void)resetArtworkPresentation {
-    self.panBaseX = self.view.bounds.size.width / 2.0f;
-    self.artworkView.center = CGPointMake(self.panBaseX, self.artworkView.center.y);
+    CGPoint resting = self.artworkRestingCenter;
+    self.panBaseX = resting.x;
+    self.artworkView.center = resting;
     self.artworkView.transform = CGAffineTransformIdentity;
     self.artworkView.alpha = 1.0f;
-    self.incomingArtworkView.center = CGPointMake(self.panBaseX, self.artworkView.center.y);
+    self.incomingArtworkView.center = resting;
     self.incomingArtworkView.transform = CGAffineTransformIdentity;
     self.incomingArtworkView.alpha = 0.0f;
     self.incomingArtworkView.image = nil;
+    self.spinner.center = resting;
     self.panSwipeDir = 0;
 }
 
@@ -338,6 +565,23 @@
     return button;
 }
 
+// Rings the enlarged transport controls so the floating glyphs read as buttons.
+- (void)applyCircleToButton:(UIButton *)button diameter:(CGFloat)diameter {
+    if (diameter <= 0.0f) return;
+    button.layer.cornerRadius = diameter / 2.0f;
+    button.layer.borderWidth = 0.0f;
+    button.layer.borderColor = NULL;
+    button.layer.backgroundColor = [UIColor colorWithWhite:0.85f alpha:1.0f].CGColor;
+    button.clipsToBounds = YES;
+}
+
+- (void)removeCircleFromButton:(UIButton *)button {
+    button.layer.cornerRadius = 0.0f;
+    button.layer.borderWidth = 0.0f;
+    button.layer.borderColor = NULL;
+    button.layer.backgroundColor = NULL;
+}
+
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     if (self.backgroundImageView) self.backgroundImageView.frame = self.view.bounds;
@@ -345,10 +589,53 @@
     [self layoutControls];
     [self layoutPages];
     [self layoutPageSubviews];
+    // Glyphs are rendered per layout mode: side-by-side (2), the scaled-up tall
+    // layout (1), or the legacy bitmap layout (0). Render on mode change so a
+    // portrait→landscape swap swaps the oversized portrait glyphs for the
+    // smaller side-by-side ones, without re-rendering on every resize frame.
+    NSInteger glyphMode = [self isSideBySide] ? 2 : ([self isTallScreen] ? 1 : 0);
+    if (glyphMode != self.lastGlyphMode) {
+        [self applyTransportImages];
+        self.lastGlyphMode = glyphMode;
+    }
 }- (BOOL)isWidescreen {
+    // One-handed mode draws the app at the classic 320x480 size, so the player
+    // must use the non-widescreen layout even on a large screen.
+    if ([LTOneHandedMode isActive]) return NO;
     if ([LTDebugSettings forceNonWidescreen]) return NO;
     if ([LTDebugSettings forceWidescreen]) return YES;
     return ([[UIScreen mainScreen] bounds].size.height >= 568.0f);
+}
+
+// Edge-to-edge phones (iPhone X and later) are far taller than the 4-inch
+// screens this layout was built around; the transport controls get more room.
+- (BOOL)isTallScreen {
+    // iPad always uses the enlarged layout: portrait gets the notched-phone
+    // layout scaled up, landscape uses the native side-by-side screen instead.
+    if ([self isPadLayout]) return YES;
+    // The controller's own view is inset by the tab bar (and would be by the nav
+    // bar), so its height is well under the physical screen height. Detect the
+    // edge-to-edge phones from the screen instead (iPhone 8 Plus tops out at
+    // 736pt; iPhone X and later start at 812pt).
+    return [self isWidescreen] && ([[UIScreen mainScreen] bounds].size.height >= 780.0f);
+}
+
+- (BOOL)isIPad {
+    return ([UIDevice currentDevice].userInterfaceIdiom == UIUserInterfaceIdiomPad);
+}
+
+// iPad gets the native side-by-side layout, except when one-handed mode / the
+// non-widescreen debug setting shrinks the app back to the classic 320x480
+// size (isWidescreen already returns NO there).
+- (BOOL)isPadLayout {
+    return [self isIPad] && [self isWidescreen];
+}
+
+// Landscape iPad: album art hangs beside the controls column. Portrait iPad
+// reuses the scaled-up tall layout instead.
+- (BOOL)isSideBySide {
+    if (![self isPadLayout]) return NO;
+    return (self.view.bounds.size.width > self.view.bounds.size.height);
 }
 
 - (void)layoutControls {
@@ -359,47 +646,101 @@
 
     CGFloat transportH = 40.0f;
     CGFloat smallH = 30.0f;
-    CGFloat bottomPad = widescreen ? 9.0f : 4.0f;
+    CGFloat bottomInset = LTSafeAreaBottom(self.view);
+    CGFloat topInset = LTSafeAreaTop(self.view);
+
+    if ([self isSideBySide]) {
+        [self layoutPadSideBySideWithWidth:width height:height topInset:topInset bottomInset:bottomInset];
+        self.artworkRestingCenter = self.artworkView.center;
+        return;
+    }
+
+    CGFloat bottomPad = (widescreen ? 9.0f : 4.0f) + bottomInset;
     CGFloat transportY = height - bottomPad - transportH;
     CGFloat sliderH = 22.0f;
     CGFloat sliderY = transportY - 8.0f - sliderH;
     CGFloat timeY = sliderY - 4.0f - 16.0f;
+    CGFloat titleH = 22.0f;
+    CGFloat artistH = 16.0f;
+
+    // Edge-to-edge (notched) phones are far taller than the 4-inch layout this
+    // screen was originally designed around. On those, pin the album art to the
+    // top, stack the title/artist/scrubber directly beneath it, and let the
+    // transport controls span the bottom of the screen.
+    BOOL tallScreen = [self isTallScreen];
 
     if (!widescreen) {
         transportY -= 5.0f;
     }
 
     if (widescreen) {
-        self.bitrateLabel.frame = CGRectMake(16, height - 20, 90, 14);
-        CGFloat topPad = 24.0f;
-        self.sourceLabel.hidden = NO;
+        self.bitrateLabel.frame = CGRectMake(16, height - bottomInset - 20, 90, 14);
+        CGFloat topPad = 24.0f + topInset;
+        self.sourceLabel.hidden = self.showingSwipeHint;
         self.sourceLabel.textAlignment = NSTextAlignmentCenter;
         self.sourceLabel.frame = CGRectMake(12, topPad + 2.0f, width - 24, 24);
+        self.pagesHint.frame = self.sourceLabel.frame;
 
-        CGFloat titleH = 22.0f;
-        CGFloat artistH = 16.0f;
-        CGFloat artistY = timeY - 5.0f - artistH;
-        CGFloat titleY = artistY - 2.0f - titleH;
-        CGFloat artBottom = titleY - 5.0f;
-        CGFloat artSize = width - 24.0f;
-        CGFloat artTop = artBottom - artSize;
-        if (artTop < 0) {
-            artTop = 0;
-            artSize = artBottom;
+        if (tallScreen) {
+            // iPad reuses this notched-phone layout scaled up ~1.35x; phones
+            // keep the original metrics.
+            BOOL pad = [self isIPad];
+            CGFloat s = pad ? 1.35f : 1.0f;
+            CGFloat padTitleH = pad ? 30.0f : titleH;
+            CGFloat padArtistH = pad ? 20.0f : artistH;
+
+            // Reserve the bottom block for the enlarged controls first, then
+            // shrink the artwork if the text/scrubber stack would run into it.
+            CGFloat areaH = 184.0f * s;
+            CGFloat areaTop = (height - bottomPad) - areaH;
+
+            CGFloat artTop = topPad + 26.0f + 12.0f;
+            CGFloat artSize = width - 24.0f;
+            CGFloat textBlock = padTitleH + 2.0f + padArtistH + 12.0f * s + 18.0f * s + 16.0f + 14.0f;
+            CGFloat artMax = (areaTop - 12.0f) - artTop - textBlock;
+            if (artSize > artMax) artSize = artMax;
+            if (artSize < 40.0f) artSize = 40.0f;
+
+            self.artworkView.frame = CGRectMake((width - artSize) / 2.0f, artTop, artSize, artSize);
+            self.incomingArtworkView.frame = self.artworkView.frame;
+            self.spinner.center = self.artworkView.center;
+
+            if (pad) {
+                self.titleLabel.font = [UIFont boldSystemFontOfSize:24];
+                self.artistLabel.font = [UIFont systemFontOfSize:16];
+            }
+            CGFloat titleY = artTop + artSize + 14.0f * s;
+            self.titleLabel.frame = CGRectMake(12, titleY, width - 24, padTitleH);
+            self.artistLabel.frame = CGRectMake(12, titleY + padTitleH + 2.0f, width - 24, padArtistH);
+
+            timeY = titleY + padTitleH + 2.0f + padArtistH + 12.0f * s;
+            sliderY = timeY + 18.0f * s;
+        } else {
+            CGFloat artistY = timeY - 5.0f - artistH;
+            CGFloat titleY = artistY - 2.0f - titleH;
+            CGFloat artBottom = titleY - 5.0f;
+            CGFloat artSize = width - 24.0f;
+            CGFloat artTop = artBottom - artSize;
+            if (artTop < 0) {
+                artTop = 0;
+                artSize = artBottom;
+            }
+            self.artworkView.frame = CGRectMake((width - artSize) / 2.0f, artTop, artSize, artSize);
+            self.incomingArtworkView.frame = self.artworkView.frame;
+            self.spinner.center = self.artworkView.center;
+
+            self.titleLabel.frame = CGRectMake(12, titleY, width - 24, titleH);
+            self.artistLabel.frame = CGRectMake(12, artistY, width - 24, artistH);
         }
-        self.artworkView.frame = CGRectMake((width - artSize) / 2.0f, artTop, artSize, artSize);
-        self.incomingArtworkView.frame = self.artworkView.frame;
-        self.spinner.center = self.artworkView.center;
-
-        self.titleLabel.frame = CGRectMake(12, titleY, width - 24, titleH);
-        self.artistLabel.frame = CGRectMake(12, artistY, width - 24, artistH);
     } else {
         self.sourceLabel.hidden = YES;
+        self.titleLabel.hidden = self.showingSwipeHint;
+        self.artistLabel.hidden = self.showingSwipeHint;
         self.bitrateLabel.frame = CGRectMake(12, 12, 70, 14);
         CGFloat titleY = 10.0f;
-        CGFloat titleH = 22.0f;
         self.titleLabel.frame = CGRectMake(12, titleY, width - 24, titleH);
         self.artistLabel.frame = CGRectMake(12, titleY + titleH + 2.0f, width - 24, 16);
+        self.pagesHint.frame = CGRectMake(12, titleY + 12.0f, width - 24, 16);
 
         CGFloat artworkTop = 54.0f;
         CGFloat artworkBottom = timeY - 5.0f;
@@ -415,43 +756,170 @@
     self.remainingLabel.frame = CGRectMake(width - 66, timeY, 50, 16);
     self.progressSlider.frame = CGRectMake(16, sliderY, width - 32, sliderH);
 
-    CGFloat spacing = 22.0f;
-    CGFloat totalWidth = smallH * 2.0f + transportH * 3.0f + spacing * 4.0f;
-    CGFloat start = (width - totalWidth) / 2.0f;
-    CGFloat smallY = transportY + (transportH - smallH) / 2.0f;
+    if (tallScreen) {
+        // Enlarged transport: a big play/pause in the middle, shuffle/repeat up
+        // in the top corners and back/next down in the bottom corners. iPad
+        // portrait scales all of it up together with the rest of the layout.
+        BOOL pad = [self isIPad];
+        CGFloat s = pad ? 1.35f : 1.0f;
+        CGFloat areaH = 184.0f * s;
+        CGFloat areaTop = (height - bottomPad) - areaH;
+        CGFloat areaBottom = height - bottomPad;
+        CGFloat playSize = 120.0f * s;
+        CGFloat midSize = 74.0f * s;
+        CGFloat sideSize = midSize;
+        CGFloat sideMargin = 24.0f * s;
+        CGFloat cornerInset = 46.0f * s;
 
-    self.shuffleButton.frame = CGRectMake(start, smallY, smallH, smallH);
-    self.prevButton.frame = CGRectMake(start + smallH + spacing, transportY, transportH, transportH);
-    self.playButton.frame = CGRectMake(start + smallH + spacing + transportH + spacing, transportY, transportH, transportH);
-    self.nextButton.frame = CGRectMake(start + smallH + spacing + (transportH + spacing) * 2.0f, transportY, transportH, transportH);
-    self.repeatButton.frame = CGRectMake(start + smallH + spacing + (transportH + spacing) * 3.0f, smallY, smallH, smallH);
-    self.pagesHint.hidden = ![self isWidescreen];
-    self.pagesHint.frame = CGRectMake(0, 2, width, 14);
+        self.playButton.frame = CGRectMake((width - playSize) / 2.0f,
+                                           areaTop + (areaH - playSize) / 2.0f,
+                                           playSize, playSize);
+        self.prevButton.frame = CGRectMake(sideMargin, areaBottom - cornerInset - midSize / 2.0f, midSize, midSize);
+        self.nextButton.frame = CGRectMake(width - sideMargin - midSize, areaBottom - cornerInset - midSize / 2.0f, midSize, midSize);
+        self.shuffleButton.frame = CGRectMake(sideMargin, areaTop + cornerInset - sideSize / 2.0f, sideSize, sideSize);
+        self.repeatButton.frame = CGRectMake(width - sideMargin - sideSize, areaTop + cornerInset - sideSize / 2.0f, sideSize, sideSize);
+
+        [self applyCircleToButton:self.playButton diameter:playSize];
+        [self applyCircleToButton:self.prevButton diameter:midSize];
+        [self applyCircleToButton:self.nextButton diameter:midSize];
+        [self applyCircleToButton:self.shuffleButton diameter:sideSize];
+        [self applyCircleToButton:self.repeatButton diameter:sideSize];
+    } else {
+        CGFloat spacing = 22.0f;
+        CGFloat totalWidth = smallH * 2.0f + transportH * 3.0f + spacing * 4.0f;
+        CGFloat start = (width - totalWidth) / 2.0f;
+        CGFloat smallY = transportY + (transportH - smallH) / 2.0f;
+
+        self.shuffleButton.frame = CGRectMake(start, smallY, smallH, smallH);
+        self.prevButton.frame = CGRectMake(start + smallH + spacing, transportY, transportH, transportH);
+        self.playButton.frame = CGRectMake(start + smallH + spacing + transportH + spacing, transportY, transportH, transportH);
+        self.nextButton.frame = CGRectMake(start + smallH + spacing + (transportH + spacing) * 2.0f, transportY, transportH, transportH);
+        self.repeatButton.frame = CGRectMake(start + smallH + spacing + (transportH + spacing) * 3.0f, smallY, smallH, smallH);
+
+        [self removeCircleFromButton:self.playButton];
+        [self removeCircleFromButton:self.prevButton];
+        [self removeCircleFromButton:self.nextButton];
+        [self removeCircleFromButton:self.shuffleButton];
+        [self removeCircleFromButton:self.repeatButton];
+    }
+
+    self.artworkRestingCenter = self.artworkView.center;
+}
+
+// Landscape iPad: album art hangs on the left (vertically centered) with a
+// control column to its right. Source sits at the top; the song/artist/scrubber
+// block and the enlarged prev–play–next row form one tight vertically-centered
+// bundle, with the shuffle and loop buttons tucked into the bottom-right
+// corner. The bounds are already inset by the sidebar rail.
+- (void)layoutPadSideBySideWithWidth:(CGFloat)width height:(CGFloat)height topInset:(CGFloat)topInset bottomInset:(CGFloat)bottomInset {
+    CGFloat m = 44.0f;
+    CGFloat gap = 44.0f;
+    CGFloat availH = height - topInset - bottomInset;
+
+    CGFloat artSize = width * 0.42f;
+    if (artSize > availH - 100.0f) artSize = availH - 100.0f;
+    if (artSize > 620.0f) artSize = 620.0f;
+    if (artSize < 140.0f) artSize = 140.0f;
+    CGFloat artY = topInset + (availH - artSize) / 2.0f;
+    self.artworkView.frame = CGRectMake(m, artY, artSize, artSize);
+    self.incomingArtworkView.frame = self.artworkView.frame;
+    self.spinner.center = self.artworkView.center;
+
+    CGFloat ctrlX = m + artSize + gap;
+    CGFloat ctrlW = width - ctrlX - m;
+    CGFloat ctrlRight = ctrlX + ctrlW;
+    CGFloat ctrlBottom = height - bottomInset - 8.0f;
+
+    CGFloat topPad = topInset + 20.0f;
+    self.sourceLabel.hidden = self.showingSwipeHint;
+    self.sourceLabel.textAlignment = NSTextAlignmentLeft;
+    self.sourceLabel.frame = CGRectMake(ctrlX, topPad, ctrlW, 26.0f);
+    self.pagesHint.frame = self.sourceLabel.frame;
+    self.bitrateLabel.frame = CGRectMake(ctrlX, ctrlBottom - 14.0f, 100.0f, 14.0f);
+
+    // Enlarged transport row: a very big play/pause flanked by smaller (but
+    // still large) prev/next buttons. Shuffle and loop are small and live in
+    // the bottom-right corner.
+    CGFloat playSize = 132.0f;
+    CGFloat midSize = 78.0f;
+    CGFloat smallSize = 56.0f;
+    CGFloat rowSpacing = 30.0f;
+    CGFloat totalRow = midSize + playSize + midSize + rowSpacing * 2.0f;
+
+    CGFloat titleH = 30.0f;
+    CGFloat artistH = 22.0f;
+    CGFloat bundleH = titleH + 2.0f + artistH + 14.0f + 22.0f + 28.0f + playSize;
+
+    CGFloat contentTop = topPad + 26.0f + 14.0f;
+    CGFloat contentBottom = ctrlBottom - smallSize - 16.0f;
+    CGFloat bundleY = contentTop;
+    if (contentBottom - contentTop > bundleH) {
+        bundleY = contentTop + (contentBottom - contentTop - bundleH) / 2.0f;
+    }
+
+    CGFloat titleY = bundleY;
+    self.titleLabel.font = [UIFont boldSystemFontOfSize:26];
+    self.titleLabel.textAlignment = NSTextAlignmentLeft;
+    self.titleLabel.frame = CGRectMake(ctrlX, titleY, ctrlW, titleH);
+    self.artistLabel.font = [UIFont systemFontOfSize:16];
+    self.artistLabel.textAlignment = NSTextAlignmentLeft;
+    self.artistLabel.frame = CGRectMake(ctrlX, titleY + titleH + 2.0f, ctrlW, artistH);
+
+    CGFloat sliderY = titleY + titleH + 2.0f + artistH + 14.0f;
+    self.elapsedLabel.font = [UIFont systemFontOfSize:12];
+    self.remainingLabel.font = [UIFont systemFontOfSize:12];
+    self.elapsedLabel.frame = CGRectMake(ctrlX, sliderY - 14.0f, 52.0f, 16.0f);
+    self.remainingLabel.frame = CGRectMake(ctrlRight - 52.0f, sliderY - 14.0f, 52.0f, 16.0f);
+    self.progressSlider.frame = CGRectMake(ctrlX, sliderY + 2.0f, ctrlW, 22.0f);
+
+    CGFloat rowY = sliderY + 24.0f + 28.0f;
+    CGFloat C = ctrlX + ctrlW / 2.0f;
+    self.prevButton.frame = CGRectMake(C - totalRow / 2.0f, rowY, midSize, midSize);
+    self.playButton.frame = CGRectMake(C - playSize / 2.0f, rowY - (playSize - midSize) / 2.0f, playSize, playSize);
+    self.nextButton.frame = CGRectMake(C + totalRow / 2.0f - midSize, rowY, midSize, midSize);
+
+    CGFloat smallY = ctrlBottom - smallSize;
+    self.shuffleButton.frame = CGRectMake(ctrlRight - smallSize * 2.0f - 16.0f, smallY, smallSize, smallSize);
+    self.repeatButton.frame = CGRectMake(ctrlRight - smallSize, smallY, smallSize, smallSize);
+
+    [self applyCircleToButton:self.playButton diameter:playSize];
+    [self applyCircleToButton:self.prevButton diameter:midSize];
+    [self applyCircleToButton:self.nextButton diameter:midSize];
+    [self applyCircleToButton:self.shuffleButton diameter:smallSize];
+    [self applyCircleToButton:self.repeatButton diameter:smallSize];
 }
 
 #pragma mark - Pages layout
 
 - (void)layoutPages {
-    if (!self.pageScrollView) return;
+    if (self.draggingDrawer) return;
     CGFloat w = self.view.bounds.size.width;
     CGFloat h = self.view.bounds.size.height;
     if (w < 1.0f || h < 1.0f) return;
-    self.pageScrollView.frame = self.view.bounds;
-    self.pageScrollView.contentSize = CGSizeMake(w, h * 3.0f);
-    self.queuePane.frame = CGRectMake(0, 0, w, h);
-    self.mainPane.frame = CGRectMake(0, h, w, h);
-    self.statsPane.frame = CGRectMake(0, h * 2.0f, w, h);
-    if (!self.pageScrollView.dragging && !self.pageScrollView.decelerating) {
-        self.pageScrollView.contentOffset = CGPointMake(0, h * (CGFloat)self.pagerPage);
-    }
+    CGFloat drawerH = [self drawerHeight];
+    self.mainPane.frame = CGRectMake(0, 0, w, h);
+    self.queuePane.frame = CGRectMake(0, self.queueDrawerOpen ? 0.0f : -drawerH, w, drawerH);
+    self.statsPane.frame = CGRectMake(0, self.statsDrawerOpen ? (h - drawerH) : h, w, drawerH);
 }
 
-- (void)scrollViewDidEndDecelerating:(UIScrollView *)scrollView {
-    CGFloat h = self.view.bounds.size.height;
-    if (h > 1.0f) {
-        NSInteger page = (NSInteger)(floor((scrollView.contentOffset.y + h * 0.5f) / h));
-        self.pagerPage = MIN(2, MAX(0, page));
-    }
+- (UIView *)makeHandleView {
+    UIView *strip = [[UIView alloc] initWithFrame:CGRectZero];
+    strip.backgroundColor = [UIColor clearColor];
+    strip.userInteractionEnabled = YES;
+
+    UIView *grip = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 40, 5)];
+    grip.tag = 99;
+    grip.backgroundColor = [UIColor colorWithWhite:1.0f alpha:0.55f];
+    grip.layer.cornerRadius = 2.5f;
+    [strip addSubview:grip];
+    return strip;
+}
+
+- (void)centerGripInHandle:(UIView *)handle {
+    UIView *grip = [handle viewWithTag:99];
+    if (!grip) return;
+    grip.frame = CGRectMake((handle.bounds.size.width - 40) / 2.0f,
+                            (handle.bounds.size.height - 5) / 2.0f, 40, 5);
 }
 
 - (void)buildQueuePane {
@@ -469,6 +937,10 @@
     self.queueTable.rowHeight = 50.0f;
     self.queueTable.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [self.queuePane addSubview:self.queueTable];
+
+    self.queueHandle = [self makeHandleView];
+    [self.queueHandle addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(queueHandleTapped:)]];
+    [self.queuePane addSubview:self.queueHandle];
 
     [self reloadQueue];
 }
@@ -504,28 +976,47 @@
     self.statsText.text = @"No track playing yet.\n\nStart playback and its\nnerdy stream stats will\nappear here.";
     self.statsText.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [self.statsPane addSubview:self.statsText];
+
+    self.statsHandle = [self makeHandleView];
+    [self.statsHandle addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(statsHandleTapped:)]];
+    [self.statsPane addSubview:self.statsHandle];
+}
+
+- (CGFloat)drawerTopPadding {
+    // The queue drawer slides down from the very top of the screen, which on
+    // notched phones leaves its first rows under the sensor housing. The status
+    // bar is hidden on this screen, so the reported top inset can collapse to 0
+    // even though the notch is still there - fall back to its usual height.
+    CGFloat inset = LTSafeAreaTop(self.view);
+    if (inset < 1.0f && [self isTallScreen]) inset = 47.0f;
+    return inset;
 }
 
 - (void)layoutPageSubviews {
     CGFloat w = self.view.bounds.size.width;
-    CGFloat h = self.view.bounds.size.height;
+    CGFloat drawerH = [self drawerHeight];
+    CGFloat handleH = 40.0f;
+    CGFloat topPad = [self drawerTopPadding];
 
-    self.queueHeader.frame = CGRectMake(16, 10, w - 32, 22);
-    self.queueTable.frame = CGRectMake(0, 36, w, h - 36);
+    self.queueHandle.frame = CGRectMake(0, drawerH - handleH, w, handleH);
+    self.queueHeader.frame = CGRectMake(16, 10 + topPad, w - 32, 22);
+    self.queueTable.frame = CGRectMake(0, 36 + topPad, w, drawerH - 36 - topPad - handleH);
 
-    self.statsTitle.frame = CGRectMake(16, 10, w - 32, 22);
-    self.statsText.frame = CGRectMake(16, 38, w - 32, h - 52);
+    self.statsHandle.frame = CGRectMake(0, 0, w, handleH);
+    self.statsTitle.frame = CGRectMake(16, handleH + 2, w - 32, 22);
+    self.statsText.frame = CGRectMake(16, handleH + 26, w - 32, drawerH - handleH - 34);
+
+    [self centerGripInHandle:self.queueHandle];
+    [self centerGripInHandle:self.statsHandle];
 }
 
 - (void)revealQueue {
-    self.pagerPage = 0;
-    [self.pageScrollView setContentOffset:CGPointMake(0, 0) animated:YES];
+    [self setQueueDrawerOpen:YES animated:YES];
 }
 
 - (void)revealNowPlaying {
-    self.pagerPage = 1;
-    CGFloat h = self.view.bounds.size.height;
-    [self.pageScrollView setContentOffset:CGPointMake(0, h) animated:YES];
+    [self setQueueDrawerOpen:NO animated:YES];
+    [self setStatsDrawerOpen:NO animated:YES];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -611,10 +1102,57 @@
     [self refreshControls];
     [self reloadQueue];
     [self refreshStatsForCurrentTrack];
+    [self maybeShowSwipeHint];
 }
 
 - (void)refreshSourceLabel {
     self.sourceLabel.text = [[LTPlayerController sharedController] queueSourceName] ?: @"";
+}
+
+#pragma mark - Swipe hint
+
+// On the first song played in a session, briefly show the drawer gesture hint
+// in place of the source label (or the title/artist block on small phones),
+// then cross-fade back to the real text.
+- (void)maybeShowSwipeHint {
+    if (sHasShownSwipeHint) return;
+    sHasShownSwipeHint = YES;
+    [self showSwipeHint];
+}
+
+- (void)showSwipeHint {
+    self.showingSwipeHint = YES;
+    [self layoutControls];
+    self.pagesHint.hidden = NO;
+    self.pagesHint.alpha = 0.0f;
+    [UIView animateWithDuration:0.35 animations:^{
+        self.pagesHint.alpha = 1.0f;
+    }];
+    [self.swipeHintTimer invalidate];
+    self.swipeHintTimer = [NSTimer scheduledTimerWithTimeInterval:2.0
+                                                           target:self
+                                                         selector:@selector(hideSwipeHint)
+                                                         userInfo:nil
+                                                          repeats:NO];
+}
+
+- (void)hideSwipeHint {
+    self.swipeHintTimer = nil;
+    self.showingSwipeHint = NO;
+    [self layoutControls];
+
+    UIView *primary = [self isWidescreen] ? self.sourceLabel : self.titleLabel;
+    UIView *secondary = [self isWidescreen] ? nil : self.artistLabel;
+    primary.alpha = 0.0f;
+    secondary.alpha = 0.0f;
+    [UIView animateWithDuration:0.35 animations:^{
+        self.pagesHint.alpha = 0.0f;
+        primary.alpha = 1.0f;
+        secondary.alpha = 1.0f;
+    } completion:^(BOOL finished) {
+        self.pagesHint.hidden = YES;
+        self.pagesHint.alpha = 1.0f;
+    }];
 }
 
 - (BOOL)artworkBackgroundEnabled {
@@ -686,15 +1224,65 @@
     NSInteger kbps = [controller audioBitrateKbps];
     BOOL showKbps = [[NSUserDefaults standardUserDefaults] boolForKey:@"LTShowKbpsCounter"];
     self.bitrateLabel.text = (showKbps && kbps > 0) ? [NSString stringWithFormat:@"%d kbps", (int)kbps] : @"";
-    if ([controller isPlaying]) {
-        [self.playButton setImage:[UIImage imageNamed:@"IcoPause"] forState:UIControlStateNormal];
-    } else {
-        [self.playButton setImage:[UIImage imageNamed:@"IcoPlay"] forState:UIControlStateNormal];
-    }
     if ([controller isLoading]) {
         [self.spinner startAnimating];
     } else {
         [self.spinner stopAnimating];
+    }
+
+    [self applyTransportImages];
+}
+
+// On the tall edge-to-edge layout the transport controls are drawn much larger,
+// so they are rendered from the Font Awesome glyphs at the size they need rather
+// than the fixed 30x30 bitmap assets. Older layouts keep the original bitmaps.
+- (void)applyTransportImages {
+    LTPlayerController *controller = [LTPlayerController sharedController];
+
+    if ([self isTallScreen] || [self isSideBySide]) {
+        BOOL pad = [self isIPad];
+        BOOL sb = [self isSideBySide];
+        // Circles are big on the tall layout and very big in iPad side-by-side,
+        // so the glyphs inside stay relatively small for a cleaner ring.
+        CGFloat prevNextGlyph = pad ? (sb ? 26.0f : 52.0f) : 34.0f;
+        CGFloat smallGlyph = pad ? (sb ? 22.0f : 52.0f) : 34.0f;
+        CGFloat playGlyph = pad ? (sb ? 40.0f : 84.0f) : 56.0f;
+        UIColor *normal = [UIColor blackColor];
+        UIColor *highlighted = [UIColor colorWithRed:0.349f green:0.678f blue:1.0f alpha:1.0f];
+
+        [self.prevButton setImage:[LTGraphics glyphIcon:0xF04A size:prevNextGlyph color:normal] forState:UIControlStateNormal];
+        [self.nextButton setImage:[LTGraphics glyphIcon:0xF04E size:prevNextGlyph color:normal] forState:UIControlStateNormal];
+
+        unichar playGlyphCode = [controller isPlaying] ? 0xF04C : 0xF04B;
+        [self.playButton setImage:[LTGraphics glyphIcon:playGlyphCode size:playGlyph color:normal] forState:UIControlStateNormal];
+
+        [self.shuffleButton setImage:[LTGraphics glyphIcon:0xF074 size:smallGlyph color:normal] forState:UIControlStateNormal];
+        [self.shuffleButton setImage:[LTGraphics glyphIcon:0xF074 size:smallGlyph color:highlighted] forState:UIControlStateSelected];
+
+        UIImage *repeatNormal = [LTGraphics repeatIconOfSize:smallGlyph color:normal];
+        UIImage *repeatSelected = [LTGraphics repeatIconOfSize:smallGlyph color:highlighted];
+        UIImage *repeatOneNormal = [LTGraphics repeatOneIconOfSize:smallGlyph color:normal];
+        UIImage *repeatOneSelected = [LTGraphics repeatOneIconOfSize:smallGlyph color:highlighted];
+        if (!repeatNormal) {
+            repeatNormal = [UIImage imageNamed:@"IcoRepeat"];
+            repeatSelected = [UIImage imageNamed:@"IcoRepeatBlue"];
+        }
+        if (!repeatOneNormal) {
+            repeatOneNormal = [UIImage imageNamed:@"IcoRepeatOne"];
+            repeatOneSelected = [UIImage imageNamed:@"IcoRepeatOneBlue"];
+        }
+        BOOL repeatOne = (controller.repeatMode == LTRepeatModeOne);
+        [self.repeatButton setImage:(repeatOne ? repeatOneNormal : repeatNormal) forState:UIControlStateNormal];
+        [self.repeatButton setImage:(repeatOne ? repeatOneSelected : repeatSelected) forState:UIControlStateSelected];
+        self.repeatButton.selected = (controller.repeatMode != LTRepeatModeOff);
+        self.shuffleButton.selected = controller.shuffleEnabled;
+        return;
+    }
+
+    if ([controller isPlaying]) {
+        [self.playButton setImage:[UIImage imageNamed:@"IcoPause"] forState:UIControlStateNormal];
+    } else {
+        [self.playButton setImage:[UIImage imageNamed:@"IcoPlay"] forState:UIControlStateNormal];
     }
 
     self.shuffleButton.selected = controller.shuffleEnabled;
@@ -729,7 +1317,7 @@
     } else if (duration <= 0) {
         self.elapsedLabel.text = [self formatTime:time];
     }
-    if (self.pagerPage == 2) {
+    if (self.statsDrawerOpen) {
         [self refreshStatsForCurrentTrack];
     }
 }
@@ -966,7 +1554,7 @@
     static NSString *CellId = @"LTPageQueueCell";
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:CellId];
     if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:CellId];
+        cell = [[LTSimpleCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:CellId];
         cell.backgroundColor = [UIColor clearColor];
         cell.textLabel.font = [UIFont systemFontOfSize:15];
         cell.textLabel.textColor = [UIColor whiteColor];

@@ -20,3 +20,9 @@ xcuserdata/
 
 # Built archives
 *.ipa
+
+# Versioned release archives
+versions/
+
+# Python bytecode
+__pycache__/

@@ -79,8 +79,16 @@ static NSMutableArray *LTP2PActiveSyncs;
             // Replay this phone's PRE-merge state to the peer. The peer merges
             // it (summing combined stats) and we merge the peer's raw payload
             // here, so each phone's numbers are added exactly once.
-            NSDictionary *preMerge = [[LTPlaylistStore sharedStore] syncPayload];
-            [[LTPlaylistStore sharedStore] mergeSyncPayload:incoming];
+            //
+            // This handler runs on a background connection thread while the
+            // peer's reply is merged on the main thread. Since both phones act
+            // as server AND client, serialize both merges onto the main thread
+            // so they can never mutate the store while it is being enumerated.
+            __block NSDictionary *preMerge = nil;
+            dispatch_sync(dispatch_get_main_queue(), ^{
+                preMerge = [[LTPlaylistStore sharedStore] syncPayload];
+                [[LTPlaylistStore sharedStore] mergeSyncPayload:incoming];
+            });
             [strongSelf markCompletedOnMain];
             NSMutableDictionary *reply = [NSMutableDictionary dictionaryWithDictionary:preMerge];
             reply[@"appVersion"] = [strongSelf appVersion];

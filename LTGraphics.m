@@ -1,10 +1,25 @@
 #import "LTGraphics.h"
+#import <CoreText/CoreText.h>
 
 @implementation LTGraphics
 
 static BOOL LTFAFontLoaded = NO;
+static BOOL LTBundledFontsRegistered = NO;
+
+// The Font Awesome face ships inside the app bundle, but the app declares no
+// UIAppFonts entries, so we have to register it ourselves before the glyph
+// icons can be built (the process scope keeps it self contained).
++ (void)registerBundledFontsIfNeeded {
+    if (LTBundledFontsRegistered) return;
+    LTBundledFontsRegistered = YES;
+    NSURL *url = [[NSBundle mainBundle] URLForResource:@"FontAwesome" withExtension:@"ttf"];
+    if (url) {
+        CTFontManagerRegisterFontsForURL((__bridge CFURLRef)url, kCTFontManagerScopeProcess, NULL);
+    }
+}
 
 + (void)loadFARegisteredFontsIfNeeded {
+    [self registerBundledFontsIfNeeded];
     if (LTFAFontLoaded) return;
     NSArray *names = @[
         @"FontAwesome6Free-Solid",
@@ -50,10 +65,22 @@ static BOOL LTFAFontLoaded = NO;
     return [self coloredGlyphIcon:glyph color:[UIColor whiteColor]];
 }
 
++ (BOOL)font:(UIFont *)font containsGlyph:(unichar)glyph {
+    if (!font) return NO;
+    CTFontRef ctFont = CTFontCreateWithName((__bridge CFStringRef)font.fontName, font.pointSize, NULL);
+    if (!ctFont) return YES;
+    UniChar character = glyph;
+    CGGlyph cgGlyph = 0;
+    BOOL ok = CTFontGetGlyphsForCharacters(ctFont, &character, &cgGlyph, 1);
+    CFRelease(ctFont);
+    return ok && cgGlyph != 0;
+}
+
 + (UIImage *)coloredGlyphIcon:(unichar)glyph color:(UIColor *)color {
     [self loadFARegisteredFontsIfNeeded];
     UIFont *font = [self fontAwesomeFontWithSize:30];
     if (!font) return nil;
+    if (![self font:font containsGlyph:glyph]) return nil;
     NSString *string = [NSString stringWithFormat:@"%C", glyph];
     CGSize stringSize = [string sizeWithFont:font];
     CGFloat scale = 0.0f;
@@ -71,6 +98,73 @@ static BOOL LTFAFontLoaded = NO;
     CGPoint origin = CGPointMake((30.0f - stringSize.width) / 2.0f,
                                  (30.0f - stringSize.height) / 2.0f);
     [string drawAtPoint:origin withFont:font];
+    UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return image;
+}
+
+// Renders a Font Awesome glyph so its actual ink (not the font line box) fills a
+// `size` x `size` square, centred. Fitting the line box leaves the play triangle
+// and the skip arrows visibly off-centre inside a circle.
++ (UIImage *)glyphIcon:(unichar)glyph size:(CGFloat)size color:(UIColor *)color {
+    if (size <= 0.0f) return nil;
+    [self registerBundledFontsIfNeeded];
+    UIFont *font = [self fontAwesomeFontWithSize:size];
+    if (!font) return nil;
+    if (![self font:font containsGlyph:glyph]) return nil;
+
+    CTFontRef ctFont = CTFontCreateWithName((__bridge CFStringRef)font.fontName, font.pointSize, NULL);
+    if (!ctFont) return nil;
+    UniChar character = glyph;
+    CGGlyph cgGlyph = 0;
+    if (!CTFontGetGlyphsForCharacters(ctFont, &character, &cgGlyph, 1) || cgGlyph == 0) {
+        CFRelease(ctFont);
+        return nil;
+    }
+    CGRect ink = CTFontGetBoundingRectsForGlyphs(ctFont, kCTFontOrientationDefault, &cgGlyph, NULL, 1);
+    CFRelease(ctFont);
+    if (ink.size.width <= 0.0f || ink.size.height <= 0.0f) return nil;
+
+    // Offset of the ink from the top-left of the line box that
+    // -drawAtPoint:withFont: uses. Core Text measures from the baseline with y
+    // increasing upwards; UIKit draws with y increasing downwards.
+    CGFloat inkX = ink.origin.x;
+    CGFloat inkY = font.ascender - (ink.origin.y + ink.size.height);
+
+    CGFloat scale = MIN(size / ink.size.width, size / ink.size.height);
+    UIFont *drawFont = [UIFont fontWithName:font.fontName size:font.pointSize * scale];
+    if (!drawFont) drawFont = font;
+
+    CGPoint origin = CGPointMake((size - ink.size.width * scale) / 2.0f - inkX * scale,
+                                 (size - ink.size.height * scale) / 2.0f - inkY * scale);
+
+    NSString *string = [NSString stringWithFormat:@"%C", glyph];
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(size, size), NO, 0.0);
+    [color setFill];
+    [string drawAtPoint:origin withFont:drawFont];
+    UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return image;
+}
+
++ (UIImage *)repeatIconOfSize:(CGFloat)size color:(UIColor *)color {
+    return [self glyphIcon:0xF01E size:size color:color];
+}
+
++ (UIImage *)repeatOneIconOfSize:(CGFloat)size color:(UIColor *)color {
+    UIImage *base = [self repeatIconOfSize:size color:color];
+    if (!base || size <= 0.0f) return base;
+    UIFont *numberFont = [UIFont boldSystemFontOfSize:size * 0.46f];
+    if (!numberFont) return base;
+
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(size, size), NO, 0.0);
+    [base drawInRect:CGRectMake(0.0f, 0.0f, size, size)];
+    [color setFill];
+    NSString *one = @"1";
+    CGSize oneSize = [one sizeWithFont:numberFont];
+    [one drawAtPoint:CGPointMake((size - oneSize.width) / 2.0f,
+                                 (size - oneSize.height) / 2.0f)
+            withFont:numberFont];
     UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
     UIGraphicsEndImageContext();
     return image;

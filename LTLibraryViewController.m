@@ -9,6 +9,8 @@
 #import "LTGraphics.h"
 #import "LTModel.h"
 #import "LTLog.h"
+#import "LTSimpleCell.h"
+#import "LTTheme.h"
 
 typedef NS_ENUM(NSInteger, LTLibrarySegment) {
     LTLibrarySegmentPlaylists = 0,
@@ -35,13 +37,33 @@ typedef NS_ENUM(NSInteger, LTLibrarySegment) {
 
 @implementation LTLibraryViewController
 
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    CGRect bounds = self.view.bounds;
+    CGFloat width = bounds.size.width;
+    if (width < 1.0f) return;
+
+    BOOL songsSegment = (self.currentSegment == LTLibrarySegmentSongs);
+    CGFloat tableY = songsSegment ? 90.0f : 42.0f;
+
+    UIFont *font = (width < 360.0f) ? [UIFont boldSystemFontOfSize:9]
+                                    : [UIFont boldSystemFontOfSize:11];
+    [self.segControl setTitleTextAttributes:@{UITextAttributeFont: font}
+                                   forState:UIControlStateNormal];
+
+    self.segControl.frame = CGRectMake(8, 6, width - 28, 30);
+    self.songSearchBar.frame = CGRectMake(0, 42, width, 44);
+    self.tableView.frame = CGRectMake(0, tableY, width, bounds.size.height - tableY);
+    self.emptyLabel.frame = CGRectMake(24, tableY + 150, width - 48, 60);
+}
+
 - (void)viewDidLoad {
     [super viewDidLoad];
     if ([self respondsToSelector:@selector(setEdgesForExtendedLayout:)]) {
         self.edgesForExtendedLayout = UIRectEdgeNone;
     }
     self.title = @"Library";
-    self.view.backgroundColor = [UIColor whiteColor];
+    self.view.backgroundColor = [LTTheme background];
     self.currentSegment = LTLibrarySegmentPlaylists;
     self.attemptedArtistAvatars = [NSMutableSet set];
 
@@ -52,6 +74,7 @@ typedef NS_ENUM(NSInteger, LTLibrarySegment) {
                                    forState:UIControlStateNormal];
     [self.segControl addTarget:self action:@selector(segmentChanged:) forControlEvents:UIControlEventValueChanged];
     self.segControl.frame = CGRectMake(8, 6, bounds.size.width - 16, 30);
+    self.segControl.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin | UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleBottomMargin;
     [self.view addSubview:self.segControl];
 
     CGFloat tableY = 42.0f;
@@ -69,12 +92,13 @@ typedef NS_ENUM(NSInteger, LTLibrarySegment) {
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
     self.tableView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    self.tableView.backgroundColor = [LTTheme background];
     [self.view addSubview:self.tableView];
 
     self.emptyLabel = [[UILabel alloc] initWithFrame:CGRectMake(24, tableY + 100, bounds.size.width - 48, 60)];
     self.emptyLabel.textAlignment = NSTextAlignmentCenter;
     self.emptyLabel.font = [UIFont systemFontOfSize:15];
-    self.emptyLabel.textColor = [UIColor grayColor];
+    self.emptyLabel.textColor = [LTTheme secondaryText];
     self.emptyLabel.numberOfLines = 0;
     self.emptyLabel.hidden = YES;
     [self.view addSubview:self.emptyLabel];
@@ -96,6 +120,14 @@ typedef NS_ENUM(NSInteger, LTLibrarySegment) {
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+    [super traitCollectionDidChange:previousTraitCollection];
+    self.view.backgroundColor = [LTTheme background];
+    self.tableView.backgroundColor = [LTTheme background];
+    self.emptyLabel.textColor = [LTTheme secondaryText];
+    [self.tableView reloadData];
 }
 
 #pragma mark - Data
@@ -395,7 +427,7 @@ typedef NS_ENUM(NSInteger, LTLibrarySegment) {
 
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:BucketCellId];
     if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:BucketCellId];
+        cell = [[LTSimpleCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:BucketCellId];
         cell.textLabel.font = [UIFont boldSystemFontOfSize:16];
         cell.detailTextLabel.font = [UIFont systemFontOfSize:12];
         cell.detailTextLabel.textColor = [UIColor grayColor];
@@ -426,6 +458,7 @@ typedef NS_ENUM(NSInteger, LTLibrarySegment) {
         BOOL isArtist = (self.currentSegment == LTLibrarySegmentArtists);
         if (isArtist) {
             cell.textLabel.text = name;
+            cell.accessibilityIdentifier = name;
             cell.detailTextLabel.text = [NSString stringWithFormat:@"%d song%@", (int)tracks.count, tracks.count == 1 ? @"" : @"s"];
         } else {
             cell.textLabel.text = name;
@@ -439,7 +472,7 @@ typedef NS_ENUM(NSInteger, LTLibrarySegment) {
             __weak UITableViewCell *weakCell = cell;
             [[LTYouTubeClient sharedClient] loadImageWithURL:artURL completion:^(UIImage *image) {
                 UITableViewCell *strongCell = weakCell;
-                if (image && [strongCell.textLabel.text isEqualToString:name]) strongCell.imageView.image = image;
+                if (image && [strongCell.accessibilityIdentifier isEqualToString:name]) strongCell.imageView.image = image;
             }];
         } else {
             if (isArtist) [self resolveAvatarForArtistName:name];

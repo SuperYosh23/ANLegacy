@@ -5,6 +5,8 @@
 #import "LTMediaCell.h"
 #import "LTYouTubeClient.h"
 #import "LTStatsDetailViewController.h"
+#import "LTSimpleCell.h"
+#import "LTTheme.h"
 
 @interface LTStatsViewController () <UITableViewDataSource, UITableViewDelegate>
 @end
@@ -18,6 +20,7 @@
     NSArray *_topArtists;
     NSArray *_allMostPlayed;
     NSArray *_allTopArtists;
+    UIView *_headerView;
 }
 
 static NSString *LTFormatDuration(NSTimeInterval seconds) {
@@ -35,7 +38,7 @@ static NSString *LTFormatDuration(NSTimeInterval seconds) {
         self.edgesForExtendedLayout = UIRectEdgeNone;
     }
     self.title = @"Listening Stats";
-    self.view.backgroundColor = [UIColor whiteColor];
+    self.view.backgroundColor = [LTTheme groupedBackground];
 
     CGRect bounds = self.view.bounds;
     _tableView = [[UITableView alloc] initWithFrame:CGRectMake(0, 0, bounds.size.width, bounds.size.height)
@@ -43,6 +46,7 @@ static NSString *LTFormatDuration(NSTimeInterval seconds) {
     _tableView.dataSource = self;
     _tableView.delegate = self;
     _tableView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    _tableView.backgroundColor = [LTTheme groupedBackground];
 
     CGFloat width = bounds.size.width;
     CGFloat margin = 12.0f;
@@ -50,7 +54,7 @@ static NSString *LTFormatDuration(NSTimeInterval seconds) {
     CGFloat panelW = (width - margin * 2.0f - gap * 2.0f) / 3.0f;
 
     UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 96)];
-    header.backgroundColor = [UIColor whiteColor];
+    header.backgroundColor = [LTTheme groupedBackground];
 
     NSArray *titles = @[@"Time Listened", @"Unique Songs", @"Plays"];
     UILabel *totalTimeLabel = nil;
@@ -99,8 +103,17 @@ static NSString *LTFormatDuration(NSTimeInterval seconds) {
     _songsLabel = songsLabel;
     _playsLabel = playsLabel;
 
+    _headerView = header;
     _tableView.tableHeaderView = header;
     [self.view addSubview:_tableView];
+}
+
+- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+    [super traitCollectionDidChange:previousTraitCollection];
+    self.view.backgroundColor = [LTTheme groupedBackground];
+    _tableView.backgroundColor = [LTTheme groupedBackground];
+    _headerView.backgroundColor = [LTTheme groupedBackground];
+    [_tableView reloadData];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -153,7 +166,7 @@ static NSString *LTFormatDuration(NSTimeInterval seconds) {
     UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(16, 6, width - 110, 18)];
     label.text = title;
     label.font = [UIFont boldSystemFontOfSize:14];
-    label.textColor = [UIColor grayColor];
+    label.textColor = [LTTheme secondaryText];
     label.backgroundColor = [UIColor clearColor];
     [view addSubview:label];
 
@@ -191,7 +204,7 @@ static NSString *LTFormatDuration(NSTimeInterval seconds) {
             cell = [[LTMediaCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:CellId];
             cell.textLabel.font = [UIFont boldSystemFontOfSize:15];
             cell.detailTextLabel.font = [UIFont systemFontOfSize:12];
-            cell.detailTextLabel.textColor = [UIColor grayColor];
+            cell.detailTextLabel.textColor = [LTTheme secondaryText];
         }
         LTStatsEntry *entry = [_mostPlayed objectAtIndex:(NSUInteger)indexPath.row];
         cell.textLabel.text = entry.title.length ? entry.title : @"Unknown Song";
@@ -208,10 +221,10 @@ static NSString *LTFormatDuration(NSTimeInterval seconds) {
         static NSString *ArtistCellId = @"LTStatsArtistCell";
         UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:ArtistCellId];
         if (!cell) {
-            cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:ArtistCellId];
+            cell = [[LTSimpleCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:ArtistCellId];
             cell.textLabel.font = [UIFont boldSystemFontOfSize:15];
             cell.detailTextLabel.font = [UIFont systemFontOfSize:12];
-            cell.detailTextLabel.textColor = [UIColor grayColor];
+            cell.detailTextLabel.textColor = [LTTheme secondaryText];
             cell.imageView.image = nil;
         }
         NSDictionary *row = [_topArtists objectAtIndex:(NSUInteger)indexPath.row];

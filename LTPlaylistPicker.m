@@ -1,6 +1,7 @@
 #import "LTPlaylistPicker.h"
 #import "LTTransitionSettings.h"
 #import "LTLog.h"
+#import "LTSafeArea.h"
 #import <objc/runtime.h>
 
 static LTPlaylistPicker *activePicker = nil;
@@ -53,8 +54,10 @@ static LTPlaylistPicker *activePicker = nil;
     if (listHeight > maxList) listHeight = maxList;
     CGFloat panelHeight = 54.0f + listHeight + 48.0f;
 
+    // Overlay sits above the home indicator on notched devices.
+    CGFloat bottomInset = LTSafeAreaInsets(self.view.superview ?: self.view).bottom;
     self.panelView = [[UIView alloc] initWithFrame:CGRectMake((bounds.size.width - panelWidth) / 2.0f,
-                                                              screenH - panelHeight - 12.0f,
+                                                              screenH - panelHeight - 12.0f - bottomInset,
                                                               panelWidth, panelHeight)];
     self.panelView.backgroundColor = [UIColor colorWithWhite:0.11f alpha:1.0f];
     self.panelView.layer.cornerRadius = 12.0f;

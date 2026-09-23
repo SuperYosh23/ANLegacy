@@ -27,6 +27,7 @@ typedef NS_ENUM(NSInteger, LTRepeatMode) {
 @property (nonatomic, readonly) NSTimeInterval currentTime;
 @property (nonatomic, readonly) NSInteger audioBitrateKbps;
 @property (nonatomic, strong) NSString *queueSourceName;
+@property (nonatomic, assign) float volume;
 
 - (void)playQueue:(NSArray *)tracks atIndex:(NSInteger)index;
 - (void)playQueue:(NSArray *)tracks shuffle:(BOOL)shuffle;

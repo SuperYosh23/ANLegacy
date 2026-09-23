@@ -1,4 +1,5 @@
 #import "LTTabBarController.h"
+#import "LTAppTabBar.h"
 #import "LTTransitionSettings.h"
 #import "LTLog.h"
 #import <QuartzCore/QuartzCore.h>
@@ -9,13 +10,64 @@
 @property (nonatomic, assign) NSInteger slideToIndex;
 @property (nonatomic, assign) BOOL fading;
 @property (nonatomic, assign) CGRect slideContentRect;
+@property (nonatomic, assign) NSInteger lastAnnouncedIndex;
 @end
 
 @implementation LTTabBarController
 
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        // Swap in LTAppTabBar (compact trait in one-handed mode) before the
+        // controller builds its default bar.
+        [self setValue:[[LTAppTabBar alloc] init] forKey:@"tabBar"];
+    }
+    return self;
+}
+
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.delegate = self;
+    self.lastAnnouncedIndex = NSNotFound;
+}
+
+// On the iPad the split container parks the tab bar away in landscape. Even so,
+// UITabBarController keeps reserving the bar's ~49pt and lays the child short,
+// leaving a dead black strip beneath the player. This re-asserts the intended
+// layout on EVERY pass — collapsing the bar to zero height and pushing the
+// selected child (and any navigation content inside it) to full bounds — so
+// whatever pass UIKit runs first, ours is the final word.
+- (void)assertForcedHiddenTabBarLayout {
+    CGRect b = self.view.bounds;
+    if (b.size.width < 1.0f || b.size.height < 1.0f) return;
+
+    BOOL barDocked = (!self.tabBar.hidden &&
+                      CGRectGetHeight(self.tabBar.frame) > 0.5f &&
+                      CGRectGetMaxY(self.tabBar.frame) <= b.size.height + 0.5f &&
+                      CGRectGetMaxY(self.tabBar.frame) >= b.size.height - 0.5f);
+
+    if (self.tabBarForcedHidden || !barDocked) {
+        self.tabBar.hidden = YES;
+        self.tabBar.frame = CGRectMake(0.0f, b.size.height, b.size.width, 0.0f);
+        UIViewController *sel = self.selectedViewController;
+        if (sel) {
+            sel.view.frame = b;
+            if ([sel isKindOfClass:[UINavigationController class]]) {
+                UIViewController *top = ((UINavigationController *)sel).topViewController;
+                if (top && top.view.superview) top.view.frame = b;
+            }
+        }
+    }
+}
+
+- (void)viewWillLayoutSubviews {
+    [super viewWillLayoutSubviews];
+    [self assertForcedHiddenTabBarLayout];
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    [self assertForcedHiddenTabBarLayout];
 }
 
 + (UIImage *)snapshotContentOfView:(UIView *)view inRect:(CGRect)rect scale:(CGFloat)scale {
@@ -42,8 +94,21 @@
     CGFloat width = rootView.bounds.size.width;
     CGFloat height = rootView.bounds.size.height;
     CGFloat contentTop = nav ? CGRectGetMaxY(nav.navigationBar.frame) : 0.0f;
-    CGFloat tabHeight = tabBarController.tabBar.frame.size.height;
+    CGFloat tabHeight = [self effectiveTabBarHeightForBounds:rootView.bounds];
     return CGRectMake(0.0f, contentTop, width, height - contentTop - tabHeight);
+}
+
+// Height the tab bar actually occupies in the given bounds. Uses the frame
+// position, not the `hidden` flag: on the iPad the split container docks the
+// bar offscreen in landscape, and UITabBarController keeps even a hidden bar's
+// frame in place, which would otherwise leave a dead strip under the player.
+- (CGFloat)effectiveTabBarHeightForBounds:(CGRect)bounds {
+    if (self.tabBar.hidden) return 0.0f;
+    CGRect barFrame = self.tabBar.frame;
+    if (barFrame.size.height < 1.0f) return 0.0f;
+    if (CGRectGetMaxY(barFrame) > bounds.size.height + 0.5f) return 0.0f;
+    if (CGRectGetMaxY(barFrame) < 0.5f) return 0.0f;
+    return CGRectGetHeight(barFrame);
 }
 
 #pragma mark - UITabBarControllerDelegate
@@ -65,6 +130,7 @@
     NSInteger fromIndex = self.slideFromIndex;
     NSInteger toIndex = (NSInteger)[tabBarController.viewControllers indexOfObject:viewController];
     if (fromIndex == toIndex) return;
+    [self announceSelectionTo:toIndex];
 
     // Animations disabled → instant switch.
     if (![LTTransitionSettings animationsEnabled]) return;
@@ -84,9 +150,10 @@
     snapshot.frame = CGRectMake(rect.origin.x, rect.origin.y, rect.size.width, rect.size.height);
 
     // Ensure the incoming view is in place (its bars stay; only content fades).
+    CGRect tabBounds = tabBarController.view.bounds;
     viewController.view.frame =
-        CGRectMake(0.0f, 0.0f, tabBarController.view.bounds.size.width,
-                   tabBarController.view.bounds.size.height - tabBarController.tabBar.frame.size.height);
+        CGRectMake(0.0f, 0.0f, tabBounds.size.width,
+                   tabBounds.size.height - [self effectiveTabBarHeightForBounds:tabBounds]);
     [tabBarController.view bringSubviewToFront:viewController.view];
     [tabBarController.view addSubview:snapshot];
 
@@ -110,6 +177,21 @@
     if (self.selectedIndex != index) {
         self.selectedIndex = index;
     }
+}
+
+// Announce the new selection exactly once no matter how it changed. Programmatic
+// selection (sidebar taps, showNowPlaying) does not reliably reach the tab-bar
+// delegate, so the setter announces too, and the last-seen index dedupes it
+// against the delegate path to avoid double-firing.
+- (void)announceSelectionTo:(NSInteger)index {
+    if (index == self.lastAnnouncedIndex) return;
+    self.lastAnnouncedIndex = index;
+    if (self.selectionDidChange) self.selectionDidChange(index);
+}
+
+- (void)setSelectedIndex:(NSUInteger)selectedIndex {
+    [super setSelectedIndex:selectedIndex];
+    [self announceSelectionTo:(NSInteger)selectedIndex];
 }
 
 @end
