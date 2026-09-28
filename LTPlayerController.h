@@ -33,6 +33,7 @@ typedef NS_ENUM(NSInteger, LTRepeatMode) {
 - (void)playQueue:(NSArray *)tracks shuffle:(BOOL)shuffle;
 - (void)enqueueTracks:(NSArray *)tracks;
 - (void)jumpToIndex:(NSInteger)index;
+- (void)moveTrackAtIndex:(NSInteger)fromIndex toIndex:(NSInteger)toIndex;
 - (void)removeTrackAtIndex:(NSInteger)index;
 - (LTTrack *)currentTrack;
 - (LTTrack *)peekTrackOffset:(NSInteger)offset;

@@ -340,6 +340,47 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
     [self loadCurrentTrack];
 }
 
+- (void)moveTrackAtIndex:(NSInteger)fromIndex toIndex:(NSInteger)toIndex {
+    NSInteger count = (NSInteger)self.queue.count;
+    if (fromIndex < 0 || fromIndex >= count) return;
+    if (toIndex < 0 || toIndex >= count) return;
+    if (fromIndex == toIndex) return;
+    [self commitStatsDelta];
+
+    NSMutableArray *q = [self.queue mutableCopy];
+    id track = [q objectAtIndex:(NSUInteger)fromIndex];
+    [q removeObjectAtIndex:(NSUInteger)fromIndex];
+    [q insertObject:track atIndex:(NSUInteger)toIndex];
+    self.queue = q;
+
+    NSInteger idx = self.currentIndex;
+    if (fromIndex == idx) {
+        idx = toIndex;
+    } else if (fromIndex < idx && toIndex >= idx) {
+        idx -= 1;
+    } else if (fromIndex > idx && toIndex <= idx) {
+        idx += 1;
+    }
+    self.currentIndex = idx;
+
+    if (self.shuffleEnabled) {
+        // Manual reordering beats shuffle: cancel shuffle and adopt the new
+        // order as the source order, Apple Music style.
+        self.shuffleEnabled = NO;
+        self.sourceQueue = [q copy];
+    } else if (self.sourceQueue.count == self.queue.count) {
+        // Keep the source (unshuffled) order in sync; when shuffle is off the
+        // two arrays are identical copies.
+        NSMutableArray *src = [self.sourceQueue mutableCopy];
+        id srcTrack = [src objectAtIndex:(NSUInteger)fromIndex];
+        [src removeObjectAtIndex:(NSUInteger)fromIndex];
+        [src insertObject:srcTrack atIndex:(NSUInteger)toIndex];
+        self.sourceQueue = src;
+    }
+
+    [self postQueueChanged];
+}
+
 - (void)removeTrackAtIndex:(NSInteger)index {
     if (index < 0 || index >= (NSInteger)self.queue.count) return;
     NSMutableArray *q = [self.queue mutableCopy];
@@ -451,6 +492,7 @@ NSString *const LTPlayerQueueDidChangeNotification = @"LTPlayerQueueDidChangeNot
     self.audioPlayer = player;
     self.audioPlayer.delegate = self;
     self.audioPlayer.volume = self.volume;
+    self.audioPlayer.meteringEnabled = YES;
     [self.audioPlayer prepareToPlay];
     [self updateNowPlayingInfo];
     [self playMovie];

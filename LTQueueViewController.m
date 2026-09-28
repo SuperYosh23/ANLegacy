@@ -10,6 +10,7 @@
 @property (nonatomic, strong) UILabel *headerLabel;
 @property (nonatomic, strong) UIImageView *backgroundImageView;
 @property (nonatomic, strong) UIView *scrimView;
+@property (nonatomic, strong) UIBarButtonItem *editButton;
 @end
 
 @implementation LTQueueViewController
@@ -42,6 +43,12 @@
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     if (self.navigationController) self.navigationController.navigationBarHidden = NO;
+    self.editButton = [[UIBarButtonItem alloc] initWithTitle:@"Edit"
+                                                       style:UIBarButtonItemStyleBordered
+                                                      target:self
+                                                      action:@selector(toggleEditing)];
+    self.navigationItem.rightBarButtonItem = self.editButton;
+    [self updateEditButton];
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(queueDidChange:)
                                                  name:LTPlayerQueueDidChangeNotification
@@ -56,7 +63,26 @@
 
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
+    if (self.tableView.editing) [self.tableView setEditing:NO animated:NO];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+#pragma mark - Editing / reorder
+
+- (void)toggleEditing {
+    [self.tableView setEditing:!self.tableView.editing animated:YES];
+    [self updateEditButton];
+}
+
+- (void)updateEditButton {
+    BOOL canReorder = ![[LTPlayerController sharedController] shuffleEnabled];
+    BOOL editing = self.tableView.editing;
+    if (!canReorder && editing) {
+        [self.tableView setEditing:NO animated:YES];
+        editing = NO;
+    }
+    self.editButton.title = editing ? @"Done" : @"Edit";
+    self.editButton.enabled = canReorder;
 }
 
 - (void)reloadQueue {
@@ -67,6 +93,7 @@
     } else {
         self.headerLabel.text = @"Nothing in queue";
     }
+    [self updateEditButton];
     [self.tableView reloadData];
 }
 
@@ -146,12 +173,15 @@
         cell.textLabel.textColor = [UIColor whiteColor];
         cell.detailTextLabel.font = [UIFont systemFontOfSize:12];
         cell.detailTextLabel.textColor = [UIColor colorWithWhite:0.8f alpha:1.0f];
+        cell.showsReorderControl = YES;
     }
     LTPlayerController *controller = [LTPlayerController sharedController];
     LTTrack *track = [[controller queue] objectAtIndex:(NSUInteger)indexPath.row];
     NSInteger idx = (NSInteger)indexPath.row;
     if (idx == controller.currentIndex) {
-        cell.imageView.image = [self scaledIcon:[UIImage imageNamed:@"IcoPlay"]];
+        cell.imageView.image = [self scaledIcon:[LTGraphics glyphIcon:0xF04B
+                                                                size:20.0f
+                                                               color:[UIColor colorWithRed:0.35f green:0.68f blue:1.0f alpha:1.0f]]];
         cell.imageView.contentMode = UIViewContentModeCenter;
         cell.textLabel.text = track.title;
         cell.textLabel.textColor = [UIColor colorWithRed:0.35f green:0.68f blue:1.0f alpha:1.0f];
@@ -200,6 +230,16 @@
 
 - (BOOL)tableView:(UITableView *)tableView canEditRowAtIndexPath:(NSIndexPath *)indexPath {
     return YES;
+}
+
+- (BOOL)tableView:(UITableView *)tableView canMoveRowAtIndexPath:(NSIndexPath *)indexPath {
+    return ![[LTPlayerController sharedController] shuffleEnabled];
+}
+
+- (void)tableView:(UITableView *)tableView moveRowAtIndexPath:(NSIndexPath *)fromIndexPath toIndexPath:(NSIndexPath *)toIndexPath {
+    LTLog(@"QUEUE move %d -> %d", (int)fromIndexPath.row, (int)toIndexPath.row);
+    [[LTPlayerController sharedController] moveTrackAtIndex:fromIndexPath.row toIndex:toIndexPath.row];
+    [self reloadQueue];
 }
 
 - (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle forRowAtIndexPath:(NSIndexPath *)indexPath {

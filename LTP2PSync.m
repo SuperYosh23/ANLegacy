@@ -121,11 +121,11 @@ static NSMutableArray *LTP2PActiveSyncs;
         LTP2PSync *strongSelf = weakSelf;
         if (!strongSelf || strongSelf.finished) return;
         [strongSelf finish];
-        [strongSelf showFailure:@"Could not find another phone. Make sure both phones are on the same Wi-Fi network and that you pressed \"Sync with Another Phone\" on both."];
+        [strongSelf showFailure:@"Could not find another device. Make sure both devices are on the same Wi-Fi network and that you pressed \"Sync with Another Device\" on both."];
     });
 
-    [self showStatus:@"Waiting for Another Phone…"
-             message:@"Press \"Sync with Another Phone\" on your second phone. Both phones must be on the same Wi-Fi network."];
+    [self showStatus:@"Waiting for Another Device…"
+             message:@"Press \"Sync with Another Device\" on your second device. Both devices must be on the same Wi-Fi network."];
 }
 
 #pragma mark - Version compatibility
@@ -193,7 +193,7 @@ static NSMutableArray *LTP2PActiveSyncs;
 
 - (void)showDoneAlert {
     NSString *title = @"Library Synced";
-    NSString *message = @"Playlists, library, recent songs and listening stats from both phones are now on both phones.";
+    NSString *message = @"Playlists, library, recent songs and listening stats from both devices are now on both devices.";
     UIAlertView *alert = [[UIAlertView alloc] initWithTitle:title
                                                     message:message
                                                    delegate:nil
@@ -204,7 +204,7 @@ static NSMutableArray *LTP2PActiveSyncs;
 
 - (void)showFailure:(NSString *)reason {
     UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"Sync Failed"
-                                                    message:reason.length ? reason : @"Could not connect to the other phone."
+                                                    message:reason.length ? reason : @"Could not connect to the other device."
                                                    delegate:nil
                                           cancelButtonTitle:@"OK"
                                           otherButtonTitles:nil];
@@ -311,11 +311,11 @@ static NSMutableArray *LTP2PActiveSyncs;
             }
             NSDictionary *merged = [NSJSONSerialization JSONObjectWithData:response options:0 error:nil];
             if (![merged isKindOfClass:[NSDictionary class]]) {
-                [strongSelf finishAndFail:@"The other phone sent back an invalid response."];
+                [strongSelf finishAndFail:@"The other device sent back an invalid response."];
                 return;
             }
             if ([strongSelf versionMismatchInPayload:merged]) {
-                [strongSelf finishAndFail:[NSString stringWithFormat:@"The other phone is running a different app version. Both phones must run the same version (you: %@).", [strongSelf appVersion]]];
+                [strongSelf finishAndFail:[NSString stringWithFormat:@"The other device is running a different app version. Both devices must run the same version (you: %@).", [strongSelf appVersion]]];
                 return;
             }
             [[LTPlaylistStore sharedStore] mergeSyncPayload:merged];

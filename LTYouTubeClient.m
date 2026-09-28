@@ -174,6 +174,24 @@ static id LTPath(id root, id key, ...) {
     return @{@"client": client};
 }
 
+// The mobile music client is required for timed (synced) lyric responses.
+- (NSDictionary *)androidMusicContext {
+    NSMutableDictionary *client = [NSMutableDictionary dictionaryWithDictionary:@{
+        @"clientName": @"ANDROID_MUSIC",
+        @"clientVersion": @"7.21.50",
+        @"gl": @"US",
+        @"hl": @"en",
+        @"androidSdkVersion": @30,
+        @"osName": @"Android",
+        @"osVersion": @"11",
+        @"userAgent": @"com.google.android.apps.youtube.music/7.21.50 (Linux; U; Android 11) gzip",
+    }];
+    if (self.visitorData.length) {
+        [client setObject:self.visitorData forKey:@"visitorData"];
+    }
+    return @{@"client": client};
+}
+
 #pragma mark - Search
 
 + (NSString *)searchParamsForType:(NSString *)type {
@@ -1307,6 +1325,170 @@ static id LTPath(id root, id key, ...) {
                                      range:NSMakeRange(0, result.length)];
     }
     return result;
+}
+
+#pragma mark - Lyrics (YouTube Music)
+
+// Fetches the official YouTube Music lyrics for a video, preferring the
+// timestamped (synced) form returned by the mobile music client. On failure or
+// when only raw text exists, yields the plain-text form; if the song has no
+// lyric page at all, delegates to the caption-based path so the user still
+// gets something readable.
+- (void)fetchTimedLyricsForVideoId:(NSString *)videoId
+                        completion:(void (^)(NSDictionary *result, NSError *error))completion {
+    if (!videoId.length) {
+        if (completion) completion(nil, [self errorWithCode:1 message:@"Missing video id"]);
+        return;
+    }
+    // Step 1: watch playlist -> find the lyrics tab's browse id (MPLYt...).
+    NSDictionary *body = @{
+        @"context": [self webRemixContext],
+        @"enablePersistentPlaylistPanel": @YES,
+        @"isAudioOnly": @YES,
+        @"tunerSettingValue": @"AUTOMIX_SETTING_NORMAL",
+        @"videoId": videoId,
+        @"playlistId": [NSString stringWithFormat:@"RDAMVM%@", videoId],
+        @"watchEndpointMusicSupportedConfigs": @{
+            @"watchEndpointMusicConfig": @{
+                @"hasPersistentPlaylistPanel": @YES,
+                @"musicVideoType": @"MUSIC_VIDEO_TYPE_ATV",
+            }
+        },
+    };
+    [self postToHost:@"music.youtube.com" path:@"next" body:body completion:^(id json, NSError *error) {
+        if (error || ![json isKindOfClass:[NSDictionary class]]) {
+            LTLog(@"LYRICS next failed videoId=%@ error=%@", videoId, error ?: @"bad-json");
+            [self fetchLyricsForVideo:videoId completion:^(NSString *text, NSError *cerr) {
+                if (completion) completion(text.length ? @{@"lyrics": text, @"source": @"", @"hasTimestamps": @NO} : nil, cerr);
+            }];
+            return;
+        }
+        NSString *browseId = [self lyricsBrowseIdFromWatchNext:json];
+        if (!browseId.length) {
+            LTLog(@"LYRICS no lyrics tab videoId=%@", videoId);
+            [self fetchLyricsForVideo:videoId completion:^(NSString *text, NSError *cerr) {
+                if (completion) completion(text.length ? @{@"lyrics": text, @"source": @"", @"hasTimestamps": @NO} : nil, cerr);
+            }];
+            return;
+        }
+        // Step 2: browse the lyrics page with the mobile music client for times.
+        NSDictionary *browseBody = @{@"context": [self androidMusicContext], @"browseId": browseId};
+        [self postToHost:@"music.youtube.com" path:@"browse" body:browseBody completion:^(id bjson, NSError *berr) {
+            if (berr || ![bjson isKindOfClass:[NSDictionary class]]) {
+                LTLog(@"LYRICS browse failed videoId=%@ browseId=%@ error=%@", videoId, browseId, berr ?: @"bad-json");
+                if (completion) completion(nil, berr ?: [self errorWithCode:6 message:@"Lyrics browse failed"]);
+                return;
+            }
+            NSDictionary *result = [self parseLyricsFromBrowse:bjson];
+            if (result) {
+                LTLog(@"LYRICS ok videoId=%@ hasTimestamps=%d lines=%d", videoId,
+                      [[result objectForKey:@"hasTimestamps"] boolValue],
+                      (int)[[result objectForKey:@"lines"] count]);
+                if (completion) completion(result, nil);
+                return;
+            }
+            // Timed + plain parsing both missed: fall back to captions.
+            [self fetchLyricsForVideo:videoId completion:^(NSString *text, NSError *cerr) {
+                if (completion) completion(text.length ? @{@"lyrics": text, @"source": @"", @"hasTimestamps": @NO} : nil, cerr);
+            }];
+        }];
+    }];
+}
+
+// Walk the watch-playlist tabs for the tab whose page type is the lyrics page.
+- (NSString *)lyricsBrowseIdFromWatchNext:(NSDictionary *)json {
+    NSArray *tabs = LTPath(json,
+        @"contents", @"singleColumnMusicWatchNextResultsRenderer",
+        @"tabbedRenderer", @"watchNextTabbedResultsRenderer",
+        @"tabs", nil);
+    if (![tabs isKindOfClass:[NSArray class]]) return nil;
+    for (id tab in tabs) {
+        if (![tab isKindOfClass:[NSDictionary class]]) continue;
+        NSDictionary *tabRenderer = [tab objectForKey:@"tabRenderer"];
+        if (![tabRenderer isKindOfClass:[NSDictionary class]]) continue;
+        if ([tabRenderer objectForKey:@"unselectable"]) continue;
+        NSDictionary *endpoint = LTPath(tabRenderer, @"endpoint", @"browseEndpoint", nil);
+        if (![endpoint isKindOfClass:[NSDictionary class]]) continue;
+        NSString *pageType = LTPath(endpoint,
+            @"browseEndpointContextSupportedConfigs",
+            @"browseEndpointContextMusicConfig",
+            @"pageType", nil);
+        if ([pageType isEqualToString:@"MUSIC_PAGE_TYPE_TRACK_LYRICS"]) {
+            NSString *bid = [endpoint objectForKey:@"browseId"];
+            if ([bid isKindOfClass:[NSString class]] && bid.length) return bid;
+        }
+    }
+    return nil;
+}
+
+// Parse the lyrics browse response: timed lines first, plain text as fallback.
+- (NSDictionary *)parseLyricsFromBrowse:(NSDictionary *)json {
+    NSDictionary *data = LTPath(json,
+        @"contents", @"elementRenderer",
+        @"newElement", @"type", @"componentType", @"model",
+        @"timedLyricsModel", @"lyricsData", nil);
+    if ([data isKindOfClass:[NSDictionary class]]) {
+        NSArray *timed = [data objectForKey:@"timedLyricsData"];
+        if ([timed isKindOfClass:[NSArray class]] && timed.count) {
+            NSMutableArray *lines = [NSMutableArray array];
+            for (id raw in timed) {
+                if (![raw isKindOfClass:[NSDictionary class]]) continue;
+                NSString *text = [raw objectForKey:@"lyricLine"];
+                NSDictionary *cue = [raw objectForKey:@"cueRange"];
+                NSNumber *start = [cue objectForKey:@"startTimeMilliseconds"];
+                NSNumber *end = [cue objectForKey:@"endTimeMilliseconds"];
+                if (![text isKindOfClass:[NSString class]]) continue;
+                [lines addObject:@{
+                    @"text": text,
+                    @"start": start ?: @0,
+                    @"end": end ?: @0,
+                }];
+            }
+            if (lines.count) {
+                NSString *source = [data objectForKey:@"sourceMessage"];
+                return @{
+                    @"lines": lines,
+                    @"source": [source isKindOfClass:[NSString class]] ? source : @"",
+                    @"hasTimestamps": @YES,
+                };
+            }
+        }
+    }
+    // Plain-text shelf (non-timed browse response).
+    NSString *plain = [self plainLyricsFromBrowse:json];
+    if (plain.length) {
+        NSString *source = LTPath(json,
+            @"contents", @"sectionListRenderer", @"contents", @0,
+            @"itemSectionRenderer", @"contents", @0,
+            @"musicDescriptionShelfRenderer", @"runs", @0, @"text", nil);
+        return @{
+            @"lyrics": plain,
+            @"source": [source isKindOfClass:[NSString class]] ? source : @"",
+            @"hasTimestamps": @NO,
+        };
+    }
+    return nil;
+}
+
+- (NSString *)plainLyricsFromBrowse:(NSDictionary *)json {
+    id value = LTPath(json,
+        @"contents", @"sectionListRenderer", @"contents", @0,
+        @"itemSectionRenderer", @"contents", @0,
+        @"musicDescriptionShelfRenderer", @"description", @"runs", @0, @"text", nil);
+    if ([value isKindOfClass:[NSString class]] && [(NSString *)value length]) return value;
+    // Some responses put the description runs directly on the shelf.
+    value = LTPath(json,
+        @"contents", @"sectionListRenderer", @"contents", @0,
+        @"itemSectionRenderer", @"contents", @0,
+        @"musicDescriptionShelfRenderer", @"description", nil);
+    if ([value isKindOfClass:[NSString class]] && [(NSString *)value length]) return value;
+    // Last-resort: the shelf itself may carry a "subheader" line.
+    value = LTPath(json,
+        @"contents", @"sectionListRenderer", @"contents", @0,
+        @"itemSectionRenderer", @"contents", @0,
+        @"musicDescriptionShelfRenderer", @"subheader", @"runs", @0, @"text", nil);
+    if ([value isKindOfClass:[NSString class]] && [(NSString *)value length]) return value;
+    return nil;
 }
 
 #pragma mark - Metadata

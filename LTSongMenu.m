@@ -16,7 +16,7 @@
 - (void)presentForTrack:(LTTrack *)track fromViewController:(UIViewController *)viewController {
     self.presentingController = viewController;
     self.pendingTrack = track;
-    NSString *lastOption = [[LTPlaylistStore sharedStore] isTrackDownloaded:track] ? @"Remove Download" : @"Download";
+    NSString *lastOption = [[LTPlaylistStore sharedStore] isTrackDownloaded:track] ? @"Remove Download" : @"Add to Download Queue";
     UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:track.title
                                                        delegate:self
                                               cancelButtonTitle:@"Cancel"
@@ -58,14 +58,8 @@
             [[LTPlaylistStore sharedStore] removeDownloadsForTracks:@[track]];
             [self showToast:@"Removed download"];
         } else {
-            if ([[LTPlaylistStore sharedStore] isDownloading]) {
-                [self showToast:@"A download is already in progress"];
-            } else {
-                __weak LTSongMenu *weakSelf = self;
-                [[LTPlaylistStore sharedStore] downloadTracks:@[track] completion:^{
-                    [weakSelf showToast:@"Downloaded"];
-                }];
-            }
+            [[LTPlaylistStore sharedStore] enqueueDownloads:@[track]];
+            [self showToast:@"Added to download queue"];
         }
     }
 }

@@ -9,8 +9,27 @@ NSString *const LTPlaylistTrackDidChangeNotification = @"LTPlaylistTrackDidChang
 NSString *const LTPlaylistDownloadProgressNotification = @"LTPlaylistDownloadProgressNotification";
 NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotification";
 
+// Internal queue entry: one pending track plus the batch it belongs to, so a
+// caller's completion can fire exactly once when all of *its* tracks are done.
+@interface LTDownloadBatch : NSObject
+@property (nonatomic, assign) NSInteger remaining;
+@property (nonatomic, copy) void (^completion)(void);
+@end
+
+@implementation LTDownloadBatch
+@end
+
+@interface LTDownloadItem : NSObject
+@property (nonatomic, strong) LTTrack *track;
+@property (nonatomic, strong) LTDownloadBatch *batch;
+@end
+
+@implementation LTDownloadItem
+@end
+
 @interface LTPlaylistStore () <NSURLConnectionDataDelegate>
 @property (nonatomic, strong) NSMutableArray *playlists;
+// Persistent pending queue (LTDownloadItem). Survives relaunch.
 @property (nonatomic, strong) NSMutableArray *downloadQueue;
 @property (nonatomic, strong) NSURLConnection *downloadConnection;
 @property (nonatomic, strong) NSMutableData *downloadData;
@@ -20,8 +39,14 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
 @property (nonatomic, assign) NSInteger downloadHTTPStatus;
 @property (nonatomic, assign) NSInteger downloadTotal;
 @property (nonatomic, assign) NSInteger downloadIndex;
+@property (nonatomic, assign) NSInteger downloadRunTotal;
+@property (nonatomic, assign) NSInteger downloadRunCompleted;
 @property (nonatomic, copy) void (^downloadCompletion)(void);
 @property (nonatomic, assign) BOOL downloading;
+@property (nonatomic, strong) LTDownloadItem *activeItem;
+@property (nonatomic, assign) NSInteger downloadFailedCount;
+@property (nonatomic, assign) BOOL downloadCancelled;
+@property (nonatomic, assign) BOOL downloadCancelling;
 @property (nonatomic, strong) NSMutableArray *libraryTracks;
 @property (nonatomic, strong) NSMutableDictionary *artistAvatarURLs;
 @end
@@ -51,8 +76,16 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
         [self loadPlaylists];
         [self loadLibrary];
         [self loadArtistAvatars];
+        [self loadDownloadQueue];
     }
     return self;
+}
+
+// The engine is "busy" from the caller's point of view while a transfer is in
+// flight, but an idle persisted queue must not count as busy or resume would be
+// a no-op.
+- (BOOL)isDownloadBusy {
+    return self.downloading;
 }
 
 - (NSString *)baseDirectory {
@@ -627,32 +660,241 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
 
 #pragma mark - Download for offline
 
-- (void)downloadTracks:(NSArray *)tracks completion:(void (^)(void))completion {
-    if (self.downloading) return;
+#pragma mark Queue persistence
+
+- (NSString *)downloadQueueFilePath {
+    return [[self baseDirectory] stringByAppendingPathComponent:@"downloadQueue.plist"];
+}
+
+- (void)loadDownloadQueue {
+    NSArray *plist = [NSArray arrayWithContentsOfFile:[self downloadQueueFilePath]];
+    if (![plist isKindOfClass:[NSArray class]]) return;
+    for (NSDictionary *dict in plist) {
+        LTTrack *track = [LTTrack trackWithDictionary:dict];
+        if (!track.videoId.length) continue;
+        if ([self existingLocalFilePathForVideoId:track.videoId]) continue; // already on disk
+        LTDownloadItem *item = [[LTDownloadItem alloc] init];
+        item.track = track;
+        [self.downloadQueue addObject:item];
+    }
+    LTLog(@"STORE loaded %d pending downloads", (int)self.downloadQueue.count);
+}
+
+- (void)saveDownloadQueue {
+    NSMutableArray *plist = [NSMutableArray array];
+    for (LTDownloadItem *item in self.downloadQueue) {
+        if (!item.track) continue;
+        [plist addObject:[item.track dictionaryRepresentation]];
+    }
+    BOOL ok = [plist writeToFile:[self downloadQueueFilePath] atomically:YES];
+    if (!ok) LTLog(@"STORE save downloadQueue failed");
+}
+
+- (void)postDownloadQueueChanged {
+    [[NSNotificationCenter defaultCenter] postNotificationName:LTPlaylistDownloadProgressNotification
+                                                        object:self
+                                                      userInfo:@{@"status": @"queue",
+                                                                 @"index": @(self.downloadIndex),
+                                                                 @"total": @(self.downloadTotal),
+                                                                 @"videoId": self.downloadingVideoId ?: @""}];
+}
+
+- (void)settleItem:(LTDownloadItem *)item failed:(BOOL)failed {
+    if (failed) self.downloadFailedCount += 1;
+    self.downloadRunCompleted += 1;
+    [self releaseItem:item];
+}
+
+// Terminates an item without counting it toward run progress (pause/cancel/remove).
+- (void)releaseItem:(LTDownloadItem *)item {
+    if (!item) return;
+    LTDownloadBatch *batch = item.batch;
+    item.batch = nil;
+    if (batch) {
+        batch.remaining -= 1;
+        if (batch.remaining <= 0) {
+            void (^completion)(void) = batch.completion;
+            batch.completion = nil;
+            if (completion) completion();
+        }
+    }
+}
+
+#pragma mark Public queue API
+
+- (void)enqueueDownloads:(NSArray *)tracks {
+    [self enqueueDownloads:tracks completion:nil];
+}
+
+- (void)enqueueDownloads:(NSArray *)tracks completion:(void (^)(void))completion {
     if (!tracks.count) {
         if (completion) completion();
         return;
     }
-    self.downloadCompletion = completion;
-    self.downloadTotal = (NSInteger)tracks.count;
-    self.downloadIndex = 0;
-    [self.downloadQueue removeAllObjects];
-    [self.downloadQueue addObjectsFromArray:tracks];
-    self.downloading = YES;
-    [self postProgressStatus:@"started"];
-    [self startNextDownload];
+    NSInteger added = 0;
+    LTDownloadBatch *batch = nil;
+    if (completion) {
+        batch = [[LTDownloadBatch alloc] init];
+        batch.completion = completion;
+    }
+    NSMutableSet *seen = [NSMutableSet set];
+    for (LTDownloadItem *existing in self.downloadQueue) {
+        if (existing.track.videoId.length) [seen addObject:existing.track.videoId];
+    }
+    if (self.downloadingVideoId.length) [seen addObject:self.downloadingVideoId];
+    for (LTTrack *track in tracks) {
+        if (![track isKindOfClass:[LTTrack class]] || !track.videoId.length) continue;
+        if ([seen containsObject:track.videoId]) continue;
+        [seen addObject:track.videoId];
+        LTDownloadItem *item = [[LTDownloadItem alloc] init];
+        item.track = track;
+        item.batch = batch;
+        [self.downloadQueue addObject:item];
+        added += 1;
+    }
+    if (batch) batch.remaining = added;
+    if (!added) {
+        if (completion) completion();
+        return;
+    }
+    self.downloadTotal = (NSInteger)self.downloadQueue.count;
+    [self saveDownloadQueue];
+    [self postDownloadQueueChanged];
+    LTLog(@"STORE enqueued %d download(s), pending=%d", (int)added, (int)self.downloadQueue.count);
+    if (![self isDownloadBusy]) [self startNextDownload];
 }
 
+// Legacy entry point: still a "download these now" fire-and-forget. It appends
+// like everything else, but drops any pre-existing pending batch first to keep
+// the old "this batch runs to completion" behaviour.
+- (void)downloadTracks:(NSArray *)tracks completion:(void (^)(void))completion {
+    if (!tracks.count) {
+        if (completion) completion();
+        return;
+    }
+    if (self.isDownloadBusy) {
+        LTLog(@"STORE downloadTracks ignored, engine busy");
+        if (completion) completion();
+        return;
+    }
+    // Discard stale pending work so the caller's batch is what runs.
+    for (LTDownloadItem *item in [self.downloadQueue copy]) {
+        [self releaseItem:item];
+    }
+    [self.downloadQueue removeAllObjects];
+    [self saveDownloadQueue];
+    [self enqueueDownloads:tracks completion:completion];
+}
+
+- (NSInteger)pendingDownloadCount {
+    return (NSInteger)self.downloadQueue.count;
+}
+
+- (BOOL)hasPendingDownloads {
+    return self.downloadQueue.count > 0;
+}
+
+- (NSArray *)pendingDownloadTracks {
+    NSMutableArray *tracks = [NSMutableArray array];
+    for (LTDownloadItem *item in self.downloadQueue) {
+        if (item.track) [tracks addObject:item.track];
+    }
+    return tracks;
+}
+
+- (BOOL)isTrackPendingDownload:(LTTrack *)track {
+    if (!track.videoId.length) return NO;
+    for (LTDownloadItem *item in self.downloadQueue) {
+        if ([item.track.videoId isEqualToString:track.videoId]) return YES;
+    }
+    return NO;
+}
+
+- (void)resumePendingDownloads {
+    if (!self.downloadQueue.count) return;
+    self.downloadCancelled = NO;
+    if (![self isDownloadBusy]) [self startNextDownload];
+}
+
+- (void)pausePendingDownloads {
+    if (![self isDownloadBusy]) return;
+    self.downloadCancelled = YES;
+    self.downloadCancelling = NO;
+    [self.downloadConnection cancel];
+}
+
+- (void)cancelPendingDownloads {
+    self.downloadCancelled = YES;
+    self.downloadCancelling = YES;
+    if ([self isDownloadBusy]) {
+        // The delegate discards the in-flight item; we drop the pending ones now.
+        [self.downloadConnection cancel];
+    }
+    for (LTDownloadItem *item in [self.downloadQueue copy]) {
+        [self releaseItem:item];
+    }
+    [self.downloadQueue removeAllObjects];
+    self.downloadTotal = 0;
+    self.downloadIndex = 0;
+    self.downloadRunTotal = 0;
+    self.downloadRunCompleted = 0;
+    [self saveDownloadQueue];
+    [self postDownloadQueueChanged];
+    if (![self isDownloadBusy]) {
+        self.downloadCancelled = NO;
+        self.downloadCancelling = NO;
+        [self postProgressStatus:@"cancelled"];
+    }
+}
+
+- (void)removeDownloadsFromQueue:(NSArray *)tracks {
+    if (!tracks.count) return;
+    NSMutableSet *ids = [NSMutableSet set];
+    for (LTTrack *track in tracks) {
+        if (track.videoId.length) [ids addObject:track.videoId];
+    }
+    for (LTDownloadItem *item in [self.downloadQueue copy]) {
+        if (![ids containsObject:item.track.videoId]) continue;
+        [self.downloadQueue removeObject:item];
+        [self releaseItem:item];
+    }
+    [self saveDownloadQueue];
+    [self postDownloadQueueChanged];
+}
+
+- (void)clearDownloadFailures {
+    self.downloadFailedCount = 0;
+    [self postDownloadQueueChanged];
+}
+
+#pragma mark Engine
+
 - (void)startNextDownload {
-    LTTrack *track = self.downloadQueue.firstObject;
-    if (!track) {
+    if (self.downloadCancelled) {
+        [self finishDownloads];
+        return;
+    }
+    LTDownloadItem *item = self.downloadQueue.firstObject;
+    if (!item) {
         [self finishDownloads];
         return;
     }
     [self.downloadQueue removeObjectAtIndex:0];
+    [self saveDownloadQueue];
+    LTTrack *track = item.track;
+    self.activeItem = item;
+    BOOL freshRun = !self.downloading;
+    self.downloading = YES;
+    if (freshRun) {
+        // A new run: total = this item + everything still queued.
+        self.downloadRunTotal = (NSInteger)self.downloadQueue.count + 1;
+        self.downloadRunCompleted = 0;
+    }
+    self.downloadTotal = (NSInteger)self.downloadQueue.count + 1;
+    self.downloadIndex = 0;
     if ([self isTrackDownloaded:track]) {
-        self.downloadIndex += 1;
         [self postTrackChanged:track.videoId];
+        [self settleItem:item failed:NO];
         [self postProgressStatus:@"skipped"];
         [self startNextDownload];
         return;
@@ -669,6 +911,8 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
             strongSelf.downloadingVideoId = nil;
             strongSelf.downloadingTrack = nil;
             strongSelf.downloadIndex += 1;
+            [strongSelf settleItem:strongSelf.activeItem failed:YES];
+            strongSelf.activeItem = nil;
             [strongSelf postProgressStatus:@"error"];
             [strongSelf startNextDownload];
             return;
@@ -697,7 +941,9 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     self.downloadData = nil;
     self.downloadingVideoId = nil;
     self.downloadingTrack = nil;
-    [self postProgressStatus:@"finished"];
+    self.activeItem = nil;
+    [self saveDownloadQueue];
+    [self postProgressStatus: self.downloadQueue.count ? @"paused" : @"finished"];
     void (^completion)(void) = self.downloadCompletion;
     self.downloadCompletion = nil;
     if (completion) completion();
@@ -828,9 +1074,12 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
 - (void)postProgressStatus:(NSString *)status {
     NSDictionary *userInfo = @{
         @"status": status ?: @"",
-        @"index": @(self.downloadIndex),
-        @"total": @(self.downloadTotal),
+        // Run-level progress: how many items of the whole queue are done.
+        @"index": @(self.downloadRunCompleted),
+        @"total": @(self.downloadRunTotal),
         @"videoId": self.downloadingVideoId ?: @"",
+        @"pending": @(self.downloadQueue.count),
+        @"failed": @(self.downloadFailedCount),
     };
     [[NSNotificationCenter defaultCenter] postNotificationName:LTPlaylistDownloadProgressNotification
                                                         object:self
@@ -852,10 +1101,38 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
 
 - (void)connection:(NSURLConnection *)connection didFailWithError:(NSError *)error {
     LTLog(@"STORE DL_ERROR %@ for %@", error, self.downloadingVideoId);
-    [self postTrackChanged:self.downloadingVideoId];
+    NSString *videoId = self.downloadingVideoId;
+    [self postTrackChanged:videoId];
     self.downloadingVideoId = nil;
     self.downloadingTrack = nil;
     self.downloadIndex += 1;
+    if (self.downloadCancelled) {
+        LTDownloadItem *item = self.activeItem;
+        if (item && !self.downloadCancelling) {
+            // Paused (not cancelled): put the item back at the head to resume.
+            [self.downloadQueue insertObject:item atIndex:0];
+            [self saveDownloadQueue];
+        }
+        [self releaseItem:item];
+        self.activeItem = nil;
+        BOOL wasCancelling = self.downloadCancelling;
+        self.downloadCancelled = NO;
+        self.downloadCancelling = NO;
+        self.downloading = NO;
+        self.downloadConnection = nil;
+        self.downloadData = nil;
+        if (wasCancelling) {
+            self.downloadTotal = 0;
+            self.downloadIndex = 0;
+            [self postProgressStatus:@"cancelled"];
+        } else {
+            [self postProgressStatus:@"paused"];
+        }
+        [self postDownloadQueueChanged];
+        return;
+    }
+    [self settleItem:self.activeItem failed:YES];
+    self.activeItem = nil;
     [self postProgressStatus:@"error"];
     [self startNextDownload];
 }
@@ -878,6 +1155,8 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     self.downloadingVideoId = nil;
     self.downloadingTrack = nil;
     self.downloadIndex += 1;
+    [self settleItem:self.activeItem failed:!ok];
+    self.activeItem = nil;
     [self postProgressStatus: ok ? @"downloaded" : @"error"];
     [self startNextDownload];
 }

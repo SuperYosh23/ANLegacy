@@ -1,8 +1,8 @@
 #import "LTSettingsViewController.h"
 #import "LTPlaylistStore.h"
 #import "LTPlayerController.h"
-#import "LTWirelessSync.h"
 #import "LTP2PSync.h"
+#import "LTDownloadQueueViewController.h"
 #import "LTTransitionSettings.h"
 #import "LTTransitionSpeedViewController.h"
 #import "LTRecentsTileSizeViewController.h"
@@ -194,7 +194,7 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
 
 - (void)resetStatsTapped {
     UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"Reset Listening Stats"
-                                                    message:@"This clears the Stats screen, the most-played list, the listening counter, any stats synced from other phones, and listening history. This cannot be undone."
+                                                    message:@"This clears the Stats screen, the most-played list, the listening counter, any stats synced from other devices, and listening history. This cannot be undone."
                                                    delegate:self
                                           cancelButtonTitle:@"Cancel"
                                           otherButtonTitles:@"Reset", nil];
@@ -408,9 +408,9 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
     switch (section) {
         case LTSettingsSectionPlayback: return 2;
         case LTSettingsSectionAppearance: return [LTOneHandedMode isSupported] ? 6 : 5;
-        case LTSettingsSectionData: return 7;
+        case LTSettingsSectionData: return 8;
         case LTSettingsSectionAbout: return 2;
-        case LTSettingsSectionCredits: return 3;
+        case LTSettingsSectionCredits: return 2;
         default: return 0;
     }
 }
@@ -471,23 +471,29 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
         case LTSettingsSectionData: {
             LTPlaylistStore *store = [LTPlaylistStore sharedStore];
             if (indexPath.row == 0) {
+                cell.textLabel.text = @"Download Queue";
+                NSInteger pending = [store pendingDownloadCount];
+                cell.detailTextLabel.text = pending ? [NSString stringWithFormat:@"%d waiting", (int)pending] : @"Empty";
+                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                cell.selectionStyle = UITableViewCellSelectionStyleBlue;
+            } else if (indexPath.row == 1) {
                 cell.textLabel.text = @"Offline Downloads";
                 cell.detailTextLabel.text = [NSString stringWithFormat:@"%d files", (int)[store offlineFileCount]];
-            } else if (indexPath.row == 1) {
-                cell.textLabel.text = @"Sync with Another Phone";
+            } else if (indexPath.row == 2) {
+                cell.textLabel.text = @"Sync with Another Device";
                 cell.detailTextLabel.text = @"";
                 cell.selectionStyle = UITableViewCellSelectionStyleBlue;
-            } else if (indexPath.row == 2) {
+            } else if (indexPath.row == 3) {
                 cell.textLabel.text = @"Refresh Metadata & Artwork";
                 cell.selectionStyle = UITableViewCellSelectionStyleBlue;
-            } else if (indexPath.row == 3) {
+            } else if (indexPath.row == 4) {
                 cell.textLabel.text = @"Create AN Mini Instance (BETA)";
                 cell.selectionStyle = UITableViewCellSelectionStyleBlue;
-            } else if (indexPath.row == 4) {
+            } else if (indexPath.row == 5) {
                 cell.textLabel.text = @"Clear Offline Downloads";
                 cell.textLabel.textColor = [UIColor redColor];
                 cell.selectionStyle = UITableViewCellSelectionStyleBlue;
-            } else if (indexPath.row == 5) {
+            } else if (indexPath.row == 6) {
                 cell.textLabel.text = @"Reset Listening Stats";
                 cell.textLabel.textColor = [UIColor redColor];
                 cell.selectionStyle = UITableViewCellSelectionStyleBlue;
@@ -501,7 +507,7 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
         case LTSettingsSectionAbout: {
             if (indexPath.row == 0) {
                 cell.textLabel.text = @"App";
-                cell.detailTextLabel.text = @"audioNINJA Legacy";
+                cell.detailTextLabel.text = @"audioNINJA mobile";
             } else {
                 cell.textLabel.text = @"Version";
                 NSString *version = [[[NSBundle mainBundle] infoDictionary] objectForKey:@"CFBundleVersion"];
@@ -512,8 +518,8 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
             break;
         }
         case LTSettingsSectionCredits: {
-            NSArray *names = @[ @"SuperYosh23", @"OpenCode", @"Packboy" ];
-            NSArray *roles = @[ @"App concept and design", @"AI Coding Agent", @"App Icon" ];
+            NSArray *names = @[ @"SuperYosh23", @"OpenCode" ];
+            NSArray *roles = @[ @"App concept and design", @"AI Coding Agent" ];
             cell.textLabel.text = [names objectAtIndex:(NSUInteger)indexPath.row];
             cell.detailTextLabel.text = [roles objectAtIndex:(NSUInteger)indexPath.row];
             cell.accessoryView = nil;
@@ -549,17 +555,20 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
         return;
     }
     if (indexPath.section == LTSettingsSectionData) {
-        if (indexPath.row == 1) {
-            [LTP2PSync beginFromViewController:self];
+        if (indexPath.row == 0) {
+            LTDownloadQueueViewController *queue = [[LTDownloadQueueViewController alloc] init];
+            [self.navigationController pushViewController:queue animated:YES];
         } else if (indexPath.row == 2) {
-            [self refreshMetadataTapped];
+            [LTP2PSync beginFromViewController:self];
         } else if (indexPath.row == 3) {
-            [self exportToWebTapped];
+            [self refreshMetadataTapped];
         } else if (indexPath.row == 4) {
-            [self clearDownloadsTapped];
+            [self exportToWebTapped];
         } else if (indexPath.row == 5) {
-            [self resetStatsTapped];
+            [self clearDownloadsTapped];
         } else if (indexPath.row == 6) {
+            [self resetStatsTapped];
+        } else if (indexPath.row == 7) {
             [self clearSearchHistoryTapped];
         }
         return;

@@ -1,10 +1,33 @@
 #import "LTGraphics.h"
+#import "LTLucideIcons.h"
 #import <CoreText/CoreText.h>
 
 @implementation LTGraphics
 
 static BOOL LTFAFontLoaded = NO;
 static BOOL LTBundledFontsRegistered = NO;
+
+// Maps the legacy Font Awesome code points the app still passes around to the
+// matching Lucide icon, so existing call sites render the desktop app's icons.
+static NSString *LTLucideNameForFAGlyph(unichar glyph) {
+    switch (glyph) {
+        case 0xF04B: return @"play";
+        case 0xF04C: return @"pause";
+        case 0xF04A: return @"rewind";
+        case 0xF04E: return @"fast-forward";
+        case 0xF074: return @"shuffle";
+        case 0xF01E: return @"repeat";
+        case 0xF015: return @"house";
+        case 0xF002: return @"search";
+        case 0xF013: return @"settings";
+        case 0xF5FD: return @"library";
+        case 0xF06D: return @"trending-up";
+        case 0xF019: return @"download";
+        case 0xF00C: return @"check";
+        case 0xF303: return @"pen";
+        default: return nil;
+    }
+}
 
 // The Font Awesome face ships inside the app bundle, but the app declares no
 // UIAppFonts entries, so we have to register it ourselves before the glyph
@@ -108,6 +131,18 @@ static BOOL LTBundledFontsRegistered = NO;
 // and the skip arrows visibly off-centre inside a circle.
 + (UIImage *)glyphIcon:(unichar)glyph size:(CGFloat)size color:(UIColor *)color {
     if (size <= 0.0f) return nil;
+    NSString *lucide = LTLucideNameForFAGlyph(glyph);
+    if (lucide) {
+        UIImage *image = [LTLucideIcons iconNamed:lucide size:size color:color];
+        if (image) return image;
+    }
+    return [self fontAwesomeGlyphIcon:glyph size:size color:color];
+}
+
+// The original Font Awesome renderer, kept as a fallback for any glyph that has
+// no Lucide equivalent.
++ (UIImage *)fontAwesomeGlyphIcon:(unichar)glyph size:(CGFloat)size color:(UIColor *)color {
+    if (size <= 0.0f) return nil;
     [self registerBundledFontsIfNeeded];
     UIFont *font = [self fontAwesomeFontWithSize:size];
     if (!font) return nil;
@@ -152,25 +187,15 @@ static BOOL LTBundledFontsRegistered = NO;
 }
 
 + (UIImage *)repeatOneIconOfSize:(CGFloat)size color:(UIColor *)color {
-    UIImage *base = [self repeatIconOfSize:size color:color];
-    if (!base || size <= 0.0f) return base;
-    UIFont *numberFont = [UIFont boldSystemFontOfSize:size * 0.46f];
-    if (!numberFont) return base;
-
-    UIGraphicsBeginImageContextWithOptions(CGSizeMake(size, size), NO, 0.0);
-    [base drawInRect:CGRectMake(0.0f, 0.0f, size, size)];
-    [color setFill];
-    NSString *one = @"1";
-    CGSize oneSize = [one sizeWithFont:numberFont];
-    [one drawAtPoint:CGPointMake((size - oneSize.width) / 2.0f,
-                                 (size - oneSize.height) / 2.0f)
-            withFont:numberFont];
-    UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
-    UIGraphicsEndImageContext();
-    return image;
+    if (size <= 0.0f) return nil;
+    // The desktop app's repeat-1 draws its own "1" tick, so use that geometry
+    // rather than compositing a font glyph on top.
+    return [LTLucideIcons iconNamed:@"repeat-1" size:size color:color];
 }
 
 + (UIImage *)playIcon {
+    UIImage *lucide = [LTLucideIcons iconNamed:@"play" size:30.0f color:[UIColor colorWithRed:0.35f green:0.68f blue:0.88f alpha:1.0f]];
+    if (lucide) return lucide;
     UIImage *glyph = [self coloredGlyphIcon:0xF04B color:[UIColor colorWithRed:0.35f green:0.68f blue:0.88f alpha:1.0f]];
     if (glyph) return glyph;
     return [self iconWithDrawing:^(CGContextRef ctx) {
@@ -185,6 +210,8 @@ static BOOL LTBundledFontsRegistered = NO;
 }
 
 + (UIImage *)shuffleIcon {
+    UIImage *lucide = [LTLucideIcons iconNamed:@"shuffle" size:30.0f color:[UIColor colorWithRed:0.35f green:0.68f blue:0.88f alpha:1.0f]];
+    if (lucide) return lucide;
     UIImage *glyph = [self coloredGlyphIcon:0xF074 color:[UIColor colorWithRed:0.35f green:0.68f blue:0.88f alpha:1.0f]];
     if (glyph) return glyph;
     return [self iconWithDrawing:^(CGContextRef ctx) {
@@ -197,6 +224,8 @@ static BOOL LTBundledFontsRegistered = NO;
 }
 
 + (UIImage *)downloadIcon {
+    UIImage *lucide = [LTLucideIcons iconNamed:@"download" size:30.0f color:[UIColor colorWithRed:0.35f green:0.68f blue:0.88f alpha:1.0f]];
+    if (lucide) return lucide;
     UIImage *glyph = [self coloredGlyphIcon:0xF019 color:[UIColor colorWithRed:0.35f green:0.68f blue:0.88f alpha:1.0f]];
     if (glyph) return glyph;
     return [self iconWithDrawing:^(CGContextRef ctx) {
@@ -218,6 +247,8 @@ static BOOL LTBundledFontsRegistered = NO;
 }
 
 + (UIImage *)checkmarkIcon {
+    UIImage *lucide = [LTLucideIcons iconNamed:@"check" size:30.0f color:[UIColor colorWithRed:0.20f green:0.72f blue:0.30f alpha:1.0f]];
+    if (lucide) return lucide;
     UIImage *glyph = [self coloredGlyphIcon:0xF00C color:[UIColor colorWithRed:0.20f green:0.72f blue:0.30f alpha:1.0f]];
     if (glyph) return glyph;
     return [self iconWithDrawing:^(CGContextRef ctx) {
@@ -234,6 +265,8 @@ static BOOL LTBundledFontsRegistered = NO;
 }
 
 + (UIImage *)renameIcon {
+    UIImage *lucide = [LTLucideIcons iconNamed:@"pen" size:30.0f color:[UIColor colorWithRed:0.35f green:0.68f blue:0.88f alpha:1.0f]];
+    if (lucide) return lucide;
     UIImage *glyph = [self coloredGlyphIcon:0xF303 color:[UIColor colorWithRed:0.35f green:0.68f blue:0.88f alpha:1.0f]];
     if (glyph) return glyph;
     return [self iconWithDrawing:^(CGContextRef ctx) {
@@ -250,6 +283,8 @@ static BOOL LTBundledFontsRegistered = NO;
 }
 
 + (UIImage *)homeIcon {
+    UIImage *lucide = [LTLucideIcons iconNamed:@"house" size:30.0f color:[UIColor whiteColor]];
+    if (lucide) return lucide;
     UIImage *glyph = [self glyphIcon:0xF015];
     if (glyph) return glyph;
     return [self iconWithDrawing:^(CGContextRef ctx) {
@@ -265,6 +300,8 @@ static BOOL LTBundledFontsRegistered = NO;
 }
 
 + (UIImage *)searchIcon {
+    UIImage *lucide = [LTLucideIcons iconNamed:@"search" size:30.0f color:[UIColor whiteColor]];
+    if (lucide) return lucide;
     UIImage *glyph = [self glyphIcon:0xF002];
     if (glyph) return glyph;
     return [self iconWithDrawing:^(CGContextRef ctx) {
@@ -282,6 +319,8 @@ static BOOL LTBundledFontsRegistered = NO;
 }
 
 + (UIImage *)popularIcon {
+    UIImage *lucide = [LTLucideIcons iconNamed:@"trending-up" size:30.0f color:[UIColor whiteColor]];
+    if (lucide) return lucide;
     UIImage *glyph = [self glyphIcon:0xF06D];
     if (glyph) return glyph;
     return [self iconWithDrawing:^(CGContextRef ctx) {
@@ -303,6 +342,8 @@ static BOOL LTBundledFontsRegistered = NO;
 }
 
 + (UIImage *)settingsIcon {
+    UIImage *lucide = [LTLucideIcons iconNamed:@"settings" size:30.0f color:[UIColor whiteColor]];
+    if (lucide) return lucide;
     UIImage *glyph = [self glyphIcon:0xF013];
     if (glyph) return glyph;
     return [self iconWithDrawing:^(CGContextRef ctx) {
@@ -332,6 +373,8 @@ static BOOL LTBundledFontsRegistered = NO;
 }
 
 + (UIImage *)libraryIcon {
+    UIImage *lucide = [LTLucideIcons iconNamed:@"library" size:30.0f color:[UIColor whiteColor]];
+    if (lucide) return lucide;
     UIImage *glyph = [self glyphIcon:0xF5FD];
     if (glyph) return glyph;
     return [self iconWithDrawing:^(CGContextRef ctx) {
@@ -445,6 +488,88 @@ static BOOL LTBundledFontsRegistered = NO;
     UIImage *result = [UIImage imageWithCGImage:cgOut];
     CGImageRelease(cgOut);
     return result;
+}
+
+// Picks the dominant colors out of an image so the ambient visualiser can tint
+// its glows to match the artwork. Deliberately coarse: the source is already
+// the ~100px blurred thumbnail, so a small grid is plenty.
++ (NSArray *)dominantColorsFromImage:(UIImage *)image count:(NSUInteger)count {
+    if (!image || count == 0) return @[];
+    CGImageRef cgSrc = image.CGImage;
+    if (!cgSrc) return @[];
+
+    const size_t grid = 32;
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    uint8_t *buf = (uint8_t *)calloc(grid * grid * 4, 1);
+    CGContextRef ctx = CGBitmapContextCreate(buf, grid, grid, 8, grid * 4, cs,
+                                             kCGImageAlphaPremultipliedLast | kCGBitmapByteOrderDefault);
+    CGColorSpaceRelease(cs);
+    if (!ctx) { free(buf); return @[]; }
+    CGContextSetInterpolationQuality(ctx, kCGInterpolationMedium);
+    CGContextDrawImage(ctx, CGRectMake(0, 0, grid, grid), cgSrc);
+    CGContextRelease(ctx);
+
+    // 5 bits per channel buckets: 32768 possible, but only a few are ever hit.
+    const NSUInteger kBuckets = 32768;
+    NSUInteger *counts = (NSUInteger *)calloc(kBuckets, sizeof(NSUInteger));
+    double *sumR = (double *)calloc(kBuckets, sizeof(double));
+    double *sumG = (double *)calloc(kBuckets, sizeof(double));
+    double *sumB = (double *)calloc(kBuckets, sizeof(double));
+    if (!counts || !sumR || !sumG || !sumB) {
+        free(buf); free(counts); free(sumR); free(sumG); free(sumB);
+        return @[];
+    }
+
+    for (size_t i = 0; i < grid * grid; i++) {
+        uint8_t r = buf[i * 4], g = buf[i * 4 + 1], b = buf[i * 4 + 2];
+        // Skip near-black and near-white: they are the scrim and the specular
+        // highlights of the thumbnail, not the artwork's colour.
+        int maxc = r > g ? (r > b ? r : b) : (g > b ? g : b);
+        int minc = r < g ? (r < b ? r : b) : (g < b ? g : b);
+        if (maxc < 24) continue;
+        if (minc > 232) continue;
+        NSUInteger key = (NSUInteger)((r >> 3) << 10) | (NSUInteger)((g >> 3) << 5) | (NSUInteger)(b >> 3);
+        counts[key]++;
+        sumR[key] += r;
+        sumG[key] += g;
+        sumB[key] += b;
+    }
+
+    NSMutableArray *picked = [NSMutableArray array];
+    NSUInteger used = 0;
+    while (picked.count < count && used < kBuckets) {
+        NSUInteger bestKey = 0;
+        NSUInteger bestCount = 0;
+        for (NSUInteger key = 0; key < kBuckets; key++) {
+            if (counts[key] > bestCount) { bestCount = counts[key]; bestKey = key; }
+        }
+        if (bestCount == 0) break;
+        double n = (double)bestCount;
+        CGFloat r = (CGFloat)(sumR[bestKey] / n / 255.0);
+        CGFloat g = (CGFloat)(sumG[bestKey] / n / 255.0);
+        CGFloat b = (CGFloat)(sumB[bestKey] / n / 255.0);
+        // Lift toward a usable glow colour: the average of a thumbnail is muddy.
+        CGFloat mx = MAX(r, MAX(g, b));
+        CGFloat boost = mx > 0.01f ? (0.85f / mx) : 1.0f;
+        if (boost > 2.2f) boost = 2.2f;
+        UIColor *color = [UIColor colorWithRed:MIN(1.0f, r * boost)
+                                         green:MIN(1.0f, g * boost)
+                                          blue:MIN(1.0f, b * boost)
+                                         alpha:1.0f];
+        [picked addObject:color];
+        counts[bestKey] = 0; // never pick the same bucket twice
+        used++;
+    }
+
+    free(buf); free(counts); free(sumR); free(sumG); free(sumB);
+
+    if (picked.count == 0) {
+        // Degenerate artwork (pure black/white): fall back to a cool default so
+        // the visualiser still has something to pulse with.
+        return @[ [UIColor colorWithRed:0.30f green:0.55f blue:0.95f alpha:1.0f],
+                 [UIColor colorWithRed:0.65f green:0.35f blue:0.90f alpha:1.0f] ];
+    }
+    return picked;
 }
 
 @end

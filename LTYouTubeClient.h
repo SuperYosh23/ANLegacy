@@ -52,6 +52,13 @@ extern NSString *const LTBrowserUserAgent;
 - (void)fetchLyricsForVideo:(NSString *)videoId
                  completion:(void (^)(NSString *lyricsText, NSError *error))completion;
 
+// Fetches YouTube Music lyrics for a video. Yields either timestamped lines
+// (NSArray of @{"text", "start", "end"} in ms, "hasTimestamps"=YES) or a raw
+// plain-text lyric blob ({"lyrics":..., "hasTimestamps"=NO}). "source" carries
+// the attribution string ("Source: LyricFind"). Falls back gracefully.
+- (void)fetchTimedLyricsForVideoId:(NSString *)videoId
+                        completion:(void (^)(NSDictionary *result, NSError *error))completion;
+
 - (NSString *)highResThumbnailURL:(NSString *)urlString;
 
 - (NSString *)channelAvatarURL:(NSString *)urlString size:(NSInteger)size;

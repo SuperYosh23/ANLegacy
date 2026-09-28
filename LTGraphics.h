@@ -24,4 +24,8 @@
 
 + (UIImage *)blurredImageFromImage:(UIImage *)image;
 
+// Up to `count` representative colors of an image, brightest-normalized so they
+// work as glow tints. Never returns empty for a usable image.
++ (NSArray *)dominantColorsFromImage:(UIImage *)image count:(NSUInteger)count;
+
 @end

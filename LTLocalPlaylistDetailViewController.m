@@ -273,8 +273,6 @@
 }
 
 - (void)downloadTapped:(id)sender {
-    if ([[LTPlaylistStore sharedStore] isDownloading]) return;
-
     BOOL allDownloaded = self.playlistFullyDownloaded;
     if (allDownloaded) {
         NSInteger count = self.playlist.tracks.count;
@@ -298,19 +296,12 @@
     if (!missing.count) {
         return;
     }
-    LTLog(@"PLAYLIST download %d tracks", (int)missing.count);
+    LTLog(@"PLAYLIST queue %d tracks for download", (int)missing.count);
     self.downloadFailures = 0;
-    [self setDownloadingUI:YES];
-    [[LTPlaylistStore sharedStore] downloadTracks:missing completion:^{
+    // Feed the persistent download queue; other playlists/songs can stack on top.
+    [[LTPlaylistStore sharedStore] enqueueDownloads:missing completion:^{
         [self setDownloadingUI:NO];
-        if (self.downloadFailures > 0) {
-            UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"Download Failed"
-                                                            message:[NSString stringWithFormat:@"%d track(s) could not be downloaded.\nCheck your connection and try again.", (int)self.downloadFailures]
-                                                           delegate:nil
-                                                  cancelButtonTitle:@"OK"
-                                                  otherButtonTitles:nil];
-            [alert show];
-        }
+        [self.tableView reloadData];
     }];
 }
 
@@ -472,6 +463,9 @@
     if ([[LTPlaylistStore sharedStore] isTrackDownloading:track]) {
         cell.accessoryType = UITableViewCellAccessoryNone;
         cell.accessoryView = [self rowSpinnerForRow:indexPath.row];
+    } else if ([[LTPlaylistStore sharedStore] isTrackPendingDownload:track]) {
+        cell.accessoryType = UITableViewCellAccessoryNone;
+        cell.accessoryView = [self rowQueuedBadge];
     } else if ([[LTPlaylistStore sharedStore] isTrackDownloaded:track]) {
         cell.accessoryType = UITableViewCellAccessoryNone;
         cell.accessoryView = [self rowRemoveButtonForRow:indexPath.row];
@@ -486,6 +480,21 @@
     LTSpinnerView *spinner = [[LTSpinnerView alloc] initWithFrame:CGRectMake(0, 0, 22, 22)];
     [spinner startAnimating];
     return spinner;
+}
+
+// Static "queued" badge shown for tracks waiting in the download queue.
+- (UIView *)rowQueuedBadge {
+    UIView *badge = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 62, 22)];
+    badge.backgroundColor = [UIColor colorWithWhite:0.25 alpha:0.9f];
+    badge.layer.cornerRadius = 4.0f;
+    badge.clipsToBounds = YES;
+    UILabel *label = [[UILabel alloc] initWithFrame:badge.bounds];
+    label.text = @"Queued";
+    label.textColor = [UIColor whiteColor];
+    label.font = [UIFont systemFontOfSize:11];
+    label.textAlignment = NSTextAlignmentCenter;
+    [badge addSubview:label];
+    return badge;
 }
 
 - (UIButton *)rowRemoveButtonForRow:(NSInteger)row {
@@ -528,21 +537,12 @@
     UIButton *button = (UIButton *)sender;
     NSInteger row = button.tag;
     if (row < 0 || row >= (NSInteger)self.playlist.tracks.count) return;
-    if ([[LTPlaylistStore sharedStore] isDownloading]) return;
     LTTrack *track = [self.playlist.tracks objectAtIndex:(NSUInteger)row];
     if ([[LTPlaylistStore sharedStore] isTrackDownloaded:track]) return;
-    LTLog(@"ROW download %@ title=%@", track.videoId, track.title);
-    self.downloadFailures = 0;
-    [[LTPlaylistStore sharedStore] downloadTracks:@[track] completion:^{
-        if (self.downloadFailures > 0) {
-            UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"Download Failed"
-                                                            message:@"That track could not be downloaded.\nCheck your connection and try again."
-                                                           delegate:nil
-                                                  cancelButtonTitle:@"OK"
-                                                  otherButtonTitles:nil];
-            [alert show];
-        }
-    }];
+    if ([[LTPlaylistStore sharedStore] isTrackPendingDownload:track]) return;
+    LTLog(@"ROW queue download %@ title=%@", track.videoId, track.title);
+    [[LTPlaylistStore sharedStore] enqueueDownloads:@[track]];
+    [self.tableView reloadData];
 }
 
 - (NSString *)formatDuration:(NSTimeInterval)duration {

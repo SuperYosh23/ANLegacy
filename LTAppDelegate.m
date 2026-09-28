@@ -13,6 +13,11 @@
 #import "LTOneHandedMode.h"
 #import "LTLog.h"
 #import <AVFoundation/AVFoundation.h>
+#import <MediaPlayer/MediaPlayer.h>
+
+@interface LTAppDelegate ()
+@property (nonatomic, assign) BOOL remoteCommandsEnabled;
+@end
 
 @implementation LTAppDelegate
 
@@ -31,6 +36,7 @@ static void LTUncaughtExceptionHandler(NSException *e) {
     [session setActive:YES error:NULL];
     LTLog(@"APP didFinishLaunching");
     [[UIApplication sharedApplication] beginReceivingRemoteControlEvents];
+    [self setupRemoteCommandCenter];
     [self becomeFirstResponder];
 
     self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
@@ -79,7 +85,9 @@ static void LTUncaughtExceptionHandler(NSException *e) {
     [controllers addObject:settingsNav];
 
     LTPlayerViewController *nowPlaying = [[LTPlayerViewController alloc] init];
-    nowPlaying.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Now Playing" image:[UIImage imageNamed:@"IcoPlay"] tag:0];
+    nowPlaying.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Now Playing"
+                                                          image:[LTGraphics playIcon]
+                                                            tag:0];
     UINavigationController *nowPlayingNav = [[UINavigationController alloc] initWithRootViewController:nowPlaying];
     [controllers addObject:nowPlayingNav];
 
@@ -169,7 +177,76 @@ static void LTUncaughtExceptionHandler(NSException *e) {
     return YES;
 }
 
+- (void)setupRemoteCommandCenter {
+    if (![MPRemoteCommandCenter class]) return;
+    MPRemoteCommandCenter *center = [MPRemoteCommandCenter sharedCommandCenter];
+    self.remoteCommandsEnabled = YES;
+
+    [center.playCommand addTarget:self action:@selector(remotePlayCommand:)];
+    [center.pauseCommand addTarget:self action:@selector(remotePauseCommand:)];
+    [center.togglePlayPauseCommand addTarget:self action:@selector(remoteTogglePlayPauseCommand:)];
+    [center.nextTrackCommand addTarget:self action:@selector(remoteNextCommand:)];
+    [center.previousTrackCommand addTarget:self action:@selector(remotePreviousCommand:)];
+
+    // Only expose the 15s fwd/bwd buttons alongside the scrubber (iOS 9.1+).
+    // On earlier versions (7.1-9.0) they replace the track skip/back buttons
+    // on the lock screen, which is undesired.
+    if ([center respondsToSelector:@selector(changePlaybackPositionCommand)]) {
+        center.skipForwardCommand.preferredIntervals = @[ @(15) ];
+        [center.skipForwardCommand addTarget:self action:@selector(remoteSkipForwardCommand:)];
+        center.skipBackwardCommand.preferredIntervals = @[ @(15) ];
+        [center.skipBackwardCommand addTarget:self action:@selector(remoteSkipBackwardCommand:)];
+        [center.changePlaybackPositionCommand addTarget:self action:@selector(remoteChangePlaybackPositionCommand:)];
+    }
+}
+
+- (MPRemoteCommandHandlerStatus)remotePlayCommand:(MPRemoteCommandEvent *)event {
+    [[LTPlayerController sharedController] playMovie];
+    return MPRemoteCommandHandlerStatusSuccess;
+}
+
+- (MPRemoteCommandHandlerStatus)remotePauseCommand:(MPRemoteCommandEvent *)event {
+    [[LTPlayerController sharedController] pausePlayback];
+    return MPRemoteCommandHandlerStatusSuccess;
+}
+
+- (MPRemoteCommandHandlerStatus)remoteTogglePlayPauseCommand:(MPRemoteCommandEvent *)event {
+    [[LTPlayerController sharedController] togglePlayPause];
+    return MPRemoteCommandHandlerStatusSuccess;
+}
+
+- (MPRemoteCommandHandlerStatus)remoteNextCommand:(MPRemoteCommandEvent *)event {
+    [[LTPlayerController sharedController] nextTrack];
+    return MPRemoteCommandHandlerStatusSuccess;
+}
+
+- (MPRemoteCommandHandlerStatus)remotePreviousCommand:(MPRemoteCommandEvent *)event {
+    [[LTPlayerController sharedController] previousTrack];
+    return MPRemoteCommandHandlerStatusSuccess;
+}
+
+- (MPRemoteCommandHandlerStatus)remoteSkipForwardCommand:(MPSkipIntervalCommandEvent *)event {
+    LTPlayerController *controller = [LTPlayerController sharedController];
+    double interval = event.interval > 0 ? event.interval : 15.0;
+    [controller seekToTime:[controller currentTime] + interval];
+    return MPRemoteCommandHandlerStatusSuccess;
+}
+
+- (MPRemoteCommandHandlerStatus)remoteSkipBackwardCommand:(MPSkipIntervalCommandEvent *)event {
+    LTPlayerController *controller = [LTPlayerController sharedController];
+    double interval = event.interval > 0 ? event.interval : 15.0;
+    NSTimeInterval target = [controller currentTime] - interval;
+    [controller seekToTime:target < 0 ? 0.0 : target];
+    return MPRemoteCommandHandlerStatusSuccess;
+}
+
+- (MPRemoteCommandHandlerStatus)remoteChangePlaybackPositionCommand:(MPChangePlaybackPositionCommandEvent *)event {
+    [[LTPlayerController sharedController] seekToTime:event.positionTime];
+    return MPRemoteCommandHandlerStatusSuccess;
+}
+
 - (void)remoteControlReceivedWithEvent:(UIEvent *)event {
+    if (self.remoteCommandsEnabled) return;
     LTPlayerController *controller = [LTPlayerController sharedController];
     switch (event.subtype) {
         case UIEventSubtypeRemoteControlPlay:

@@ -57,12 +57,28 @@ extern NSString *const LTRecentsDidChangeNotification;
 - (BOOL)isTrackDownloading:(LTTrack *)track;
 - (BOOL)isDownloading;
 
+// Appends to the persistent download queue (nothing is clobbered, requests are
+// never dropped) and starts pumping if the engine is idle. `completion` runs on
+// the main thread once every track passed in here has been processed.
+- (void)enqueueDownloads:(NSArray *)tracks completion:(void (^)(void))completion;
+// Fire-and-forget variant for menus/rows.
+- (void)enqueueDownloads:(NSArray *)tracks;
+
 - (void)downloadTracks:(NSArray *)tracks completion:(void (^)(void))completion;
 - (void)removeDownloadsForTracks:(NSArray *)tracks;
 - (NSArray *)downloadedTracks;
 - (void)addTrackToLibrary:(LTTrack *)track;
 
 - (NSInteger)offlineTrackCount;
+- (NSInteger)pendingDownloadCount;
+- (BOOL)hasPendingDownloads;
+- (NSArray *)pendingDownloadTracks;
+- (BOOL)isTrackPendingDownload:(LTTrack *)track;
+- (void)resumePendingDownloads;
+- (void)pausePendingDownloads;
+- (void)cancelPendingDownloads;
+- (void)removeDownloadsFromQueue:(NSArray *)tracks;
+- (void)clearDownloadFailures;
 - (void)refreshOfflineMetadataWithProgress:(void (^)(NSInteger done, NSInteger total))progress
                             completion:(void (^)(NSInteger updated, NSInteger failed))completion;
 

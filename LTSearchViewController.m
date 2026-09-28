@@ -13,6 +13,7 @@
 #import "LTGraphics.h"
 #import "LTSimpleCell.h"
 #import "LTTheme.h"
+#import "LTLog.h"
 #import <QuartzCore/QuartzCore.h>
 
 @interface LTSearchViewController () <UISearchBarDelegate, UITableViewDataSource, UITableViewDelegate,
@@ -21,6 +22,7 @@
 @property (nonatomic, strong) UISegmentedControl *segControl;
 @property (nonatomic, strong) UITableView *tableView;
 @property (nonatomic, strong) NSMutableArray *results;
+@property (nonatomic, strong) NSArray *localResults;
 @property (nonatomic, copy) NSString *currentQuery;
 @property (nonatomic, assign) BOOL loading;
 @property (nonatomic, strong) LTTrack *pendingTrack;
@@ -162,6 +164,34 @@
     return @"Search YouTube Music";
 }
 
+- (BOOL)hasLocalSection {
+    return (![self isPlaylistsMode] && !self.showingHistory && self.currentQuery.length);
+}
+
+- (NSArray *)libraryTracksMatchingQuery:(NSString *)query {
+    if (!query.length) return nil;
+    query = [query stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (!query.length) return nil;
+    NSMutableArray *matches = [NSMutableArray array];
+    for (LTTrack *track in [[LTPlaylistStore sharedStore] downloadedTracks]) {
+        NSString *title = track.title.length ? track.title : @"";
+        NSString *artist = track.artist.length ? track.artist : @"";
+        if ([title rangeOfString:query options:NSCaseInsensitiveSearch].location != NSNotFound ||
+            [artist rangeOfString:query options:NSCaseInsensitiveSearch].location != NSNotFound) {
+            [matches addObject:track];
+        }
+    }
+    return matches;
+}
+
+- (id)itemAtIndexPath:(NSIndexPath *)indexPath {
+    if ([self hasLocalSection] && indexPath.section == 0) {
+        if (indexPath.row >= (NSInteger)self.localResults.count) return nil;
+        return [self.localResults objectAtIndex:(NSUInteger)indexPath.row];
+    }
+    return [self.results objectAtIndex:(NSUInteger)indexPath.row];
+}
+
 #pragma mark - Segmented control
 
 - (void)segmentChanged:(id)sender {
@@ -174,6 +204,7 @@
     self.searchBar.placeholder = [self searchPlaceholderForType:newType];
     self.currentQuery = nil;
     [self.results removeAllObjects];
+    self.localResults = nil;
     [self.tableView reloadData];
     self.emptyLabel.hidden = YES;
     NSString *query = [self.searchBar.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
@@ -209,6 +240,7 @@
 - (void)showSearchHistory {
     self.showingHistory = YES;
     [self.results removeAllObjects];
+    self.localResults = nil;
     [self.tableView reloadData];
     NSArray *history = [[LTPlaylistStore sharedStore] searchHistory];
     if (!history.count) {
@@ -238,6 +270,16 @@
     [self showSpinner:YES];
 
     NSString *type = [self currentType];
+    if ([type isEqualToString:@"songs"]) {
+        self.localResults = [self libraryTracksMatchingQuery:query];
+    } else {
+        self.localResults = nil;
+    }
+    LTLog(@"SEARCH query=%@ type=%@ downloaded=%d local=%d showHist=%d",
+          query, type, (int)[[[LTPlaylistStore sharedStore] downloadedTracks] count],
+          (int)self.localResults.count, (int)self.showingHistory);
+    [self.tableView reloadData];
+
     __weak LTSearchViewController *weakSelf = self;
     void (^finish)(NSArray *, NSError *) = ^(NSArray *items, NSError *error) {
         LTSearchViewController *strongSelf = weakSelf;
@@ -434,6 +476,7 @@
     searchBar.text = @"";
     self.currentQuery = nil;
     [self.results removeAllObjects];
+    self.localResults = nil;
     self.emptyLabel.hidden = YES;
     [self showSearchHistory];
 }
@@ -448,17 +491,31 @@
 #pragma mark - UITableViewDataSource
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return 1;
+    if ([self isPlaylistsMode]) return 1;
+    return [self hasLocalSection] ? 2 : 1;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    if ([self isPlaylistsMode]) return (NSInteger)self.results.count;
+    if ([self hasLocalSection] && section == 0) {
+        return self.localResults.count > 0 ? (NSInteger)self.localResults.count : 1;
+    }
     if (self.showingHistory) {
         return (NSInteger)[[[LTPlaylistStore sharedStore] searchHistory] count];
     }
     return (NSInteger)self.results.count;
 }
 
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+    if ([self hasLocalSection]) {
+        if (section == 0) return @"From Your Library";
+        if (section == 1) return @"YouTube";
+    }
+    return nil;
+}
+
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (![self isPlaylistsMode] && [self hasLocalSection] && indexPath.section == 0) return 60.0f;
     if (self.showingHistory) return 44.0f;
     return 60.0f;
 }
@@ -489,7 +546,17 @@
         cell.detailTextLabel.font = [UIFont systemFontOfSize:12];
         cell.detailTextLabel.textColor = [LTTheme secondaryText];
     }
-    id item = [self.results objectAtIndex:(NSUInteger)indexPath.row];
+    if ([self hasLocalSection] && indexPath.section == 0 && !self.localResults.count) {
+        cell.textLabel.text = @"No matches in your library";
+        cell.textLabel.textColor = [LTTheme secondaryText];
+        cell.detailTextLabel.text = @"";
+        cell.accessoryView = nil;
+        cell.accessoryType = UITableViewCellAccessoryNone;
+        cell.imageView.image = nil;
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        return cell;
+    }
+    id item = [self itemAtIndexPath:indexPath];
     if ([item isKindOfClass:[LTTrack class]]) {
         LTTrack *track = item;
         cell.textLabel.text = track.title;
@@ -506,7 +573,8 @@
             cell.accessoryView = spinner;
         } else {
             UIButton *plus = [UIButton buttonWithType:UIButtonTypeContactAdd];
-            plus.tag = (NSInteger)indexPath.row;
+            NSInteger offset = ([self hasLocalSection] && indexPath.section == 0) ? 0 : 100000;
+            plus.tag = offset + (NSInteger)indexPath.row;
             [plus addTarget:self action:@selector(songPlusTapped:) forControlEvents:UIControlEventTouchUpInside];
             cell.accessoryView = plus;
         }
@@ -584,15 +652,21 @@
         [self performSearch];
         return;
     }
-    id item = [self.results objectAtIndex:(NSUInteger)indexPath.row];
+    id item = [self itemAtIndexPath:indexPath];
+    if (!item) return;
     if ([item isKindOfClass:[LTTrack class]]) {
-        NSArray *tracks = [self tracksFromResults];
-        NSInteger index = 0;
-        for (NSUInteger i = 0; i < tracks.count; i++) {
-            if ([[tracks objectAtIndex:i] isEqual:item]) { index = (NSInteger)i; break; }
+        if ([self hasLocalSection] && indexPath.section == 0) {
+            [[LTPlayerController sharedController] playQueue:self.localResults atIndex:indexPath.row];
+            [LTPlayerController sharedController].queueSourceName = @"Library";
+        } else {
+            NSArray *tracks = [self tracksFromResults];
+            NSInteger index = 0;
+            for (NSUInteger i = 0; i < tracks.count; i++) {
+                if ([[tracks objectAtIndex:i] isEqual:item]) { index = (NSInteger)i; break; }
+            }
+            [[LTPlayerController sharedController] playQueue:tracks atIndex:index];
+            [LTPlayerController sharedController].queueSourceName = self.searchBar.text ?: @"Search";
         }
-        [[LTPlayerController sharedController] playQueue:tracks atIndex:index];
-        [LTPlayerController sharedController].queueSourceName = self.searchBar.text ?: @"Search";
         [(LTTabBarController *)self.tabBarController showNowPlaying];
     } else if ([item isKindOfClass:[LTBrowseItem class]]) {
         LTBrowseItem *bi = item;
@@ -623,16 +697,25 @@
 }
 
 - (void)tableView:(UITableView *)tableView accessoryButtonTappedForRowWithIndexPath:(NSIndexPath *)indexPath {
-    [self showSongOptionsAtIndex:(NSInteger)indexPath.row];
+    [self showSongOptionsAtIndex:(NSInteger)indexPath.row section:(NSInteger)indexPath.section];
 }
 
 - (void)songPlusTapped:(UIButton *)button {
-    [self showSongOptionsAtIndex:(NSInteger)button.tag];
+    NSInteger tag = (NSInteger)button.tag;
+    NSInteger row = tag % 100000;
+    NSInteger section = (tag < 100000) ? 0 : 1;
+    [self showSongOptionsAtIndex:row section:section];
 }
 
-- (void)showSongOptionsAtIndex:(NSInteger)row {
-    if (row < 0 || row >= (NSInteger)self.results.count) return;
-    id item = [self.results objectAtIndex:(NSUInteger)row];
+- (void)showSongOptionsAtIndex:(NSInteger)row section:(NSInteger)section {
+    id item = nil;
+    if ([self hasLocalSection] && section == 0) {
+        if (row < 0 || row >= (NSInteger)self.localResults.count) return;
+        item = [self.localResults objectAtIndex:(NSUInteger)row];
+    } else {
+        if (row < 0 || row >= (NSInteger)self.results.count) return;
+        item = [self.results objectAtIndex:(NSUInteger)row];
+    }
     if ([item isKindOfClass:[LTTrack class]]) {
         [self showSongOptionsForTrack:item];
     }

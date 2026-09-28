@@ -186,10 +186,6 @@
 
 - (void)downloadTapped:(id)sender {
     if (!self.tracks.count) return;
-    if ([[LTPlaylistStore sharedStore] isDownloading]) {
-        [self showToast:@"A download is already in progress"];
-        return;
-    }
     if (self.allDownloaded) {
         NSInteger count = self.tracks.count;
         UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"Remove Downloads"
@@ -209,10 +205,10 @@
     }
     if (!missing.count) return;
     __weak LTTrackListViewController *weakSelf = self;
-    [[LTPlaylistStore sharedStore] downloadTracks:missing completion:^{
+    [[LTPlaylistStore sharedStore] enqueueDownloads:missing completion:^{
         [weakSelf updateDownloadState];
     }];
-    [self showToast:[NSString stringWithFormat:@"Downloading %d", (int)missing.count]];
+    [self showToast:[NSString stringWithFormat:@"Queued %d for download", (int)missing.count]];
 }
 
 - (void)addAllTapped:(id)sender {

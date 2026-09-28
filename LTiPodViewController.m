@@ -625,7 +625,7 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
     pane.title = @"About";
     pane.isInfo = YES;
     NSMutableArray *items = [NSMutableArray array];
-    NSArray *lines = @[@"audioNINJA Legacy",
+    NSArray *lines = @[@"audioNINJA mobile",
                        detail,
                        @"iPod mode emulator",
                        @"For legacy iOS devices",
@@ -1153,19 +1153,44 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
         self.momentumTimer = nil;
         return;
     }
-    self.momentumVelocity *= 0.90f;
+    CGFloat rowH = [LTiPodListView rowHeight];
     CGFloat maxOffset = [self maxContentOffset];
-    CGFloat target = self.listView.contentOffset + self.momentumVelocity / 30.0f;
-    if (target < 0) { target = 0; self.momentumVelocity = -self.momentumVelocity * 0.3f; }
-    else if (target > maxOffset) { target = maxOffset; self.momentumVelocity = -self.momentumVelocity * 0.3f; }
-    [self.listView setContentOffsetImmediate:target];
-    [self playScrollClickForOffset:self.listView.contentOffset];
+    CGFloat current = self.listView.contentOffset;
+    CGFloat projected = current + self.momentumVelocity / 30.0f;
 
-    if (fabs(self.momentumVelocity) < 6.0f) {
+    // Ran out of travel: land on the end stop and stop. Negating the velocity
+    // here (as this used to) made the list glide back up the way it came, so the
+    // highlight hopped a row past the end and then settled back down onto it.
+    if (projected <= 0.0f || projected >= maxOffset) {
+        CGFloat landing = (projected <= 0.0f) ? 0.0f : maxOffset;
         [self.momentumTimer invalidate];
         self.momentumTimer = nil;
+        [self.listView setContentOffsetImmediate:landing];
+        [self playScrollClickForOffset:landing];
         [self.listView snapSelection];
+        return;
     }
+
+    CGFloat nextVelocity = self.momentumVelocity * 0.90f;
+    // Slow enough to stop. Settle from the offset we are already at rather than
+    // from `projected`: wheel ticks land on exact row multiples, so taking one
+    // more fractional step first drops the offset just below a boundary. Going
+    // up that made floor() report the previous row for a frame, then round()
+    // snapped it back, and the highlight flickered up one and down again.
+    if (fabs(nextVelocity) < 6.0f) {
+        [self.momentumTimer invalidate];
+        self.momentumTimer = nil;
+        CGFloat snapped = roundf(current / rowH) * rowH;
+        if (snapped < 0.0f) snapped = 0.0f;
+        if (snapped > maxOffset) snapped = maxOffset;
+        [self.listView setContentOffsetImmediate:snapped];
+        [self playScrollClickForOffset:snapped];
+        return;
+    }
+
+    self.momentumVelocity = nextVelocity;
+    [self.listView setContentOffsetImmediate:projected];
+    [self playScrollClickForOffset:projected];
 }
 
 #pragma mark - Now Playing refresh
