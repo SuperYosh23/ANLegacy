@@ -7,6 +7,7 @@
 #import "LTTransitionSpeedViewController.h"
 #import "LTRecentsTileSizeViewController.h"
 #import "LTOneHandedMode.h"
+#import "LTAppIcon.h"
 #import "LTOneHandedModeViewController.h"
 #import "LTWebExporter.h"
 #import "LTPlaylistSelectViewController.h"
@@ -349,7 +350,28 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
 
 #pragma mark - UIAlertViewDelegate
 
+- (void)presentIconPicker {
+    UIAlertView *sheet = [[UIAlertView alloc] initWithTitle:@"App Icon"
+                                                   message:@"Pick which icon revision shows on the Home Screen. iOS will confirm the change."
+                                                  delegate:self
+                                         cancelButtonTitle:@"Cancel"
+                                         otherButtonTitles:@"Classic", @"Rounded", @"Modern", nil];
+    sheet.tag = 950;
+    [sheet show];
+}
+
 - (void)alertView:(UIAlertView *)alertView clickedButtonAtIndex:(NSInteger)buttonIndex {
+    if (alertView.tag == 950) {
+        NSString *name = nil;
+        if (buttonIndex == 1) name = [LTAppIcon classicIconName];
+        else if (buttonIndex == 2) name = [LTAppIcon roundedIconName];
+        else if (buttonIndex == 3) name = [LTAppIcon modernIconName];
+        if (buttonIndex >= 1) {
+            [LTAppIcon applyIconNamed:name];
+            [self.tableView reloadData];
+        }
+        return;
+    }
     if (alertView.tag == 900 && buttonIndex == 1) {
         [self clearOfflineFiles];
     }
@@ -393,6 +415,14 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
     return 5;
 }
 
+// The icon picker is appended after whatever the last appearance row happens to
+// be, so it never shifts the indices of the existing rows.
+- (NSInteger)appearanceRowCount {
+    NSInteger count = [LTOneHandedMode isSupported] ? 6 : 5;
+    if ([LTAppIcon isPickerSupported]) count += 1;
+    return count;
+}
+
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
     switch (section) {
         case LTSettingsSectionPlayback: return @"Playback options";
@@ -407,7 +437,7 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     switch (section) {
         case LTSettingsSectionPlayback: return 2;
-        case LTSettingsSectionAppearance: return [LTOneHandedMode isSupported] ? 6 : 5;
+        case LTSettingsSectionAppearance: return [self appearanceRowCount];
         case LTSettingsSectionData: return 8;
         case LTSettingsSectionAbout: return 2;
         case LTSettingsSectionCredits: return 2;
@@ -438,7 +468,12 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
             break;
         }
         case LTSettingsSectionAppearance: {
-            if (indexPath.row == 0) {
+            if ([LTAppIcon isPickerSupported] && indexPath.row == [self appearanceRowCount] - 1) {
+                cell.textLabel.text = @"App Icon";
+                cell.detailTextLabel.text = [LTAppIcon currentIconLabel];
+                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                cell.selectionStyle = UITableViewCellSelectionStyleBlue;
+            } else if (indexPath.row == 0) {
                 cell.textLabel.text = @"Album Art Background";
                 cell.detailTextLabel.text = @"";
                 cell.accessoryView = [self bgSwitch];
@@ -542,13 +577,15 @@ typedef NS_ENUM(NSInteger, LTSettingsSection) {
         return;
     }
     if (indexPath.section == LTSettingsSectionAppearance) {
-        if (indexPath.row == 2) {
+        if ([LTAppIcon isPickerSupported] && indexPath.row == [self appearanceRowCount] - 1) {
+            [self presentIconPicker];
+        } else if (indexPath.row == 2) {
             LTTransitionSpeedViewController *vc = [[LTTransitionSpeedViewController alloc] init];
             [self.navigationController pushViewController:vc animated:YES];
         } else if (indexPath.row == 4) {
             LTRecentsTileSizeViewController *vc = [[LTRecentsTileSizeViewController alloc] init];
             [self.navigationController pushViewController:vc animated:YES];
-        } else if (indexPath.row == 5) {
+        } else if (indexPath.row == 5 && [LTOneHandedMode isSupported]) {
             LTOneHandedModeViewController *vc = [[LTOneHandedModeViewController alloc] init];
             [self.navigationController pushViewController:vc animated:YES];
         }

@@ -12,6 +12,7 @@
 #import "LTLog.h"
 #import "LTSafeArea.h"
 #import "LTSimpleCell.h"
+#import "LTHaptics.h"
 
 static BOOL sHasShownSwipeHint = NO;
 
@@ -47,6 +48,10 @@ static BOOL sHasShownSwipeHint = NO;
 // layouts that are neither iPad nor a notched phone. The others keep a disc
 // behind each key.
 @property (nonatomic, strong) UIView *transportBar;
+// Soft halo shown behind whichever transport key is being held down. Kept as a
+// sibling view rather than a layer shadow because the keys clip to bounds for
+// their rounded backgrounds, which would cut a shadow off at the edge.
+@property (nonatomic, strong) UIView *pressGlow;
 @property (nonatomic, strong) NSCache *blurCache;
 @property (nonatomic, strong) NSCache *paletteCache;
 @property (nonatomic, strong) UIImageView *artworkView;
@@ -219,6 +224,19 @@ static BOOL sHasShownSwipeHint = NO;
     self.transportBar.userInteractionEnabled = NO; // taps go to the buttons
     self.transportBar.hidden = YES;
     [self.mainPane insertSubview:self.transportBar belowSubview:self.prevButton];
+
+    // Halo for the held key. A soft accent tint rather than white, because the
+    // row is already a white pill and a white glow on white would be invisible.
+    self.pressGlow = [[UIView alloc] initWithFrame:CGRectZero];
+    self.pressGlow.backgroundColor = [UIColor colorWithRed:0.42f green:0.62f blue:0.95f alpha:0.30f];
+    self.pressGlow.userInteractionEnabled = NO;
+    self.pressGlow.hidden = YES;
+    [self.mainPane insertSubview:self.pressGlow belowSubview:self.prevButton];
+
+    for (UIButton *key in [NSArray arrayWithObjects:self.shuffleButton, self.prevButton,
+                           self.playButton, self.nextButton, self.repeatButton, nil]) {
+        [self addPressFeedbackToButton:key];
+    }
 
     self.pagesHint = [[UILabel alloc] init];
     self.pagesHint.text = @"Swipe down for queue   \u00B7   Swipe up for lyrics";
@@ -693,6 +711,44 @@ static BOOL sHasShownSwipeHint = NO;
 // The iPad and notched-phone layouts keep their per-key discs.
 - (void)useTransportCircles {
     if (self.transportBar) self.transportBar.hidden = YES;
+}
+
+// A short motor pulse plus a soft halo while a transport key is held, so the
+// press is confirmed under the thumb before anything actually happens.
+- (void)addPressFeedbackToButton:(UIButton *)button {
+    [button addTarget:self action:@selector(transportKeyDown:)
+     forControlEvents:UIControlEventTouchDown];
+    [button addTarget:self action:@selector(transportKeyUp:)
+     forControlEvents:UIControlEventTouchUpInside];
+    [button addTarget:self action:@selector(transportKeyUp:)
+     forControlEvents:UIControlEventTouchUpOutside];
+    [button addTarget:self action:@selector(transportKeyUp:)
+     forControlEvents:UIControlEventTouchCancel];
+}
+
+- (void)transportKeyDown:(UIButton *)button {
+    [LTHaptics pulse];
+    if (!self.pressGlow) return;
+    CGRect f = button.frame;
+    // Inflate so the halo reads as a glow around the key rather than a tint
+    // under the glyph. On the disc layouts the key's own white background
+    // covers all but this rim, which is exactly what is wanted there.
+    CGRect glow = CGRectInset(f, -6.0f, -6.0f);
+    self.pressGlow.frame = glow;
+    self.pressGlow.layer.cornerRadius = glow.size.height / 2.0f;
+    // Re-insert so the halo sits directly under whichever key is held, above
+    // the pill.
+    [self.mainPane insertSubview:self.pressGlow belowSubview:button];
+    self.pressGlow.alpha = 0.0f;
+    self.pressGlow.hidden = NO;
+    [UIView animateWithDuration:0.08f animations:^{ self.pressGlow.alpha = 1.0f; }];
+}
+
+- (void)transportKeyUp:(UIButton *)button {
+    if (!self.pressGlow || self.pressGlow.hidden) return;
+    [UIView animateWithDuration:0.16f
+                     animations:^{ self.pressGlow.alpha = 0.0f; }
+                     completion:^(BOOL finished) { self.pressGlow.hidden = YES; }];
 }
 
 - (void)viewDidLayoutSubviews {

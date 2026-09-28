@@ -23,6 +23,8 @@ LegacyMusic_FILES = main.m \
 	LTHomeViewController.m \
 	LTSettingsViewController.m \
 	LTGraphics.m \
+	LTHaptics.m \
+	LTAppIcon.m \
 	LTLucideIcons.m \
 	LTSearchViewController.m \
 	LTTrackListViewController.m \

@@ -11,6 +11,7 @@
 #import "LTDebugSettings.h"
 #import "LTiPodViewController.h"
 #import "LTOneHandedMode.h"
+#import "LTAppIcon.h"
 #import "LTLog.h"
 #import <AVFoundation/AVFoundation.h>
 #import <MediaPlayer/MediaPlayer.h>
@@ -170,6 +171,9 @@ static void LTUncaughtExceptionHandler(NSException *e) {
 
 - (void)applicationDidBecomeActive:(UIApplication *)application {
     LTLog(@"APP didBecomeActive");
+    // Here rather than in didFinishLaunching: setAlternateIconName: is unreliable
+    // before the app is frontmost. The defaults flag keeps it to one attempt.
+    [LTAppIcon applyModernIconIfNeeded];
     [self becomeFirstResponder];
 }
 

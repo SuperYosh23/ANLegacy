@@ -7,6 +7,7 @@
 #import "LTGraphics.h"
 #import "LTLog.h"
 #import "LTSafeArea.h"
+#import "LTHaptics.h"
 #import <math.h>
 #import <AudioToolbox/AudioToolbox.h>
 #import <dlfcn.h>
@@ -1096,28 +1097,7 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
     if (row == self.lastClickRow) return;
     self.lastClickRow = row;
     if ([self clickSoundEnabled]) AudioServicesPlaySystemSound(self.scrollClickID);
-    if ([self vibesEnabled]) [self playScrollHaptic];
-}
-
-// Short tactile pulse: buzz the plain motor for a split second (AudioServices
-// has no public way to time the motor, but the long-standing private helper
-// AudioServicesPlaySystemSoundWithVibration does; resolve it at runtime since
-// it is not in the SDK's link stub).
-- (void)playScrollHaptic {
-    static void (*vibeFn)(SystemSoundID, void *, NSDictionary *) = NULL;
-    static BOOL resolved = NO;
-    if (!resolved) {
-        vibeFn = dlsym(RTLD_DEFAULT, "AudioServicesPlaySystemSoundWithVibration");
-        resolved = YES;
-    }
-    if (!vibeFn) return;
-    NSMutableDictionary *vibe = [NSMutableDictionary dictionary];
-    [vibe setObject:[NSArray arrayWithObjects:
-                     [NSNumber numberWithBool:NO], [NSNumber numberWithInt:0],
-                     [NSNumber numberWithBool:YES], [NSNumber numberWithInt:10], nil]
-             forKey:@"VibePattern"];
-    [vibe setObject:[NSNumber numberWithInt:1] forKey:@"Intensity"];
-    vibeFn(kSystemSoundID_Vibrate, NULL, vibe); // ~10ms motor pulse
+    if ([self vibesEnabled]) [LTHaptics pulse];
 }
 
 - (CGFloat)maxContentOffset {
@@ -1304,7 +1284,7 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
 
 - (void)iPodWheel:(LTiPodWheelView *)wheel buttonPressed:(LTiPodWheelButton)button {
     [self stopMomentum];
-    if ([self vibesEnabled]) [self playScrollHaptic]; // same short pulse as scrolling
+    if ([self vibesEnabled]) [LTHaptics pulse]; // same short pulse as scrolling
     switch (button) {
         case LTiPodWheelButtonMenu:
             [self popPane];

@@ -17,14 +17,37 @@
 		<string>Icon-76.png</string>
 		<string>Icon-76@2x.png</string>
 		<string>Icon-120.png</string>
+		<string>Icon-180.png</string>
 		<string>Icon-167.png</string>
 	</array>
 	<key>CFBundleIcons</key>
 	<dict>
-		<key>CFBundlePrimaryIcon</key>
+		<key>CFBundleAlternateIcons</key>
+	<dict>
+		<key>Icon7</key>
 		<dict>
 			<key>CFBundleIconFiles</key>
 			<array>
+				<string>Icon-120</string>
+			</array>
+			<key>UIPrerenderedIcon</key>
+			<false/>
+		</dict>
+		<key>Icon11</key>
+		<dict>
+			<key>CFBundleIconFiles</key>
+			<array>
+				<string>Icon-180</string>
+			</array>
+			<key>UIPrerenderedIcon</key>
+			<false/>
+		</dict>
+	</dict>
+	<key>CFBundlePrimaryIcon</key>
+		<dict>
+			<key>CFBundleIconFiles</key>
+			<array>
+				<string>Icon-180</string>
 				<string>Icon-120</string>
 				<string>Icon-76</string>
 				<string>Icon-76@2x</string>
@@ -35,6 +58,8 @@
 			</array>
 		</dict>
 	</dict>
+	<key>UIApplicationSupportsAlternateIcons</key>
+	<true/>
 	<key>CFBundleIdentifier</key>
 	<string>com.legacymusic.app</string>
 	<key>CFBundleInfoDictionaryVersion</key>
