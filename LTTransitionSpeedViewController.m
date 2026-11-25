@@ -1,4 +1,5 @@
 #import "LTTransitionSpeedViewController.h"
+#import "LTTheme.h"
 #import "LTTransitionSettings.h"
 
 @interface LTTransitionSpeedViewController ()
@@ -13,17 +14,17 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     if ([self respondsToSelector:@selector(setEdgesForExtendedLayout:)]) {
-        self.edgesForExtendedLayout = UIRectEdgeNone;
+        [(id)self setValue:[NSNumber numberWithInteger:0] forKey:@"edgesForExtendedLayout"];
     }
     self.title = @"Transition Speed";
-    self.view.backgroundColor = [UIColor colorWithWhite:0.15f alpha:1.0f];
+    self.view.backgroundColor = [LTTheme background];
 
     CGFloat width = self.view.bounds.size.width;
     CGFloat pad = 20.0f;
 
     // Description
     UILabel *desc = [[UILabel alloc] initWithFrame:CGRectMake(pad, 20, width - pad * 2, 40)];
-    desc.text = @"How fast in-app transitions play. Lower = faster.";
+    desc.text = @"How fast in-app transitions play. Left is slower, right is faster.";
     desc.font = [UIFont systemFontOfSize:14];
     desc.textColor = [UIColor lightGrayColor];
     desc.backgroundColor = [UIColor clearColor];
@@ -35,7 +36,9 @@
     self.valueLabel = [[UILabel alloc] initWithFrame:CGRectMake(pad, 70, width - pad * 2, 30)];
     self.valueLabel.text = [NSString stringWithFormat:@"%.1fx", [LTTransitionSettings speedMultiplier]];
     self.valueLabel.font = [UIFont boldSystemFontOfSize:22];
-    self.valueLabel.textColor = [UIColor colorWithRed:0.35f green:0.68f blue:0.88f alpha:1.0f];
+    self.valueLabel.textColor = [LTTheme isModern]
+        ? [LTTheme accent]
+        : [UIColor colorWithRed:0.35f green:0.68f blue:0.88f alpha:1.0f];
     self.valueLabel.backgroundColor = [UIColor clearColor];
     self.valueLabel.textAlignment = NSTextAlignmentCenter;
     [self.view addSubview:self.valueLabel];
@@ -46,6 +49,8 @@
     self.slider.maximumValue = 2.0f;
     self.slider.value = [LTTransitionSettings speedMultiplier];
     [self.slider addTarget:self action:@selector(sliderChanged:) forControlEvents:UIControlEventValueChanged];
+    if ([self.slider respondsToSelector:@selector(setMinimumTrackTintColor:)])
+        [self.slider setMinimumTrackTintColor:[LTTheme isModern] ? [LTTheme accent] : [UIColor colorWithRed:0.35f green:0.68f blue:0.88f alpha:1.0f]];
     [self.view addSubview:self.slider];
 
     self.fastLabel = [[UILabel alloc] initWithFrame:CGRectMake(pad, 158, width / 2.0f - pad, 20)];

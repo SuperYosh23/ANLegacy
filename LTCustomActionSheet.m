@@ -1,6 +1,8 @@
 #import "LTCustomActionSheet.h"
+#import <QuartzCore/QuartzCore.h>
 #import "LTTransitionSettings.h"
 #import "LTLog.h"
+#import "LTTheme.h"
 
 @interface LTCustomActionSheet ()
 @property (nonatomic, copy) NSString *titleString;
@@ -59,7 +61,7 @@
         CGRect sheet = CGRectMake(0, 0, sheetW, bottom + pad);
         self.frame = sheet;
         self.backgroundColor = [UIColor colorWithRed:0.25f green:0.25f blue:0.25f alpha:1.0f];
-        self.layer.cornerRadius = 12.0f;
+        self.layer.cornerRadius = [LTTheme largeCornerRadius];
         self.clipsToBounds = YES;
     }
     return self;
@@ -89,13 +91,13 @@
     UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(dismiss)];
     [self.backgroundView addGestureRecognizer:tap];
 
-    [UIView animateWithDuration:[LTTransitionSettings durationFor:0.2f] animations:^{
+    [LTTransitionSettings animateWithDuration:0.2f animations:^{
         self.alpha = 1.0f;
     }];
 }
 
 - (void)dismiss {
-    [UIView animateWithDuration:[LTTransitionSettings durationFor:0.2f] animations:^{
+    [LTTransitionSettings animateWithDuration:0.2f animations:^{
         self.alpha = 0.0f;
     } completion:^(BOOL finished) {
         [self.backgroundView removeFromSuperview];

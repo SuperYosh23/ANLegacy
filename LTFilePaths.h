@@ -32,7 +32,8 @@ static inline NSString *LTDataDirectory(void) {
             if (LTDirectoryIsWritable(legacy)) {
                 dir = legacy;
             } else {
-                NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+                NSArray *docsArr = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+            NSString *docs = [docsArr count] ? [docsArr objectAtIndex:0] : nil;
                 dir = [docs stringByAppendingPathComponent:@"LegacyMusic"];
                 [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:NULL];
             }

@@ -3,11 +3,12 @@
 #import "LTPlaylistPicker.h"
 #import "LTPlayerController.h"
 #import "LTModel.h"
+#import "LTTransitionSettings.h"
 
 #define kLTSongMenuSheetTag 9001
 
 @interface LTSongMenu ()
-@property (nonatomic, weak) UIViewController *presentingController;
+@property (nonatomic, unsafe_unretained) UIViewController *presentingController;
 @property (nonatomic, strong) LTTrack *pendingTrack;
 @end
 
@@ -27,19 +28,27 @@
 }
 
 - (void)showPlaylistPickerForTrack:(LTTrack *)track {
+    __unsafe_unretained LTSongMenu *weakSelf = self;
     [LTPlaylistPicker presentFromViewController:self.presentingController
                                      panelTitle:track.title
                                       onPicked:^(LTLocalPlaylist *playlist) {
-        [[LTPlaylistStore sharedStore] addTrack:self.pendingTrack toPlaylist:playlist];
-        [self showToast:[NSString stringWithFormat:@"Added to %@", playlist.name]];
-        self.pendingTrack = nil;
+        // Use the captured track, not self.pendingTrack: the picker is presented
+        // asynchronously, and pendingTrack can be replaced while it is up.
+        [LTPlaylistStore addTrack:track
+                       toPlaylist:playlist
+                    confirmingFrom:weakSelf.presentingController
+                       completion:^(BOOL added) {
+            if (added) [weakSelf showToast:[NSString stringWithFormat:@"Added to %@", playlist.name]];
+            weakSelf.pendingTrack = nil;
+        }];
     } onCreateNew:^(NSString *name) {
         LTLocalPlaylist *playlist = [[LTPlaylistStore sharedStore] createPlaylistWithName:name];
-        if (playlist && self.pendingTrack) {
-            [[LTPlaylistStore sharedStore] addTrack:self.pendingTrack toPlaylist:playlist];
-            [self showToast:[NSString stringWithFormat:@"Added to %@", playlist.name]];
+        // A playlist that was just created is empty, so nothing can duplicate.
+        if (playlist) {
+            [LTPlaylistStore addTrack:track toPlaylist:playlist confirmingFrom:nil completion:nil];
+            [weakSelf showToast:[NSString stringWithFormat:@"Added to %@", playlist.name]];
         }
-        self.pendingTrack = nil;
+        weakSelf.pendingTrack = nil;
     }];
 }
 
@@ -89,7 +98,7 @@
     label.clipsToBounds = YES;
     label.text = text;
     [vc.view addSubview:label];
-    [UIView animateWithDuration:1.4 delay:1.0 options:UIViewAnimationOptionCurveEaseIn
+    [LTTransitionSettings animateWithDuration:1.4 delay:1.0 options:UIViewAnimationOptionCurveEaseIn
                      animations:^{ label.alpha = 0.0f; }
                      completion:^(BOOL finished) { [label removeFromSuperview]; }];
 }

@@ -1,3 +1,7 @@
+#import "LTPeekCoordinator.h"
+#import "LTTraitCompat.h"
+#import "LTPlaylistPeekViewController.h"
+#import "LTArtworkPeekViewController.h"
 #import "LTSearchViewController.h"
 #import "LTYouTubeClient.h"
 #import "LTModel.h"
@@ -13,19 +17,26 @@
 #import "LTGraphics.h"
 #import "LTSimpleCell.h"
 #import "LTTheme.h"
+#import "LTCardControls.h"
 #import "LTLog.h"
 #import <QuartzCore/QuartzCore.h>
+#import "LTThemedTableView.h"
+#import "LTTransitionSettings.h"
 
 @interface LTSearchViewController () <UISearchBarDelegate, UITableViewDataSource, UITableViewDelegate,
                                        UIActionSheetDelegate, UIAlertViewDelegate>
 @property (nonatomic, strong) UISearchBar *searchBar;
 @property (nonatomic, strong) UISegmentedControl *segControl;
+@property (nonatomic, strong) LTPeekCoordinator *peekCoordinator;
 @property (nonatomic, strong) UITableView *tableView;
 @property (nonatomic, strong) NSMutableArray *results;
 @property (nonatomic, strong) NSArray *localResults;
 @property (nonatomic, copy) NSString *currentQuery;
 @property (nonatomic, assign) BOOL loading;
 @property (nonatomic, strong) LTTrack *pendingTrack;
+// Rows awaiting an avatar-upgrade reload, coalesced onto one table update.
+@property (nonatomic, strong) NSMutableArray *pendingAvatarReloads;
+@property (nonatomic, assign) BOOL avatarReloadScheduled;
 @property (nonatomic, strong) UILabel *emptyLabel;
 @property (nonatomic, assign) BOOL ignorePlaylistChanges;
 @property (nonatomic, assign) BOOL showingHistory;
@@ -49,7 +60,7 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     if ([self respondsToSelector:@selector(setEdgesForExtendedLayout:)]) {
-        self.edgesForExtendedLayout = UIRectEdgeNone;
+        [(id)self setValue:[NSNumber numberWithInteger:0] forKey:@"edgesForExtendedLayout"];
     }
     self.view.backgroundColor = [LTTheme background];
 
@@ -69,19 +80,27 @@
         NSArray *types = @[@"songs", @"videos", @"albums", @"artists"];
         NSUInteger defaultIndex = [types indexOfObject:self.type];
         if (defaultIndex == NSNotFound) defaultIndex = 0;
-        self.segControl = [[UISegmentedControl alloc] initWithItems:@[@"Songs", @"Videos", @"Albums", @"Artists"]];
+        // The modern theme draws its own segmented control; the native one is
+        // exactly right in the native theme.
+        NSArray *segments = @[@"Songs", @"Videos", @"Albums", @"Artists"];
+        self.segControl = [LTTheme isModern]
+            ? (UISegmentedControl *)[[LTCardSegmented alloc] initWithItems:segments]
+            : [[LTCompactSegmentedControl alloc] initWithItems:segments];
         self.segControl.selectedSegmentIndex = (NSInteger)defaultIndex;
         [self.segControl addTarget:self action:@selector(segmentChanged:) forControlEvents:UIControlEventValueChanged];
         self.segControl.frame = CGRectMake(8, 50, bounds.size.width - 16, 32);
         self.segControl.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleRightMargin | UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleBottomMargin;
         [self.view addSubview:self.segControl];
+        // -viewDidLayoutSubviews is iOS 5+. On iOS 4 it never runs, so the
+        // compact style and font have to be applied here as well.
+        [self lt_applySegmentedFont];
 
         tableY = 88;
     } else {
         self.title = @"Playlists";
     }
 
-    self.tableView = [[UITableView alloc] initWithFrame:CGRectMake(0, tableY, bounds.size.width, bounds.size.height - tableY)
+    self.tableView = [[LTThemedTableView alloc] initWithFrame:CGRectMake(0, tableY, bounds.size.width, bounds.size.height - tableY)
                                                   style:UITableViewStylePlain];
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
@@ -96,6 +115,31 @@
     self.emptyLabel.numberOfLines = 0;
     self.emptyLabel.hidden = YES;
     [self.view addSubview:self.emptyLabel];
+    // 3D Touch peek on playlist rows; a no-op below iOS 9.
+    __unsafe_unretained LTSearchViewController *peekSelf = self;
+    self.peekCoordinator = [[LTPeekCoordinator alloc] initWithOwner:self
+                                                      sourceView:self.tableView
+                                                   peekProvider:^UIViewController *(CGPoint point) {
+        return [peekSelf peekViewControllerAtPoint:point];
+    } commit:^(UIViewController *peek) {
+        [peekSelf handlePeekCommit:peek];
+    }];
+    [self.peekCoordinator registerPreview];
+}
+
+// Kept in one place so iOS 4 (which never sends -viewDidLayoutSubviews) and
+// rotation both get the same compact style and font as iOS 5+.
+- (void)lt_applySegmentedFont {
+    if (!self.segControl) return;
+    CGFloat width = self.view.bounds.size.width;
+    if (width < 1.0f) return;
+    UIFont *font = (width < 360.0f) ? [UIFont boldSystemFontOfSize:9]
+                                    : [UIFont boldSystemFontOfSize:11];
+    [LTTheme setTitleFont:font forSegmentedControl:self.segControl];
+}
+
+- (void)didRotateFromInterfaceOrientation:(UIInterfaceOrientation)fromInterfaceOrientation {
+    [self lt_applySegmentedFont];
 }
 
 - (void)viewDidLayoutSubviews {
@@ -106,10 +150,7 @@
 
     BOOL searchMode = ![self isPlaylistsMode];
     if (searchMode) {
-        UIFont *font = (width < 360.0f) ? [UIFont boldSystemFontOfSize:9]
-                                        : [UIFont boldSystemFontOfSize:11];
-        [self.segControl setTitleTextAttributes:@{UITextAttributeFont: font}
-                                       forState:UIControlStateNormal];
+        [self lt_applySegmentedFont];
         self.segControl.frame = CGRectMake(8, 50, width - 16, 32);
         self.searchBar.frame = CGRectMake(0, 0, width, 44);
     }
@@ -143,7 +184,7 @@
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
-- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+- (void)traitCollectionDidChange:(id)previousTraitCollection {
     [super traitCollectionDidChange:previousTraitCollection];
     self.view.backgroundColor = [LTTheme background];
     self.tableView.backgroundColor = [LTTheme background];
@@ -173,7 +214,7 @@
     query = [query stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (!query.length) return nil;
     NSMutableArray *matches = [NSMutableArray array];
-    for (LTTrack *track in [[LTPlaylistStore sharedStore] downloadedTracks]) {
+    for (LTTrack *track in [[LTPlaylistStore sharedStore] libraryTracks]) {
         NSString *title = track.title.length ? track.title : @"";
         NSString *artist = track.artist.length ? track.artist : @"";
         if ([title rangeOfString:query options:NSCaseInsensitiveSearch].location != NSNotFound ||
@@ -276,11 +317,11 @@
         self.localResults = nil;
     }
     LTLog(@"SEARCH query=%@ type=%@ downloaded=%d local=%d showHist=%d",
-          query, type, (int)[[[LTPlaylistStore sharedStore] downloadedTracks] count],
+          query, type, (int)[[[LTPlaylistStore sharedStore] libraryTracks] count],
           (int)self.localResults.count, (int)self.showingHistory);
     [self.tableView reloadData];
 
-    __weak LTSearchViewController *weakSelf = self;
+    __unsafe_unretained LTSearchViewController *weakSelf = self;
     void (^finish)(NSArray *, NSError *) = ^(NSArray *items, NSError *error) {
         LTSearchViewController *strongSelf = weakSelf;
         if (!strongSelf) return;
@@ -310,22 +351,80 @@
     }
 }
 
+// Which section the remote (online) results actually live in. Whenever a query
+// is running there is also a local on-device section, and those results sit in
+// section 0 with the remote ones pushed down to section 1. Reloading a row in
+// the wrong section throws NSInternalInconsistencyException the moment the row
+// number runs past the local section's row count, which is exactly what
+// searching for an artist does.
+- (NSInteger)remoteResultsSection {
+    if ([self isPlaylistsMode]) return 0;
+    return [self hasLocalSection] ? 1 : 0;
+}
+
+// Avatar lookups all land back in the same runloop burst, and reloading rows
+// while the table is still processing an earlier reload is itself a throw. Queue
+// the rows and apply them once, coalesced, on the next turn of the runloop.
+- (void)queueAvatarRowReloadForResultIndex:(NSUInteger)resultIndex {
+    if (!self.pendingAvatarReloads) self.pendingAvatarReloads = [NSMutableArray array];
+
+    BOOL alreadyQueued = NO;
+    for (NSIndexPath *existing in self.pendingAvatarReloads) {
+        if (existing.row == (NSInteger)resultIndex && existing.section == [self remoteResultsSection]) {
+            alreadyQueued = YES;
+            break;
+        }
+    }
+    if (alreadyQueued) return;
+    [self.pendingAvatarReloads addObject:
+     [NSIndexPath indexPathForRow:(NSInteger)resultIndex inSection:[self remoteResultsSection]]];
+
+    if (self.avatarReloadScheduled) return;
+    self.avatarReloadScheduled = YES;
+    __unsafe_unretained LTSearchViewController *weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        LTSearchViewController *strongSelf = weakSelf;
+        if (!strongSelf) return;
+        strongSelf.avatarReloadScheduled = NO;
+        [strongSelf flushAvatarRowReloads];
+    });
+}
+
+- (void)flushAvatarRowReloads {
+    NSArray *pending = [self.pendingAvatarReloads copy];
+    [self.pendingAvatarReloads removeAllObjects];
+    if (!pending.count) return;
+
+    // Ask the table how many rows it believes each section has, right now.
+    // By the time this runs the query may have been replaced, or the local
+    // section may have emptied, so nothing here may trust the earlier numbers.
+    NSMutableArray *valid = [NSMutableArray array];
+    for (NSIndexPath *path in pending) {
+        if (path.section >= [self.tableView numberOfSections]) continue;
+        if (path.row >= [self.tableView numberOfRowsInSection:path.section]) continue;
+        [valid addObject:path];
+    }
+    if (!valid.count) return;
+    [self.tableView reloadRowsAtIndexPaths:valid withRowAnimation:UITableViewRowAnimationNone];
+}
+
 - (void)upgradeArtistAvatars {
     for (NSUInteger i = 0; i < self.results.count; i++) {
         id item = [self.results objectAtIndex:i];
         if (![item isKindOfClass:[LTBrowseItem class]]) continue;
         LTBrowseItem *bi = item;
         if (bi.kind != LTBrowseKindArtist || !bi.browseId.length) continue;
-        __weak LTSearchViewController *weakSelf = self;
+        __unsafe_unretained LTSearchViewController *weakSelf = self;
         [[LTYouTubeClient sharedClient] channelAvatarURLForBrowseId:bi.browseId completion:^(NSString *avatarURL) {
             LTSearchViewController *strongSelf = weakSelf;
             if (!strongSelf || !avatarURL.length) return;
             NSString *square = [[LTYouTubeClient sharedClient] channelAvatarURL:avatarURL size:160];
             bi.thumbnailURL = square;
-            if (i < strongSelf.results.count && [strongSelf.results objectAtIndex:i] == bi) {
-                [strongSelf.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:(NSInteger)i inSection:0]]
-                                            withRowAnimation:UITableViewRowAnimationNone];
-            }
+            // Only touch the table if this exact item is still at this exact
+            // index; a newer search may have replaced the whole result set.
+            if (i >= strongSelf.results.count) return;
+            if ([strongSelf.results objectAtIndex:i] != bi) return;
+            [strongSelf queueAvatarRowReloadForResultIndex:i];
         }];
     }
 }
@@ -353,7 +452,7 @@
     label.clipsToBounds = YES;
     label.text = text;
     [self.view addSubview:label];
-    [UIView animateWithDuration:1.4 delay:1.0 options:UIViewAnimationOptionCurveEaseIn
+    [LTTransitionSettings animateWithDuration:1.4 delay:1.0 options:UIViewAnimationOptionCurveEaseIn
                      animations:^{ label.alpha = 0.0f; }
                      completion:^(BOOL finished) { [label removeFromSuperview]; }];
 }
@@ -373,19 +472,27 @@
 }
 
 - (void)showPlaylistPickerForTrack:(LTTrack *)track {
+    __unsafe_unretained LTSearchViewController *weakSelf = self;
     [LTPlaylistPicker presentFromViewController:self
                                      panelTitle:track.title
                                       onPicked:^(LTLocalPlaylist *playlist) {
-        [[LTPlaylistStore sharedStore] addTrack:self.pendingTrack toPlaylist:playlist];
-        [self showToast:[NSString stringWithFormat:@"Added to %@", playlist.name]];
-        self.pendingTrack = nil;
+        // Captured track, not self.pendingTrack: the picker is presented
+        // asynchronously and pendingTrack can be replaced while it is up.
+        [LTPlaylistStore addTrack:track
+                       toPlaylist:playlist
+                    confirmingFrom:weakSelf
+                       completion:^(BOOL added) {
+            if (added) [weakSelf showToast:[NSString stringWithFormat:@"Added to %@", playlist.name]];
+            weakSelf.pendingTrack = nil;
+        }];
     } onCreateNew:^(NSString *name) {
         LTLocalPlaylist *playlist = [[LTPlaylistStore sharedStore] createPlaylistWithName:name];
-        if (playlist && self.pendingTrack) {
-            [[LTPlaylistStore sharedStore] addTrack:self.pendingTrack toPlaylist:playlist];
-            [self showToast:[NSString stringWithFormat:@"Added to %@", playlist.name]];
+        // A playlist that was just created is empty, so nothing can duplicate.
+        if (playlist) {
+            [LTPlaylistStore addTrack:track toPlaylist:playlist confirmingFrom:nil completion:nil];
+            [weakSelf showToast:[NSString stringWithFormat:@"Added to %@", playlist.name]];
         }
-        self.pendingTrack = nil;
+        weakSelf.pendingTrack = nil;
     }];
 }
 
@@ -421,7 +528,7 @@
                 if ([[LTPlaylistStore sharedStore] isDownloading]) {
                     [self showToast:@"A download is already in progress"];
                 } else {
-                    __weak LTSearchViewController *weakSelf = self;
+                    __unsafe_unretained LTSearchViewController *weakSelf = self;
                     [[LTPlaylistStore sharedStore] downloadTracks:@[track] completion:^{
                         [weakSelf showToast:@"Downloaded"];
                     }];
@@ -504,6 +611,15 @@
         return (NSInteger)[[[LTPlaylistStore sharedStore] searchHistory] count];
     }
     return (NSInteger)self.results.count;
+}
+
+// The section title, drawn by us so it can be themed. UITableView draws its
+// own header titles in a colour that cannot be set, which is black on every
+// iOS before 13.
+- (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
+    NSString *title = [self tableView:tableView titleForHeaderInSection:section];
+    if (!title.length) return nil;
+    return [LTSectionHeaderView headerWithTitle:title];
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
@@ -591,19 +707,7 @@
         cell.detailTextLabel.text = [NSString stringWithFormat:@"%d tracks", (int)playlist.tracks.count];
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         cell.imageView.image = nil;
-        if (playlist.coverPath.length) {
-            cell.imageView.image = [UIImage imageWithContentsOfFile:playlist.coverPath];
-        } else if (playlist.tracks.count) {
-            LTTrack *first = [playlist.tracks objectAtIndex:0];
-            if (first.thumbnailURL.length) {
-                NSString *artURL = [[LTYouTubeClient sharedClient] highResThumbnailURL:first.thumbnailURL];
-                cell.imageView.image = nil;
-                __weak UITableViewCell *weakCell = cell;
-                [[LTYouTubeClient sharedClient] loadImageWithURL:artURL completion:^(UIImage *image) {
-                    if (image) weakCell.imageView.image = image;
-                }];
-            }
-        }
+        [LTPlaylistStore providePlaylistArtwork:playlist toCell:cell];
     }
     return cell;
 }
@@ -626,12 +730,15 @@
     id item = [self.results objectAtIndex:(NSUInteger)indexPath.row];
     if (![item isKindOfClass:[LTLocalPlaylist class]]) return;
     LTLocalPlaylist *playlist = item;
-    self.ignorePlaylistChanges = YES;
-    [[LTPlaylistStore sharedStore] deletePlaylist:playlist];
-    [self.results removeObject:playlist];
-    [tableView deleteRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationAutomatic];
-    self.ignorePlaylistChanges = NO;
-    [self refreshEmptyState];
+    // Let the store drive the refresh: -deletePlaylist: broadcasts the change and
+    // -storeDidChange: rebuilds the model from it. Suppressing that notification
+    // across the prompt, as this used to, is what left deleted rows on screen
+    // until the next launch.
+    __unsafe_unretained LTSearchViewController *weakSelf = self;
+    [LTPlaylistStore confirmDeletePlaylist:playlist presenting:self completion:^(BOOL deleted) {
+        if (!deleted) return;
+        [weakSelf refreshEmptyState];
+    }];
 }
 
 - (void)refreshEmptyState {
@@ -729,6 +836,47 @@
         }
     }
     return tracks;
+}
+#pragma mark - 3D Touch peek
+
+// Only local playlists are peekable; browse results are pushed by tap and have
+// nothing to preview, so they simply return nil.
+- (LTLocalPlaylist *)peekPlaylistAtIndexPath:(NSIndexPath *)indexPath {
+    if (self.showingHistory) return nil;
+    id item = [self itemAtIndexPath:indexPath];
+    if (![item isKindOfClass:[LTLocalPlaylist class]]) return nil;
+    return (LTLocalPlaylist *)item;
+}
+
+- (void)peekCommitPlaylist:(LTLocalPlaylist *)playlist {
+    if (!playlist.identifier.length) return;
+    LTLocalPlaylistDetailViewController *detail = [[LTLocalPlaylistDetailViewController alloc] initWithPlaylist:playlist];
+    [self.navigationController pushViewController:detail animated:YES];
+}
+
+// Results mix songs and playlists in one table, so a single preview covers
+// both: playlist rows peek the playlist, song rows peek their artwork.
+- (UIViewController *)peekViewControllerAtPoint:(CGPoint)point {
+    NSIndexPath *indexPath = [self.tableView indexPathForRowAtPoint:point];
+    if (!indexPath) return nil;
+
+    LTLocalPlaylist *playlist = [self peekPlaylistAtIndexPath:indexPath];
+    if (playlist) return [[LTPlaylistPeekViewController alloc] initWithPlaylist:playlist];
+
+    if (self.showingHistory) return nil;
+    id item = [self itemAtIndexPath:indexPath];
+    if (![item isKindOfClass:[LTTrack class]]) return nil;
+    UIImage *art = [LTPeekCoordinator artworkForRowAtIndexPath:indexPath inTableView:self.tableView];
+    return [[LTArtworkPeekViewController alloc] initWithTrack:(LTTrack *)item image:art];
+}
+
+- (void)handlePeekCommit:(UIViewController *)peek {
+    if (![peek isKindOfClass:[LTPlaylistPeekViewController class]]) return;
+    [self peekCommitPlaylist:[(LTPlaylistPeekViewController *)peek playlist]];
+}
+- (void)focusSearchField {
+    [self.view layoutIfNeeded];
+    [self.searchBar becomeFirstResponder];
 }
 
 @end

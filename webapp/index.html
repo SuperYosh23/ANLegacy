@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="/icon.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Google+Sans+Flex:opsz,wght@6..144,400;6..144,500;6..144,600;6..144,700&display=swap" rel="stylesheet">
+    <title>audioNINJA</title>
+    <!-- Polyfills for the iOS app's web view, which runs on iOS 9 and is
+         missing fetch, URLSearchParams and a few other newer APIs. Also
+         reports uncaught errors to the phone, so a blank page is diagnosable.
+         Deferred, like the app's own script: both run after the document has
+         been parsed, in the order they appear here, so the polyfills are
+         always installed before the app looks for them. -->
+    <script defer src="./legacy-polyfills.js"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

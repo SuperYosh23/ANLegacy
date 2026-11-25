@@ -1,4 +1,5 @@
 #import "LTRecentsTileSizeViewController.h"
+#import "LTTheme.h"
 #import "LTHomeViewController.h"
 
 @interface LTRecentsTileSizeViewController ()
@@ -13,10 +14,10 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     if ([self respondsToSelector:@selector(setEdgesForExtendedLayout:)]) {
-        self.edgesForExtendedLayout = UIRectEdgeNone;
+        [(id)self setValue:[NSNumber numberWithInteger:0] forKey:@"edgesForExtendedLayout"];
     }
     self.title = @"Recents Tile Size";
-    self.view.backgroundColor = [UIColor colorWithWhite:0.15f alpha:1.0f];
+    self.view.backgroundColor = [LTTheme background];
 
     CGFloat width = self.view.bounds.size.width;
     CGFloat pad = 20.0f;

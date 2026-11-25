@@ -1,4 +1,5 @@
 #import "LTStatsDetailViewController.h"
+#import "LTTraitCompat.h"
 #import "LTPlaylistStore.h"
 #import "LTPlayerController.h"
 #import "LTTabBarController.h"
@@ -6,6 +7,7 @@
 #import "LTYouTubeClient.h"
 #import "LTSimpleCell.h"
 #import "LTTheme.h"
+#import "LTThemedTableView.h"
 
 @interface LTStatsDetailViewController ()
 @end
@@ -37,13 +39,13 @@ static NSString *LTDetailFormatDuration(NSTimeInterval seconds) {
 - (void)viewDidLoad {
     [super viewDidLoad];
     if ([self respondsToSelector:@selector(setEdgesForExtendedLayout:)]) {
-        self.edgesForExtendedLayout = UIRectEdgeNone;
+        [(id)self setValue:[NSNumber numberWithInteger:0] forKey:@"edgesForExtendedLayout"];
     }
     self.title = (_type == LTStatsDetailTypeTracks) ? @"Most Played" : @"Top Artists";
     self.view.backgroundColor = [LTTheme groupedBackground];
 
     CGRect bounds = self.view.bounds;
-    _tableView = [[UITableView alloc] initWithFrame:CGRectMake(0, 0, bounds.size.width, bounds.size.height)
+    _tableView = [[LTThemedTableView alloc] initWithFrame:CGRectMake(0, 0, bounds.size.width, bounds.size.height)
                                               style:UITableViewStyleGrouped];
     _tableView.dataSource = self;
     _tableView.delegate = self;
@@ -52,7 +54,7 @@ static NSString *LTDetailFormatDuration(NSTimeInterval seconds) {
     [self.view addSubview:_tableView];
 }
 
-- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+- (void)traitCollectionDidChange:(id)previousTraitCollection {
     [super traitCollectionDidChange:previousTraitCollection];
     self.view.backgroundColor = [LTTheme groupedBackground];
     _tableView.backgroundColor = [LTTheme groupedBackground];

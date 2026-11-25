@@ -1,11 +1,12 @@
 #import "LTSafeArea.h"
 
+#import <objc/message.h>
+
 UIEdgeInsets LTSafeAreaInsets(UIView *view) {
-#if defined(__IPHONE_11_0) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 110000
-    if (@available(iOS 11.0, *)) {
-        if (view) return view.safeAreaInsets;
+    if (view && [view respondsToSelector:@selector(safeAreaInsets)]) {
+        UIEdgeInsets (*fn)(id, SEL) = (UIEdgeInsets (*)(id, SEL))objc_msgSend;
+        return fn(view, @selector(safeAreaInsets));
     }
-#endif
     return UIEdgeInsetsZero;
 }
 

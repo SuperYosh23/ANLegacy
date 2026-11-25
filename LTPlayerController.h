@@ -7,6 +7,8 @@ extern NSString *const LTPlayerStateDidChangeNotification;
 extern NSString *const LTPlayerDidFinishQueueNotification;
 extern NSString *const LTPlayerQueueDidChangeNotification;
 
+@class UIEvent;
+
 typedef NS_ENUM(NSInteger, LTRepeatMode) {
     LTRepeatModeOff = 0,
     LTRepeatModeAll,
@@ -27,6 +29,8 @@ typedef NS_ENUM(NSInteger, LTRepeatMode) {
 @property (nonatomic, readonly) NSTimeInterval currentTime;
 @property (nonatomic, readonly) NSInteger audioBitrateKbps;
 @property (nonatomic, strong) NSString *queueSourceName;
+@property (nonatomic, copy) NSString *radioSeedVideoId;
+@property (nonatomic, assign) BOOL radioEnabled;
 @property (nonatomic, assign) float volume;
 
 - (void)playQueue:(NSArray *)tracks atIndex:(NSInteger)index;
@@ -44,6 +48,16 @@ typedef NS_ENUM(NSInteger, LTRepeatMode) {
 - (void)pausePlayback;
 - (void)seekToTime:(NSTimeInterval)time;
 - (void)toggleShuffle;
+- (void)extendRadio;
 - (void)cycleRepeatMode;
+
+// Shared by every responder that can receive lock-screen/headphone events.
+- (void)handleRemoteControlEvent:(UIEvent *)event;
+
+- (BOOL)isStationBlacklistedVideoId:(NSString *)videoId;
+- (void)blacklistVideoIdForCurrentStation:(NSString *)videoId;
+- (NSArray *)likedVideoIdsForCurrentStation;
+- (void)addLikedVideoIdForCurrentStation:(NSString *)videoId;
+- (BOOL)isStationLikedVideoId:(NSString *)videoId;
 
 @end

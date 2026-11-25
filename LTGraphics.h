@@ -17,10 +17,13 @@
 + (UIImage *)libraryIcon;
 
 + (UIImage *)playIcon;
++ (UIImage *)musicIcon;
 + (UIImage *)shuffleIcon;
 + (UIImage *)downloadIcon;
 + (UIImage *)checkmarkIcon;
++ (UIImage *)removeIcon;
 + (UIImage *)renameIcon;
++ (UIColor *)actionIconColor;
 
 + (UIImage *)blurredImageFromImage:(UIImage *)image;
 

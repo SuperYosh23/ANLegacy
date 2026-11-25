@@ -1,12 +1,17 @@
 #import "LTTabBarController.h"
+#import "LTTheme.h"
+#import "LTCardNavBar.h"
 #import "LTAppTabBar.h"
 #import "LTTransitionSettings.h"
+#import "LTPlayerController.h"
 #import "LTLog.h"
 #import <QuartzCore/QuartzCore.h>
+#import <CoreFoundation/CoreFoundation.h>
 
 @interface LTTabBarController () <UITabBarControllerDelegate>
 @property (nonatomic, strong) UIImageView *contentSnapshot;
 @property (nonatomic, assign) NSInteger slideFromIndex;
+@property (nonatomic, strong) UIImageView *outgoingOverlay;
 @property (nonatomic, assign) NSInteger slideToIndex;
 @property (nonatomic, assign) BOOL fading;
 @property (nonatomic, assign) CGRect slideContentRect;
@@ -34,6 +39,52 @@
     [super viewDidLoad];
     self.delegate = self;
     self.lastAnnouncedIndex = NSNotFound;
+    [self lt_applyModernChrome];
+}
+
+// Remote-control events start at the first responder and travel up the chain.
+// The app delegate is not reliably in that chain on iOS 4, but this controller
+// is the window's root on iPhone/iPod touch, so it is. Becoming first responder
+// here makes the lock screen and wired earbuds work without opening the app.
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    [[UIApplication sharedApplication] beginReceivingRemoteControlEvents];
+    [self becomeFirstResponder];
+}
+
+- (BOOL)canBecomeFirstResponder {
+    return YES;
+}
+
+- (void)remoteControlReceivedWithEvent:(UIEvent *)event {
+    [[LTPlayerController sharedController] handleRemoteControlEvent:event];
+}
+
+// Puts the Material 3 navigation and tab bars in place.
+//
+// The navigation bar is swapped the same way the tab bar is - by replacing the
+// controller's own bar before it builds one - so every push and pop, the title
+// and the back button all keep working exactly as before. Only the painting
+// differs.
+- (void)lt_applyModernChrome {
+    if (![LTTheme isModern]) return;
+
+    // On iOS 9+ the navigation controller is created with a standard bar
+    // (initWithNavigationBarClass: is unreliable there). Swapping the bar by
+    // KVC after the controller has built its view does not change the bar that
+    // is actually on screen, so paint the existing bar directly instead.
+    BOOL styleStandardBar = [[[UIDevice currentDevice] systemVersion] floatValue] >= 9.0f;
+
+    for (UIViewController *controller in self.viewControllers) {
+        if (![controller isKindOfClass:[UINavigationController class]]) continue;
+        UINavigationController *nav = (UINavigationController *)controller;
+        if (styleStandardBar) {
+            [LTCardNavBar applyModernStyleToNavigationBar:nav.navigationBar];
+            continue;
+        }
+        if ([nav.navigationBar isKindOfClass:[LTCardNavBar class]]) continue;
+        [nav setValue:[[LTCardNavBar alloc] init] forKey:@"navigationBar"];
+    }
 }
 
 // Dock mode: only the Now Playing tab (the last one) may rotate into landscape
@@ -44,12 +95,12 @@
     return YES;
 }
 
-- (UIInterfaceOrientationMask)supportedInterfaceOrientations {
+- (NSUInteger)supportedInterfaceOrientations {
     NSInteger playerIndex = (NSInteger)(self.viewControllers.count - 1);
     if ((NSInteger)self.selectedIndex == playerIndex) {
-        return UIInterfaceOrientationMaskAll;
+        return (NSUInteger)UIInterfaceOrientationMaskAll;
     }
-    return UIInterfaceOrientationMaskPortrait;
+    return (NSUInteger)UIInterfaceOrientationMaskPortrait;
 }
 
 // On the iPad the split container parks the tab bar away in landscape. Even so,
@@ -183,7 +234,7 @@ static BOOL LTPhoneDockKeepsTabBarVisible(void) {
     [self updateForcedHiddenState];
     [self assertForcedHiddenTabBarLayout];
     [self removeStaleTabBarSnapshot];
-    __weak LTTabBarController *weakSelf = self;
+    __unsafe_unretained LTTabBarController *weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
         [weakSelf removeStaleTabBarSnapshot];
     });
@@ -204,7 +255,7 @@ static BOOL LTPhoneDockKeepsTabBarVisible(void) {
               self.tabBarForcedHidden, (long)self.selectedIndex, (int)(bw > bh));
         if (self.tabBarForcedHidden) {
             [self logDockHierarchy];
-            __weak LTTabBarController *weakSelf = self;
+            __unsafe_unretained LTTabBarController *weakSelf = self;
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{
                 [weakSelf logSettledDockState];
@@ -258,15 +309,69 @@ static BOOL LTPhoneDockKeepsTabBarVisible(void) {
     if (rect.size.width < 1.0f || rect.size.height < 1.0f) return nil;
     CGSize px = CGSizeMake(ceilf(rect.size.width * scale), ceilf(rect.size.height * scale));
     if (px.width < 1.0f || px.height < 1.0f) return nil;
+    // TEMP instrumentation: tab switching had a ~1s stall on the 3GS. Measuring
+    // where it goes rather than guessing. Remove once the cause is fixed.
+    CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();
     UIGraphicsBeginImageContext(px);
     CGContextRef ctx = UIGraphicsGetCurrentContext();
     CGContextScaleCTM(ctx, scale, scale);
     if (rect.origin.x != 0.0f || rect.origin.y != 0.0f) {
         CGContextTranslateCTM(ctx, -rect.origin.x, -rect.origin.y);
     }
+    // Prefer drawViewHierarchyInRect:afterScreenUpdates: where it exists (iOS 7+).
+    // renderInContext: rasterises the whole hierarchy in software on the CPU,
+    // which on a 3GS is a full-screen software render of every cell, image and
+    // custom drawRect in the outgoing tab, done synchronously on the main thread
+    // in the middle of the switch. That was the dominant cost of changing tabs.
+    // The iOS 7 path is backed by the GPU and captures the already-composited
+    // result, so it is far cheaper. iOS 6 has no such API and keeps the old
+    // path -- which means the 3GS, the slowest device, is the one that cannot
+    // avoid it.
+    //
+    // Both calls honour the context's CTM and take `rect` in the view's own
+    // coordinates, so the scale/translate above applies identically either way.
+    //
+    // FALLBACK: drawViewHierarchyInRect:afterScreenUpdates: requires the view to
+    // be in a visible window. If it returns nil (e.g. view is being torn down),
+    // we fall back to renderInContext: which works on any layer.
+    SEL hierarchySel = @selector(drawViewHierarchyInRect:afterScreenUpdates:);
+    BOOL gpuBacked = [view respondsToSelector:hierarchySel];
+    if (gpuBacked) {
+        NSMethodSignature *sig = [view methodSignatureForSelector:@selector(drawViewHierarchyInRect:afterScreenUpdates:)];
+        if (sig) {
+            NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+            [inv setSelector:@selector(drawViewHierarchyInRect:afterScreenUpdates:)];
+            [inv setTarget:view];
+            CGRect r = rect;
+            BOOL after = NO;
+            [inv setArgument:&r atIndex:2];
+            [inv setArgument:&after atIndex:3];
+            [inv invoke];
+        }
+        // If the GPU path failed (returns nil), fall back to the CPU path.
+        UIImage *gpuImage = UIGraphicsGetImageFromCurrentImageContext();
+        if (gpuImage) {
+            UIGraphicsEndImageContext();
+            LTLog(@"TABPROF snapshot gpu=1 %.0fx%.0f took=%.0fms",
+                  (double)px.width, (double)px.height,
+                  (CFAbsoluteTimeGetCurrent() - t0) * 1000.0);
+            return gpuImage;
+        }
+        UIGraphicsEndImageContext();
+        // Restart context for fallback
+        UIGraphicsBeginImageContext(px);
+        ctx = UIGraphicsGetCurrentContext();
+        CGContextScaleCTM(ctx, scale, scale);
+        if (rect.origin.x != 0.0f || rect.origin.y != 0.0f) {
+            CGContextTranslateCTM(ctx, -rect.origin.x, -rect.origin.y);
+        }
+    }
     [view.layer renderInContext:ctx];
     UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
     UIGraphicsEndImageContext();
+    LTLog(@"TABPROF snapshot gpu=0 %.0fx%.0f took=%.0fms",
+          (double)px.width, (double)px.height,
+          (CFAbsoluteTimeGetCurrent() - t0) * 1000.0);
     return image;
 }
 
@@ -307,10 +412,81 @@ static BOOL LTPhoneDockKeepsTabBarVisible(void) {
     self.slideFromIndex = (NSInteger)tabBarController.selectedIndex;
     self.slideToIndex = (NSInteger)[tabBarController.viewControllers indexOfObject:viewController];
     self.slideContentRect = [self contentRectForTabBarController:tabBarController];
+    // The modern themes' crossfade needs the outgoing screen captured while it
+    // is still on screen. By the time the selection changes, the tab controller
+    // has already taken the view out of the hierarchy, so there is nothing
+    // left to capture.
+    self.outgoingOverlay = [self snapshotOverlayForView:fromView];
     return YES;
 }
 
+// A still of the outgoing screen, used as the first half of the modern
+// themes' crossfade.
+//
+// The view itself cannot be reused: it belongs to the tab controller, which
+// takes it out of the hierarchy when the selection changes. A snapshot is a
+// plain image and can be faded over the new screen freely.
+- (UIImageView *)snapshotOverlayForView:(UIView *)view {
+    if (!view || !view.window) return nil;
+    if (view.bounds.size.width <= 0.0f || view.bounds.size.height <= 0.0f) return nil;
+
+    UIGraphicsBeginImageContextWithOptions(view.bounds.size, YES, 0.0f);
+    if ([view respondsToSelector:@selector(drawViewHierarchyInRect:afterScreenUpdates:)]) {
+        NSMethodSignature *sig = [view methodSignatureForSelector:@selector(drawViewHierarchyInRect:afterScreenUpdates:)];
+        NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+        [inv setSelector:@selector(drawViewHierarchyInRect:afterScreenUpdates:)];
+        [inv setTarget:view];
+        CGRect rect = view.bounds;
+        BOOL after = NO;
+        [inv setArgument:&rect atIndex:2];
+        [inv setArgument:&after atIndex:3];
+        [inv invoke];
+    } else {
+        // iOS 6 and earlier: the layer can still be rendered into the context.
+        [view.layer renderInContext:UIGraphicsGetCurrentContext()];
+    }
+    UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    if (!image) return nil;
+
+    UIImageView *overlay = [[UIImageView alloc] initWithImage:image];
+    overlay.frame = view.frame;
+    overlay.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    overlay.userInteractionEnabled = NO;
+    return overlay;
+}
+
+// The modern themes crossfade between tabs: the outgoing screen fades out
+// while the incoming one fades in, over a fifth of a second. The native theme
+// keeps the instant switch it has always had.
+- (void)crossfadeWithOverlay:(UIImageView *)overlay to:(UIView *)incoming {
+    if (!incoming) return;
+    if (!overlay) {
+        incoming.alpha = 1.0f;
+        return;
+    }
+    // Above the content, below the tab bar.
+    [self.view insertSubview:overlay belowSubview:self.tabBar];
+    incoming.alpha = 0.0f;
+    // The crossfade follows the transition speed setting, like every other
+    // transition in the app. The base is a tenth of a second; the setting
+    // scales it, so the fastest it goes is a twentieth.
+    CGFloat duration = 0.1f;
+    [LTTransitionSettings animateWithDuration:duration
+                          delay:0.0f
+                        options:UIViewAnimationOptionCurveEaseOut
+                     animations:^{
+        incoming.alpha = 1.0f;
+        overlay.alpha = 0.0f;
+    } completion:^(BOOL finished) {
+        incoming.alpha = 1.0f;
+        [overlay removeFromSuperview];
+    }];
+}
+
 - (void)tabBarController:(UITabBarController *)tabBarController didSelectViewController:(UIViewController *)viewController {
+    // TEMP instrumentation: see -snapshotContentOfView. Remove once fixed.
+    CFAbsoluteTime tEnter = CFAbsoluteTimeGetCurrent();
     NSInteger fromIndex = self.slideFromIndex;
     NSInteger toIndex = (NSInteger)[tabBarController.viewControllers indexOfObject:viewController];
     if (fromIndex == toIndex) return;
@@ -322,41 +498,20 @@ static BOOL LTPhoneDockKeepsTabBarVisible(void) {
     if (forcingPortrait) return;
 
     // Animations disabled → instant switch.
-    if (![LTTransitionSettings animationsEnabled]) return;
+    if (![LTTransitionSettings animationsEnabled]) {
+        LTLog(@"TABPROF switch %ld->%ld total=%.0fms (animations off)", (long)fromIndex, (long)toIndex,
+              (CFAbsoluteTimeGetCurrent() - tEnter) * 1000.0);
+        return;
+    }
 
-    CGRect rect = self.slideContentRect;
-    if (rect.size.width < 1.0f) return;
-
-    // Render the outgoing content now (the incoming real view is already drawn
-    // underneath and stays fully sharp — we only fade the old content over it).
-    CGFloat scale = (NSInteger)[UIDevice currentDevice].systemVersion.intValue >= 7 ? 1.0f : 0.75f;
-    UINavigationController *fromNav = [self.viewControllers objectAtIndex:(NSUInteger)fromIndex];
-    UIView *fromView = [fromNav isKindOfClass:[UINavigationController class]] ? fromNav.view : tabBarController.view;
-    UIImage *image = [LTTabBarController snapshotContentOfView:fromView inRect:rect scale:scale];
-    if (!image) return;
-
-    UIImageView *snapshot = [[UIImageView alloc] initWithImage:image];
-    snapshot.frame = CGRectMake(rect.origin.x, rect.origin.y, rect.size.width, rect.size.height);
-
-    // Ensure the incoming view is in place (its bars stay; only content fades).
-    CGRect tabBounds = tabBarController.view.bounds;
-    viewController.view.frame =
-        CGRectMake(0.0f, 0.0f, tabBounds.size.width,
-                   tabBounds.size.height - [self effectiveTabBarHeightForBounds:tabBounds]);
-    [tabBarController.view bringSubviewToFront:viewController.view];
-    [tabBarController.view addSubview:snapshot];
-
-    self.fading = YES;
-    [UIView animateWithDuration:[LTTransitionSettings durationFor:0.14f]
-        delay:0.0f
-        options:UIViewAnimationOptionCurveEaseInOut
-        animations:^{
-            snapshot.alpha = 0.0f;
-        }
-        completion:^(BOOL finished) {
-            [snapshot removeFromSuperview];
-            self.fading = NO;
-        }];
+    // The modern themes crossfade; the native theme switches instantly.
+    if ([LTTheme isModern]) {
+        UIImageView *overlay = self.outgoingOverlay;
+        self.outgoingOverlay = nil;
+        [self crossfadeWithOverlay:overlay to:viewController.view];
+    }
+    LTLog(@"TABPROF switch %ld->%ld total=%.0fms", (long)fromIndex, (long)toIndex,
+          (CFAbsoluteTimeGetCurrent() - tEnter) * 1000.0);
 }
 
 #pragma mark - Navigation

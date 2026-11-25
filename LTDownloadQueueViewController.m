@@ -1,6 +1,7 @@
 #import "LTDownloadQueueViewController.h"
 #import "LTPlaylistStore.h"
 #import "LTModel.h"
+#import "LTThemedTableView.h"
 
 @interface LTDownloadQueueViewController () <UITableViewDataSource, UITableViewDelegate>
 @property (nonatomic, strong) UITableView *tableView;
@@ -11,6 +12,7 @@
 @property (nonatomic, strong) NSArray *tracks;
 @end
 
+#import <QuartzCore/QuartzCore.h>
 @implementation LTDownloadQueueViewController
 
 - (void)viewDidLoad {
@@ -18,7 +20,7 @@
     self.title = @"Download Queue";
     self.view.backgroundColor = [UIColor colorWithWhite:0.07 alpha:1.0f];
     if ([self respondsToSelector:@selector(setEdgesForExtendedLayout:)]) {
-        self.edgesForExtendedLayout = UIRectEdgeNone;
+        [(id)self setValue:[NSNumber numberWithInteger:0] forKey:@"edgesForExtendedLayout"];
     }
     [self buildHeader];
     [self buildTable];
@@ -79,7 +81,7 @@
 }
 
 - (void)buildTable {
-    self.tableView = [[UITableView alloc] initWithFrame:CGRectMake(0, 58, self.view.bounds.size.width, self.view.bounds.size.height - 58)
+    self.tableView = [[LTThemedTableView alloc] initWithFrame:CGRectMake(0, 58, self.view.bounds.size.width, self.view.bounds.size.height - 58)
                                                   style:UITableViewStylePlain];
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
@@ -87,7 +89,7 @@
     self.tableView.separatorColor = [UIColor colorWithWhite:0.25 alpha:1.0f];
     self.tableView.rowHeight = 46.0f;
     if ([self.tableView respondsToSelector:@selector(setCellLayoutMarginsFollowReadableWidth:)]) {
-        self.tableView.cellLayoutMarginsFollowReadableWidth = NO;
+        if ([self.tableView respondsToSelector:@selector(setCellLayoutMarginsFollowReadableWidth:)]) [self.tableView setValue:@(NO) forKey:@"cellLayoutMarginsFollowReadableWidth"];
     }
     [self.view addSubview:self.tableView];
 }

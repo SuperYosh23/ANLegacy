@@ -37,4 +37,44 @@ static NSString *const LTAnimationsEnabledKey = @"LTAnimationsEnabled";
     return baseDuration / [self speedMultiplier];
 }
 
+#pragma mark - Shared animation entry points
+
++ (void)animateWithDuration:(CGFloat)baseDuration
+                 animations:(void (^)(void))animations {
+    [self animateWithDuration:baseDuration delay:0.0f options:0 animations:animations completion:nil];
+}
+
++ (void)animateWithDuration:(CGFloat)baseDuration
+                 animations:(void (^)(void))animations
+                 completion:(void (^)(BOOL finished))completion {
+    [self animateWithDuration:baseDuration delay:0.0f options:0 animations:animations completion:completion];
+}
+
++ (void)animateWithDuration:(CGFloat)baseDuration
+                      delay:(CGFloat)delay
+                    options:(UIViewAnimationOptions)options
+                 animations:(void (^)(void))animations
+                 completion:(void (^)(BOOL finished))completion {
+    if (!animations) return;
+    if (![self animationsEnabled]) {
+        // Apply the end state immediately so the UI never depends on the
+        // animation running, and still report completion to the caller.
+        animations();
+        if (completion) completion(YES);
+        return;
+    }
+
+    // Keep whatever curve the caller chose; otherwise use a gentle ease-in-out.
+    // BeginFromCurrentState stops a reversed/interrupted transition from jumping.
+    UIViewAnimationOptions opts = options | UIViewAnimationOptionBeginFromCurrentState;
+    UIViewAnimationOptions curveMask = (UIViewAnimationOptions)(0xFF << 16);
+    if ((opts & curveMask) == 0) opts |= UIViewAnimationOptionCurveEaseInOut;
+
+    [UIView animateWithDuration:[self durationFor:baseDuration]
+                          delay:[self durationFor:delay]
+                        options:opts
+                     animations:animations
+                     completion:completion];
+}
+
 @end

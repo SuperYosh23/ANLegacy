@@ -1,4 +1,5 @@
 #import "LTP2PSync.h"
+#import "S6JSON.h"
 #import "LTSyncServer.h"
 #import "LTPlaylistStore.h"
 #import "LTLog.h"
@@ -29,7 +30,7 @@ static NSMutableArray *LTP2PActiveSyncs;
 @property (nonatomic, strong) LTSyncServer *server;
 @property (nonatomic, strong) NSNetServiceBrowser *browser;
 @property (nonatomic, strong) NSMutableArray *resolvingServices;
-@property (nonatomic, weak) UIViewController *presenter;
+@property (nonatomic, unsafe_unretained) UIViewController *presenter;
 @property (nonatomic, strong) UIAlertView *statusAlert;
 @property (nonatomic, assign) BOOL sentOurPayload;
 @property (nonatomic, assign) BOOL finished;
@@ -64,13 +65,13 @@ static NSMutableArray *LTP2PActiveSyncs;
     // 1) Serve our own library on a Bonjour-published local TCP server.
     self.server = [[LTSyncServer alloc] init];
     self.server.serviceType = LTP2PServiceType;
-    __weak LTP2PSync *weakSelf = self;
+    LTP2PSync *blockSelf = self;
     self.server.requestHandler = ^NSData *(NSString *method, NSString *path, NSData *body, NSInteger *status) {
-        LTP2PSync *strongSelf = weakSelf;
+        LTP2PSync *strongSelf = blockSelf;
         if (!strongSelf) { *status = 500; return nil; }
         NSError *err = nil;
         if ([method isEqualToString:@"POST"] && [path hasPrefix:@"/api/merge"]) {
-            NSDictionary *incoming = [NSJSONSerialization JSONObjectWithData:body options:0 error:&err];
+            NSDictionary *incoming = [S6JSON objectWithData:body error:&err];
             if (![incoming isKindOfClass:[NSDictionary class]]) { *status = 400; return nil; }
             if ([strongSelf versionMismatchInPayload:incoming]) {
                 *status = 409; // Conflict: version mismatch
@@ -91,17 +92,16 @@ static NSMutableArray *LTP2PActiveSyncs;
             });
             [strongSelf markCompletedOnMain];
             NSMutableDictionary *reply = [NSMutableDictionary dictionaryWithDictionary:preMerge];
-            reply[@"appVersion"] = [strongSelf appVersion];
-            NSData *json = [NSJSONSerialization dataWithJSONObject:reply options:0 error:&err];
+            [reply setObject:[strongSelf appVersion] forKey:@"appVersion"];
+            NSData *json = [S6JSON dataWithObject:reply error:&err];
             *status = 200;
             return json ?: nil;
         }
         *status = 404;
         return nil;
     };
-    __weak LTP2PSync *weakSelf2 = self;
     self.server.onConnectionFinished = ^(NSString *method, NSString *path) {
-        (void)weakSelf2;
+        (void)method; (void)path; (void)blockSelf;
     };
     NSError *error = nil;
     if (![self.server start:&error]) {
@@ -118,7 +118,7 @@ static NSMutableArray *LTP2PActiveSyncs;
     // Fail-safe: if we never find a peer within 30s, tell the user (they may
     // have the other phone off or in another network).
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(30.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        LTP2PSync *strongSelf = weakSelf;
+        LTP2PSync *strongSelf = blockSelf;
         if (!strongSelf || strongSelf.finished) return;
         [strongSelf finish];
         [strongSelf showFailure:@"Could not find another device. Make sure both devices are on the same Wi-Fi network and that you pressed \"Sync with Another Device\" on both."];
@@ -135,7 +135,7 @@ static NSMutableArray *LTP2PActiveSyncs;
 }
 
 - (BOOL)versionMismatchInPayload:(NSDictionary *)payload {
-    NSString *remote = payload[@"appVersion"];
+    NSString *remote = [payload objectForKey:@"appVersion"];
     if (![remote isKindOfClass:[NSString class]]) remote = @"";
     return ![remote isEqualToString:[self appVersion]];
 }
@@ -143,7 +143,7 @@ static NSMutableArray *LTP2PActiveSyncs;
 - (NSData *)versionErrorJSON {
     NSDictionary *body = @{@"error": @"version_mismatch",
                            @"required": [self appVersion]};
-    return [NSJSONSerialization dataWithJSONObject:body options:0 error:nil];
+    return [S6JSON dataWithObject:body error:nil];
 }
 
 #pragma mark - Completion / UI
@@ -157,6 +157,9 @@ static NSMutableArray *LTP2PActiveSyncs;
         s.delegate = nil;
     }
     [self.resolvingServices removeAllObjects];
+    // Break retain cycles before dropping the server (handlers captured self).
+    self.server.requestHandler = nil;
+    self.server.onConnectionFinished = nil;
     [self.server stop];
     self.server = nil;
     [self dismissStatus];
@@ -290,15 +293,15 @@ static NSMutableArray *LTP2PActiveSyncs;
 - (void)postOurPayloadToHost:(NSString *)host port:(NSUInteger)port {
     NSDictionary *payload = [[LTPlaylistStore sharedStore] syncPayload];
     NSMutableDictionary *m = [NSMutableDictionary dictionaryWithDictionary:payload];
-    m[@"appVersion"] = [self appVersion];
-    NSData *body = [NSJSONSerialization dataWithJSONObject:m options:0 error:nil];
+    [m setObject:[self appVersion] forKey:@"appVersion"];
+    NSData *body = [S6JSON dataWithObject:m error:nil];
     if (!body) return;
 
     // Network I/O on a background thread so the main queue (and the status
     // alert) stays responsive.
-    __weak LTP2PSync *weakSelf = self;
+    LTP2PSync *postSelf = self;
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        LTP2PSync *strongSelf = weakSelf;
+        LTP2PSync *strongSelf = postSelf;
         if (!strongSelf) return;
         NSError *error = nil;
         NSData *response = [[LTP2PHTTPClient new] postPayload:body toHost:host port:port error:&error];
@@ -309,7 +312,7 @@ static NSMutableArray *LTP2PActiveSyncs;
                 }
                 return;
             }
-            NSDictionary *merged = [NSJSONSerialization JSONObjectWithData:response options:0 error:nil];
+            NSDictionary *merged = [S6JSON objectWithData:response error:nil];
             if (![merged isKindOfClass:[NSDictionary class]]) {
                 [strongSelf finishAndFail:@"The other device sent back an invalid response."];
                 return;

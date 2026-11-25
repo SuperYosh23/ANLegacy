@@ -1,4 +1,5 @@
 #import "LTLucideIcons.h"
+#import <objc/message.h>
 
 // ---------------------------------------------------------------------------
 // Icon geometry, copied verbatim from lucide-react (the desktop app's icon set).
@@ -12,15 +13,15 @@ static NSDictionary *LTLucideIconDefinitions(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         NSMutableDictionary *d = [NSMutableDictionary dictionary];
-        d[@"play"] = @[@{@"t": @"path", @"d": @"M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"}];
+        [d setObject:@[@{@"t": @"path", @"d": @"M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"}] forKey:@"play"];
         d[@"pause"] = @[@{@"t": @"rect", @"x": @14, @"y": @3, @"w": @5, @"h": @18, @"rx": @1},
                         @{@"t": @"rect", @"x": @5,  @"y": @3, @"w": @5, @"h": @18, @"rx": @1}];
         d[@"rewind"] = @[@{@"t": @"path", @"d": @"M12 6a2 2 0 0 0-3.414-1.414l-6 6a2 2 0 0 0 0 2.828l6 6A2 2 0 0 0 12 18z"},
                         @{@"t": @"path", @"d": @"M22 6a2 2 0 0 0-3.414-1.414l-6 6a2 2 0 0 0 0 2.828l6 6A2 2 0 0 0 22 18z"}];
         d[@"fast-forward"] = @[@{@"t": @"path", @"d": @"M12 6a2 2 0 0 1 3.414-1.414l6 6a2 2 0 0 1 0 2.828l-6 6A2 2 0 0 1 12 18z"},
                                @{@"t": @"path", @"d": @"M2 6a2 2 0 0 1 3.414-1.414l6 6a2 2 0 0 1 0 2.828l-6 6A2 2 0 0 1 2 18z"}];
-        d[@"skip-back"] = @[@{@"t": @"path", @"d": @"M17.971 4.285A2 2 0 0 1 21 6v12a2 2 0 0 1-3.029 1.715l-9.997-5.998a2 2 0 0 1-.003-3.432z"}];
-        d[@"skip-forward"] = @[@{@"t": @"path", @"d": @"M6.029 4.285A2 2 0 0 0 3 6v12a2 2 0 0 0 3.029 1.715l9.997-5.998a2 2 0 0 0 .003-3.432z"}];
+        [d setObject:@[@{@"t": @"path", @"d": @"M17.971 4.285A2 2 0 0 1 21 6v12a2 2 0 0 1-3.029 1.715l-9.997-5.998a2 2 0 0 1-.003-3.432z"}] forKey:@"skip-back"];
+        [d setObject:@[@{@"t": @"path", @"d": @"M6.029 4.285A2 2 0 0 0 3 6v12a2 2 0 0 0 3.029 1.715l9.997-5.998a2 2 0 0 0 .003-3.432z"}] forKey:@"skip-forward"];
         d[@"shuffle"] = @[@{@"t": @"path", @"d": @"m18 14 4 4-4 4"},
                           @{@"t": @"path", @"d": @"m18 2 4 4-4 4"},
                           @{@"t": @"path", @"d": @"M2 18h1.973a4 4 0 0 0 3.3-1.7l5.454-8.6a4 4 0 0 1 3.3-1.7H22"},
@@ -38,9 +39,9 @@ static NSDictionary *LTLucideIconDefinitions(void) {
         d[@"download"] = @[@{@"t": @"path", @"d": @"M12 15V3"},
                             @{@"t": @"path", @"d": @"M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"},
                             @{@"t": @"path", @"d": @"m7 10 5 5 5-5"}];
-        d[@"check"] = @[@{@"t": @"path", @"d": @"M20 6 9 17l-5-5"}];
-        d[@"pen"] = @[@{@"t": @"path", @"d": @"M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"}];
-        d[@"house"] = @[@{@"t": @"path", @"d": @"M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"}];
+        [d setObject:@[@{@"t": @"path", @"d": @"M20 6 9 17l-5-5"}] forKey:@"check"];
+        [d setObject:@[@{@"t": @"path", @"d": @"M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"}] forKey:@"pen"];
+        [d setObject:@[@{@"t": @"path", @"d": @"M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"}] forKey:@"house"];
         d[@"search"] = @[@{@"t": @"path", @"d": @"m21 21-4.34-4.34"},
                          @{@"t": @"circle", @"cx": @11, @"cy": @11, @"r": @8}];
         d[@"settings"] = @[@{@"t": @"path", @"d": @"M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"},
@@ -52,14 +53,14 @@ static NSDictionary *LTLucideIconDefinitions(void) {
         d[@"trending-up"] = @[@{@"t": @"path", @"d": @"M16 7h6v6"},
                               @{@"t": @"path", @"d": @"m22 7-8.5 8.5-5-5L2 17"}];
         // Extra icons used across the app.
-        d[@"x"] = @[@{@"t": @"path", @"d": @"M18 6 6 18"}, @{@"t": @"path", @"d": @"m6 6 12 12"}];
-        d[@"plus"] = @[@{@"t": @"path", @"d": @"M5 12h14"}, @{@"t": @"path", @"d": @"M12 5v14"}];
-        d[@"minus"] = @[@{@"t": @"path", @"d": @"M5 12h14"}];
-        d[@"chevron-left"] = @[@{@"t": @"path", @"d": @"m15 18-6-6 6-6"}];
-        d[@"chevron-right"] = @[@{@"t": @"path", @"d": @"m9 18 6-6-6-6"}];
-        d[@"chevron-up"] = @[@{@"t": @"path", @"d": @"m18 15-6-6-6 6"}];
-        d[@"chevron-down"] = @[@{@"t": @"path", @"d": @"m6 9 6 6 6-6"}];
-        d[@"arrow-left"] = @[@{@"t": @"path", @"d": @"m12 19-7-7 7-7"}, @{@"t": @"path", @"d": @"M19 12H5"}];
+        [d setObject:@[@{@"t": @"path", @"d": @"M18 6 6 18"}, @{@"t": @"path", @"d": @"m6 6 12 12"}] forKey:@"x"];
+        [d setObject:@[@{@"t": @"path", @"d": @"M5 12h14"}, @{@"t": @"path", @"d": @"M12 5v14"}] forKey:@"plus"];
+        [d setObject:@[@{@"t": @"path", @"d": @"M5 12h14"}] forKey:@"minus"];
+        [d setObject:@[@{@"t": @"path", @"d": @"m15 18-6-6 6-6"}] forKey:@"chevron-left"];
+        [d setObject:@[@{@"t": @"path", @"d": @"m9 18 6-6-6-6"}] forKey:@"chevron-right"];
+        [d setObject:@[@{@"t": @"path", @"d": @"m18 15-6-6-6 6"}] forKey:@"chevron-up"];
+        [d setObject:@[@{@"t": @"path", @"d": @"m6 9 6 6 6-6"}] forKey:@"chevron-down"];
+        [d setObject:@[@{@"t": @"path", @"d": @"m12 19-7-7 7-7"}, @{@"t": @"path", @"d": @"M19 12H5"}] forKey:@"arrow-left"];
         d[@"trash-2"] = @[@{@"t": @"path", @"d": @"M3 6h18"}, @{@"t": @"path", @"d": @"M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"},
                           @{@"t": @"path", @"d": @"M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"}];
         d[@"music"] = @[@{@"t": @"path", @"d": @"M9 18V5l12-2v13"},
@@ -68,6 +69,8 @@ static NSDictionary *LTLucideIconDefinitions(void) {
         d[@"list-music"] = @[@{@"t": @"path", @"d": @"M16 5H3"}, @{@"t": @"path", @"d": @"M11 12H3"},
                              @{@"t": @"path", @"d": @"M11 19H3"}, @{@"t": @"path", @"d": @"M21 16V5"},
                              @{@"t": @"circle", @"cx": @18, @"cy": @16, @"r": @3}];
+        d[@"airplay"] = @[@{@"t": @"path", @"d": @"M5 17H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-1"},
+                        @{@"t": @"path", @"d": @"M12 15L17 21L7 21z"}];
         d[@"sliders-horizontal"] = @[@{@"t": @"path", @"d": @"M21 4h-7"}, @{@"t": @"path", @"d": @"M10 4H3"},
                                       @{@"t": @"path", @"d": @"M21 12h-9"}, @{@"t": @"path", @"d": @"M8 12H3"},
                                       @{@"t": @"path", @"d": @"M21 20h-5"}, @{@"t": @"path", @"d": @"M12 20H3"},
@@ -85,7 +88,7 @@ static NSDictionary *LTLucideIconDefinitions(void) {
                              @{@"t": @"path", @"d": @"M6 10v3"},
                              @{@"t": @"circle", @"cx": @12, @"cy": @12, @"r": @2},
                              @{@"t": @"path", @"d": @"M12 18a6 6 0 0 0 6-6"}];
-        d[@"square"] = @[@{@"t": @"rect", @"x": @3, @"y": @3, @"w": @18, @"h": @18, @"rx": @2}];
+        [d setObject:@[@{@"t": @"rect", @"x": @3, @"y": @3, @"w": @18, @"h": @18, @"rx": @2}] forKey:@"square"];
         d[@"grip-vertical"] = @[@{@"t": @"path", @"d": @"M9 5h.01"}, @{@"t": @"path", @"d": @"M9 12h.01"},
                                  @{@"t": @"path", @"d": @"M9 19h.01"}, @{@"t": @"path", @"d": @"M15 5h.01"},
                                  @{@"t": @"path", @"d": @"M15 12h.01"}, @{@"t": @"path", @"d": @"M15 19h.01"}];
@@ -290,9 +293,48 @@ static UIBezierPath *LTPathFromSVGPathData(NSString *d) {
 
 + (UIImage *)iconNamed:(NSString *)name size:(CGFloat)size color:(UIColor *)color {
     if (name.length == 0 || size <= 0.0) return nil;
-    NSArray *elements = LTLucideIconDefinitions()[name];
+    NSArray *elements = [LTLucideIconDefinitions() objectForKey:name];
     if (!elements.count) return nil;
     UIColor *tint = color ?: [UIColor whiteColor];
+
+    // Rendering is expensive: a fresh bitmap context plus an SVG path string
+    // re-parsed character by character into a bezier path. Transport controls
+    // redraw 6-9 icons on every state change and cells draw one or two on every
+    // dequeue, so without a cache this is pure repeated work.
+    //
+    // Keyed on the full parameter set because the same glyph is asked for at
+    // several sizes and in both light and dark themes. The components come from
+    // getRed:green:blue:alpha: rather than the .red/.green/... properties,
+    // which do not exist in the iOS 9 SDK the armv7 slice builds against.
+    // Cost is bounded so the cache cannot grow into the memory problem it is
+    // fixing on a 256MB device: an icon is size*size*4 bytes, so 120 entries is
+    // only a few MB even at the largest size actually requested.
+    static NSCache *cache = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        cache = [[NSCache alloc] init];
+        cache.countLimit = 120;
+    });
+    CGFloat r = 0, g = 0, b = 0, a = 1;
+    if ([tint respondsToSelector:@selector(getRed:green:blue:alpha:)] &&
+        ((BOOL(*)(id,SEL,CGFloat*,CGFloat*,CGFloat*,CGFloat*))objc_msgSend)(tint, @selector(getRed:green:blue:alpha:), &r, &g, &b, &a)) {
+        // ok
+    } else if ([tint respondsToSelector:@selector(getWhite:alpha:)] &&
+               ((BOOL(*)(id,SEL,CGFloat*,CGFloat*))objc_msgSend)(tint, @selector(getWhite:alpha:), &r, &a)) {
+        g = r; b = r;
+    } else {
+        CGColorRef cg = tint.CGColor;
+        if (cg) {
+            size_t n = CGColorGetNumberOfComponents(cg);
+            const CGFloat *c = CGColorGetComponents(cg);
+            if (n >= 3) { r = c[0]; g = c[1]; b = c[2]; a = c[n-1]; }
+            else if (n >= 2) { r = g = b = c[0]; a = c[1]; }
+        }
+    }
+    NSString *cacheKey = [NSString stringWithFormat:@"%@|%.1f|%.3f|%.3f|%.3f|%.3f",
+                          name, (double)size, (double)r, (double)g, (double)b, (double)a];
+    UIImage *cached = [cache objectForKey:cacheKey];
+    if (cached) return cached;
 
     UIGraphicsBeginImageContextWithOptions(CGSizeMake(size, size), NO, 0.0);
     CGContextRef ctx = UIGraphicsGetCurrentContext();
@@ -305,15 +347,15 @@ static UIBezierPath *LTPathFromSVGPathData(NSString *d) {
         CGContextSetStrokeColorWithColor(ctx, tint.CGColor);
         for (NSDictionary *el in elements) {
             UIBezierPath *p = nil;
-            NSString *type = el[@"t"];
+            NSString *type = [el objectForKey:@"t"];
             if ([type isEqualToString:@"path"]) {
-                p = LTPathFromSVGPathData(el[@"d"]);
+                p = LTPathFromSVGPathData([el objectForKey:@"d"]);
             } else if ([type isEqualToString:@"circle"]) {
-                CGFloat r = [el[@"r"] doubleValue];
-                p = [UIBezierPath bezierPathWithOvalInRect:CGRectMake([el[@"cx"] doubleValue] - r, [el[@"cy"] doubleValue] - r, r * 2, r * 2)];
+                CGFloat r = [[el objectForKey:@"r"] doubleValue];
+                p = [UIBezierPath bezierPathWithOvalInRect:CGRectMake([[el objectForKey:@"cx"] doubleValue] - r, [[el objectForKey:@"cy"] doubleValue] - r, r * 2, r * 2)];
             } else if ([type isEqualToString:@"rect"]) {
-                CGFloat rx = el[@"rx"] ? [el[@"rx"] doubleValue] : 0;
-                p = [UIBezierPath bezierPathWithRoundedRect:CGRectMake([el[@"x"] doubleValue], [el[@"y"] doubleValue], [el[@"w"] doubleValue], [el[@"h"] doubleValue]) cornerRadius:rx];
+                CGFloat rx = [el objectForKey:@"rx"] ? [[el objectForKey:@"rx"] doubleValue] : 0;
+                p = [UIBezierPath bezierPathWithRoundedRect:CGRectMake([[el objectForKey:@"x"] doubleValue], [[el objectForKey:@"y"] doubleValue], [[el objectForKey:@"w"] doubleValue], [[el objectForKey:@"h"] doubleValue]) cornerRadius:rx];
             }
             if (!p) continue;
             [p applyTransform:CGAffineTransformMakeScale(s, s)];
@@ -324,6 +366,7 @@ static UIBezierPath *LTPathFromSVGPathData(NSString *d) {
     }
     UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
     UIGraphicsEndImageContext();
+    if (image) [cache setObject:image forKey:cacheKey];
     return image;
 }
 

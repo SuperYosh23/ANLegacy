@@ -1,5 +1,7 @@
 #import <QuartzCore/QuartzCore.h>
+#import "LTTraitCompat.h"
 #import "LTTrackListViewController.h"
+#import "LTPeekCoordinator.h"
 #import "LTYouTubeClient.h"
 #import "LTMediaCell.h"
 #import "LTGraphics.h"
@@ -11,6 +13,8 @@
 #import "LTTheme.h"
 #import "LTLog.h"
 #import <QuartzCore/QuartzCore.h>
+#import "LTThemedTableView.h"
+#import "LTTransitionSettings.h"
 
 #define kLTHeaderHeight 96.0f
 #define kLTArtworkSize 80.0f
@@ -20,6 +24,7 @@
 @property (nonatomic, copy) NSString *browseId;
 @property (nonatomic, assign) LTBrowseKind kind;
 @property (nonatomic, strong) UITableView *tableView;
+@property (nonatomic, strong) LTPeekCoordinator *trackListPeek;
 @property (nonatomic, strong) NSMutableArray *tracks;
 @property (nonatomic, strong) NSDictionary *info;
 @property (nonatomic, strong) UIImageView *artworkImageView;
@@ -49,11 +54,11 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     if ([self respondsToSelector:@selector(setEdgesForExtendedLayout:)]) {
-        self.edgesForExtendedLayout = UIRectEdgeNone;
+        [(id)self setValue:[NSNumber numberWithInteger:0] forKey:@"edgesForExtendedLayout"];
     }
     self.view.backgroundColor = [LTTheme background];
 
-    self.tableView = [[UITableView alloc] initWithFrame:self.view.bounds style:UITableViewStylePlain];
+    self.tableView = [[LTThemedTableView alloc] initWithFrame:self.view.bounds style:UITableViewStylePlain];
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
     self.tableView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -74,9 +79,16 @@
     ];
 
     [self loadContent];
+    // Peek any song row's artwork large; nothing opens on a full press.
+    __unsafe_unretained LTTrackListViewController *peekSelf = self;
+    self.trackListPeek = [LTPeekCoordinator songArtworkPeekForTableView:self.tableView
+                                                      owner:self
+                                            songAtIndexPath:^LTTrack *(NSIndexPath *indexPath) {
+        return [peekSelf peekSongAtIndexPath:indexPath];
+    }];
 }
 
-- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+- (void)traitCollectionDidChange:(id)previousTraitCollection {
     [super traitCollectionDidChange:previousTraitCollection];
     self.view.backgroundColor = [LTTheme background];
     self.tableView.backgroundColor = [LTTheme background];
@@ -111,6 +123,9 @@
 
     self.titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(textX, y, textW, 20)];
     self.titleLabel.font = [UIFont boldSystemFontOfSize:16];
+    // Same as the playlist name: UIKit's default label colour is black on the
+    // older systems this app supports.
+    self.titleLabel.textColor = [LTTheme text];
     [container addSubview:self.titleLabel];
 
     y += 22.0f;
@@ -144,7 +159,10 @@
 }
 
 - (UIButton *)headerButtonWithIcon:(UIImage *)icon frame:(CGRect)frame {
-    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    // A custom button, not a system one: a system button treats its image as a
+    // template and paints it in the tint colour, which put the blue back over
+    // the themed glyph.
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
     button.frame = frame;
     [button setImage:[self scaledIcon:icon] forState:UIControlStateNormal];
     button.imageView.contentMode = UIViewContentModeCenter;
@@ -204,7 +222,7 @@
         }
     }
     if (!missing.count) return;
-    __weak LTTrackListViewController *weakSelf = self;
+    __unsafe_unretained LTTrackListViewController *weakSelf = self;
     [[LTPlaylistStore sharedStore] enqueueDownloads:missing completion:^{
         [weakSelf updateDownloadState];
     }];
@@ -213,27 +231,50 @@
 
 - (void)addAllTapped:(id)sender {
     if (!self.tracks.count) return;
-    [[LTPlayerController sharedController] enqueueTracks:self.tracks];
-    [self showToast:[NSString stringWithFormat:@"Added %d to queue", (int)self.tracks.count]];
+    NSArray *tracks = [self.tracks copy];
+
+    [LTPlaylistPicker presentFromViewController:self
+                                  panelTitle:@"Add All to Playlist"
+                                     onPicked:^(LTLocalPlaylist *playlist) {
+        // Routes through the shared guard so the duplicate-name prompt reads the
+        // same here as it does when adding a single song.
+        [LTPlaylistStore addTracks:tracks
+                       toPlaylist:playlist
+                    confirmingFrom:self
+                       completion:^(NSInteger added) {
+            if (added > 0) [self showToast:[NSString stringWithFormat:@"Added %d to %@", (int)added, playlist.name]];
+        }];
+    } onCreateNew:^(NSString *name) {
+        LTLocalPlaylist *playlist = [[LTPlaylistStore sharedStore] createPlaylistWithName:name];
+        // A playlist that was just created is empty, so nothing can duplicate.
+        if (playlist) {
+            [LTPlaylistStore addTracks:tracks toPlaylist:playlist confirmingFrom:nil completion:nil];
+            [self showToast:[NSString stringWithFormat:@"Added %d to %@", (int)tracks.count, playlist.name]];
+        }
+    }];
 }
 
 - (void)saveTapped:(id)sender {
     if (!self.tracks.count) return;
     NSString *subtitle = [NSString stringWithFormat:@"%d tracks", (int)self.tracks.count];
+    NSArray *tracks = [self.tracks copy];
     [LTPlaylistPicker presentFromViewController:self
                                      panelTitle:subtitle
                                       onPicked:^(LTLocalPlaylist *playlist) {
-        for (LTTrack *track in self.tracks) {
-            [[LTPlaylistStore sharedStore] addTrack:track toPlaylist:playlist];
-        }
-        [self showToast:[NSString stringWithFormat:@"Added %d to %@", (int)self.tracks.count, playlist.name]];
+        // Same guard as Add All: leaving Save unguarded would mean the same
+        // action warns under one label and not the other.
+        [LTPlaylistStore addTracks:tracks
+                       toPlaylist:playlist
+                    confirmingFrom:self
+                       completion:^(NSInteger added) {
+            if (added > 0) [self showToast:[NSString stringWithFormat:@"Added %d to %@", (int)added, playlist.name]];
+        }];
     } onCreateNew:^(NSString *name) {
         LTLocalPlaylist *playlist = [[LTPlaylistStore sharedStore] createPlaylistWithName:name];
+        // A playlist that was just created is empty, so nothing can duplicate.
         if (playlist) {
-            for (LTTrack *track in self.tracks) {
-                [[LTPlaylistStore sharedStore] addTrack:track toPlaylist:playlist];
-            }
-            [self showToast:[NSString stringWithFormat:@"Added %d to %@", (int)self.tracks.count, playlist.name]];
+            [LTPlaylistStore addTracks:tracks toPlaylist:playlist confirmingFrom:nil completion:nil];
+            [self showToast:[NSString stringWithFormat:@"Added %d to %@", (int)tracks.count, playlist.name]];
         }
     }];
 }
@@ -250,13 +291,13 @@
     label.clipsToBounds = YES;
     label.text = text;
     [self.view addSubview:label];
-    [UIView animateWithDuration:1.4 delay:1.0 options:UIViewAnimationOptionCurveEaseIn
+    [LTTransitionSettings animateWithDuration:1.4 delay:1.0 options:UIViewAnimationOptionCurveEaseIn
                      animations:^{ label.alpha = 0.0f; }
                      completion:^(BOOL finished) { [label removeFromSuperview]; }];
 }
 
 - (void)loadContent {
-    __weak LTTrackListViewController *weakSelf = self;
+    __unsafe_unretained LTTrackListViewController *weakSelf = self;
     void (^finish)(NSDictionary *, NSArray *) = ^(NSDictionary *info, NSArray *tracks) {
         LTTrackListViewController *strongSelf = weakSelf;
         if (!strongSelf) return;
@@ -281,16 +322,16 @@
 }
 
 - (void)updateHeader {
-    NSString *title = self.info[@"title"];
+    NSString *title = [self.info objectForKey:@"title"];
     if (!title.length) title = self.title;
     if (title.length) self.titleLabel.text = title;
-    NSString *subtitle = self.info[@"subtitle"];
+    NSString *subtitle = [self.info objectForKey:@"subtitle"];
     if (subtitle.length) {
         self.subtitleLabel.text = subtitle;
     } else {
         self.subtitleLabel.text = [self trackCountText];
     }
-    NSString *thumb = self.info[@"thumbnail"];
+    NSString *thumb = [self.info objectForKey:@"thumbnail"];
     if (thumb.length) thumb = [[LTYouTubeClient sharedClient] highResThumbnailURL:thumb];
     [self setArtworkURL:thumb];
     [self updateDownloadState];
@@ -330,9 +371,10 @@
         [self fallbackArtwork];
         return;
     }
-    __weak LTTrackListViewController *weakSelf = self;
+    // Strong capture: the header controller can be popped while the image is
+    // still in flight; an unsafe-unretained self would then be freed memory.
     [[LTYouTubeClient sharedClient] loadImageWithURL:urlString completion:^(UIImage *image) {
-        LTTrackListViewController *strongSelf = weakSelf;
+        LTTrackListViewController *strongSelf = self;
         if (!strongSelf) return;
         if (image) {
             LTLog(@"ALBUM header art APPLIED w=%d h=%d", (int)image.size.width, (int)image.size.height);
@@ -353,9 +395,8 @@
         if (first.thumbnailURL.length) {
             NSString *artURL = [[LTYouTubeClient sharedClient] highResThumbnailURL:first.thumbnailURL];
             LTLog(@"ALBUM fallback loading %@", artURL);
-            __weak LTTrackListViewController *weakSelf = self;
             [[LTYouTubeClient sharedClient] loadImageWithURL:artURL completion:^(UIImage *image) {
-                LTTrackListViewController *strongSelf = weakSelf;
+                LTTrackListViewController *strongSelf = self;
                 LTLog(@"ALBUM fallback completed img=%@", image);
                 if (strongSelf && image) {
                     strongSelf.artworkImageView.image = image;
@@ -448,6 +489,12 @@
         [self updateDownloadState];
         return;
     }
+}
+- (LTTrack *)peekSongAtIndexPath:(NSIndexPath *)indexPath {
+    NSArray *rows = self.tracks;
+    if ((NSUInteger)indexPath.row >= rows.count) return nil;
+    id item = [rows objectAtIndex:(NSUInteger)indexPath.row];
+    return [item isKindOfClass:[LTTrack class]] ? (LTTrack *)item : nil;
 }
 
 @end

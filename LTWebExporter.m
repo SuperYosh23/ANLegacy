@@ -1,4 +1,5 @@
 #import "LTWebExporter.h"
+#import "S6JSON.h"
 #import "LTPlaylistStore.h"
 #import "LTModel.h"
 #import "LTYouTubeClient.h"
@@ -22,8 +23,8 @@ static NSString *const kWebDataMarker = @"<!--WEB_DATA-->";
 
 - (void)exportWithSelectedPlaylists:(NSArray *)playlistIdentifiers
                          completion:(void (^)(NSString *, NSError *))completion {
-    NSArray *selected = playlistIdentifiers ?: @[];
-    __weak LTWebExporter *weakSelf = self;
+    NSArray *selected = playlistIdentifiers ?: [NSArray array];
+    __unsafe_unretained LTWebExporter *weakSelf = self;
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         LTWebExporter *strongSelf = weakSelf;
         NSError *error = nil;
@@ -142,8 +143,8 @@ static NSString *const kWebDataMarker = @"<!--WEB_DATA-->";
             // Artwork: reuse shared art, else cached file, else fetch from network.
             NSString *artFile = nil;
             NSString *mapKey = track.thumbnailURL ?: @"";
-            if (mapKey.length && artMap[mapKey]) {
-                artFile = artMap[mapKey];
+            if (mapKey.length && [artMap objectForKey:mapKey]) {
+                artFile = [artMap objectForKey:mapKey];
             } else {
                 NSString *cached = [self cachedArtFileForURL:track.thumbnailURL];
                 if (cached) {
@@ -151,13 +152,13 @@ static NSString *const kWebDataMarker = @"<!--WEB_DATA-->";
                     NSString *srcExt = [cached pathExtension].length ? [cached pathExtension] : @"jpg";
                     artFile = [NSString stringWithFormat:@"art%ld.%@", (long)artCounter, srcExt];
                     [fm copyItemAtPath:cached toPath:[artDir stringByAppendingPathComponent:artFile] error:nil];
-                    if (mapKey.length) artMap[mapKey] = artFile;
+                    if (mapKey.length) [artMap setObject:artFile forKey:mapKey];
                 } else if (track.thumbnailURL.length) {
                     artCounter += 1;
                     NSString *name = [self fetchArtIntoDirectory:artDir fromURL:track.thumbnailURL counter:artCounter];
                     if (name) {
                         artFile = name;
-                        if (mapKey.length) artMap[mapKey] = name;
+                        if (mapKey.length) [artMap setObject:name forKey:mapKey];
                         fetchedArt += 1;
                     }
                 }
@@ -168,12 +169,12 @@ static NSString *const kWebDataMarker = @"<!--WEB_DATA-->";
             }
 
             NSMutableDictionary *td = [NSMutableDictionary dictionary];
-            if (track.title.length) td[@"title"] = track.title;
-            if (track.artist.length) td[@"artist"] = track.artist;
-            if (track.album.length) td[@"album"] = track.album;
-            td[@"file"] = [@"audio/" stringByAppendingString:audioName];
-            if (artFile) td[@"art"] = [@"art/" stringByAppendingString:artFile];
-            if (track.duration > 0) td[@"duration"] = @(track.duration);
+            if (track.title.length) [td setObject:track.title forKey:@"title"];
+            if (track.artist.length) [td setObject:track.artist forKey:@"artist"];
+            if (track.album.length) [td setObject:track.album forKey:@"album"];
+            [td setObject:[@"audio/" stringByAppendingString:audioName] forKey:@"file"];
+            if (artFile) [td setObject:[@"art/" stringByAppendingString:artFile] forKey:@"art"];
+            if (track.duration > 0) [td setObject:@(track.duration) forKey:@"duration"];
             [trackDicts addObject:td];
         }
 
@@ -189,14 +190,14 @@ static NSString *const kWebDataMarker = @"<!--WEB_DATA-->";
         }
 
         NSMutableDictionary *pd = [NSMutableDictionary dictionary];
-        pd[@"name"] = playlist.name.length ? playlist.name : @"Untitled";
-        if (coverRef) pd[@"cover"] = coverRef;
-        pd[@"tracks"] = trackDicts;
+        [pd setObject:playlist.name.length ? playlist.name : @"Untitled" forKey:@"name"];
+        if (coverRef) [pd setObject:coverRef forKey:@"cover"];
+        [pd setObject:trackDicts forKey:@"tracks"];
         if (trackDicts.count) [playlistDicts addObject:pd];
     }
 
     NSDictionary *root = @{ @"playlists": playlistDicts };
-    NSData *json = [NSJSONSerialization dataWithJSONObject:root options:0 error:error];
+    NSData *json = [S6JSON dataWithObject:root error:error];
     if (!json) return nil;
     NSString *dataJS = [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding];
     NSString *script = [NSString stringWithFormat:@"<script>window.WEB_DATA = %@;</script>", dataJS];

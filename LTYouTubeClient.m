@@ -1,10 +1,25 @@
 #import "LTYouTubeClient.h"
+#import "S6JSON.h"
+#import "S6HTTPRequest.h"
 #import "LTPlaylistStore.h"
 #import "LTLog.h"
 #import <CommonCrypto/CommonDigest.h>
+#import <objc/runtime.h>
 
 NSString *const LTAPIKey = @"AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
 NSString *const LTBrowserUserAgent = @"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
+
+// Narrower than this and the image is YouTube's "missing artwork" placeholder
+// (120x90) rather than real cover art. See loadArtworkFromCandidates:.
+//
+// This was 400, which was right while thumbnails arrived uncropped and their
+// width was a fair proxy for size. Centering a video thumbnail to a square
+// takes a 480x360 still down to 360x360, and 360 < 400, so every video's own
+// artwork began being rejected as a placeholder and album and artist rows -
+// which fall back to the first track's thumbnail - went blank. The floor has to
+// separate YouTube's 120x90 from real art, nothing more; 200 does that with
+// room to spare.
+const NSInteger kMinUsableArtworkWidth = 200;
 
 NSString *const LTYouTubeDomain = @"LTYouTube";
 
@@ -29,12 +44,112 @@ static id LTPath(id root, id key, ...) {
     return current;
 }
 
+// Bounded depth-first search for the first occurrence of a key anywhere in a
+// parsed JSON tree.
+//
+// The InnerTube responses reach these values through deeply nested renderer
+// chains whose exact shape changes without notice, so a hardcoded key path would
+// be the first thing to break. Depth is capped both because the useful values sit
+// near the top and because this has to stay cheap on a 3GS.
+static id LTFindFirstValue(id root, NSString *key, NSInteger depth) {
+    if (depth <= 0 || !root) return nil;
+    if ([root isKindOfClass:[NSDictionary class]]) {
+        NSDictionary *dict = root;
+        id direct = [dict objectForKey:key];
+        if (direct) return direct;
+        for (id sub in [dict allValues]) {
+            id found = LTFindFirstValue(sub, key, depth - 1);
+            if (found) return found;
+        }
+    } else if ([root isKindOfClass:[NSArray class]]) {
+        for (id sub in (NSArray *)root) {
+            id found = LTFindFirstValue(sub, key, depth - 1);
+            if (found) return found;
+        }
+    }
+    return nil;
+}
+
+// YouTube returns counts as strings ("19475837"), not numbers, so they are
+// reduced here for display.
+static NSString *LTFormatCount(id raw) {
+    if (![raw isKindOfClass:[NSString class]]) {
+        if ([raw respondsToSelector:@selector(stringValue)]) raw = [raw stringValue];
+        else return nil;
+    }
+    NSString *digits = [[(NSString *)raw stringByTrimmingCharactersInSet:
+                         [NSCharacterSet whitespaceAndNewlineCharacterSet]] copy];
+    if (!digits.length) return nil;
+    NSCharacterSet *nonNumeric = [[NSCharacterSet decimalDigitCharacterSet] invertedSet];
+    digits = [digits stringByReplacingOccurrencesOfString:@"," withString:@""];
+    if ([digits rangeOfCharacterFromSet:nonNumeric].location != NSNotFound) {
+        return nil;
+    }
+    unsigned long long n = [digits longLongValue];
+    if (n >= 1000000000ULL) return [NSString stringWithFormat:@"%.2fB", n / 1000000000.0];
+    if (n >= 1000000ULL)    return [NSString stringWithFormat:@"%.1fM", n / 1000000.0];
+    if (n >= 1000ULL)       return [NSString stringWithFormat:@"%.1fK", n / 1000.0];
+    return [NSString stringWithFormat:@"%llu", n];
+}
+
+// Inverse of LTFormatCount: reads back a count token YouTube formatted for
+// display, so a song's "1.2B plays" becomes 1200000000 and can be sorted.
+// Returns -1 for a token it cannot read, which is deliberately distinct from a
+// real zero.
+static long long LTParseCountToken(NSString *token) {
+    if (![token isKindOfClass:[NSString class]]) return -1;
+    token = [token stringByReplacingOccurrencesOfString:@"," withString:@""];
+    token = [token stringByTrimmingCharactersInSet:
+             [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (!token.length) return -1;
+
+    double multiplier = 1.0;
+    unichar last = [token characterAtIndex:token.length - 1];
+    if (last == 'K' || last == 'k') { multiplier = 1e3; token = [token substringToIndex:token.length - 1]; }
+    else if (last == 'M' || last == 'm') { multiplier = 1e6; token = [token substringToIndex:token.length - 1]; }
+    else if (last == 'B' || last == 'b') { multiplier = 1e9; token = [token substringToIndex:token.length - 1]; }
+
+    NSCharacterSet *nonNumeric = [[NSCharacterSet decimalDigitCharacterSet] invertedSet];
+    if ([token rangeOfCharacterFromSet:nonNumeric].location != NSNotFound) return -1;
+    if (!token.length) return -1;
+    return (long long)([token doubleValue] * multiplier);
+}
+
+static NSString *LTRunText(id node) {
+    if (![node isKindOfClass:[NSDictionary class]]) return nil;
+    NSString *simple = [node objectForKey:@"simpleText"];
+    if ([simple isKindOfClass:[NSString class]] && simple.length) return simple;
+    NSArray *runs = [node objectForKey:@"runs"];
+    if ([runs isKindOfClass:[NSArray class]]) {
+        NSMutableString *out = [NSMutableString string];
+        for (NSDictionary *run in runs) {
+            NSString *t = [run objectForKey:@"text"];
+            if ([t isKindOfClass:[NSString class]]) [out appendString:t];
+        }
+        if (out.length) return out;
+    }
+    return nil;
+}
+
+
 @interface LTYouTubeClient ()
 @property (nonatomic, strong) NSCache *imageCache;
 @property (nonatomic, strong) NSMutableDictionary *channelAvatarCache;
 @property (nonatomic, strong) NSMutableDictionary *pendingChannelAvatars;
 @property (nonatomic, strong) NSMutableDictionary *pendingNameAvatars;
+// General-page metadata is immutable per video. Caching it means reopening the
+// page, or replaying a track, never pays for another round of InnerTube calls.
+@property (nonatomic, strong) NSCache *generalInfoCache;
+// A client that answers LOGIN_REQUIRED / "not a bot" stays blocked for a short
+// while. Retrying it on every track was adding a slow, always-failing attempt to
+// the front of the General-page client chain.
+@property (nonatomic, strong) NSMutableDictionary *blockedPlayerClients;
 @end
+
+// Bounded so one tap cannot turn into an unbounded crawl of a prolific
+// artist's discography. Four continuation requests on top of the first page is
+// roughly a couple of hundred songs.
+static const NSInteger kLTArtistSongPages = 4;
 
 @implementation LTYouTubeClient
 
@@ -50,52 +165,188 @@ static id LTPath(id root, id key, ...) {
 - (id)init {
     self = [super init];
     if (self) {
+        // Artwork is decoded to full RGBA, so a single 1200x1200 entry is
+        // ~5.7MB. Unbounded, the cache is exactly the wrong thing to have on a
+        // 256MB 3GS: the OS purges it under pressure and every cell then pays
+        // for a synchronous decode from disk again. Budget it in pixels rather
+        // than entries so one huge image cannot quietly dominate.
         _imageCache = [[NSCache alloc] init];
+        _imageCache.totalCostLimit = 12 * 1024 * 1024;
         _channelAvatarCache = [NSMutableDictionary dictionary];
         _pendingChannelAvatars = [NSMutableDictionary dictionary];
         _pendingNameAvatars = [NSMutableDictionary dictionary];
+        // Small, bounded caches: these entries are a few hundred bytes each and
+        // the 3GS only has 256MB.
+        _generalInfoCache = [[NSCache alloc] init];
+        _generalInfoCache.countLimit = 24;
+        _blockedPlayerClients = [NSMutableDictionary dictionary];
     }
     return self;
 }
 
+// Bot-blocked client contexts do not recover within a single listening session.
+// Skip them briefly instead of paying for another doomed handshake per track.
+- (BOOL)isPlayerClientBlocked:(NSString *)name {
+    NSDate *until = [self.blockedPlayerClients objectForKey:name];
+    return until != nil && [until timeIntervalSinceNow] > 0;
+}
+
+- (void)markPlayerClientBlocked:(NSString *)name {
+    if (!name.length) return;
+    [self.blockedPlayerClients setObject:[NSDate dateWithTimeIntervalSinceNow:120.0] forKey:name];
+}
+
 #pragma mark - Networking
+
+static BOOL LTShouldUseMbedTLS(void) {
+    // iOS 6.x system TLS (SecureTransport) often cannot negotiate with modern
+    // YouTube/Google endpoints (ciphers/SNI), causing timeouts. Use mbedTLS with
+    // the bundled CA store there for compatibility.
+    return ([[[UIDevice currentDevice] systemVersion] floatValue] < 7.0f);
+}
+
+static void LTDeliverAsyncRequestResult(NSOperationQueue *queue, void (^completionHandler)(NSURLResponse *, NSData *, NSError *),
+                                        NSURLResponse *response, NSData *data, NSError *error) {
+    if (!completionHandler) return;
+    void (^block)(void) = ^{
+        completionHandler(response, data, error);
+    };
+    if (queue) {
+        [queue addOperationWithBlock:block];
+    } else {
+        dispatch_async(dispatch_get_main_queue(), block);
+    }
+}
+
+static void LTSendAsyncRequest(NSURLRequest *request, NSOperationQueue *queue, void (^completionHandler)(NSURLResponse *, NSData *, NSError *)) {
+    if (!completionHandler) return;
+
+    // Prefer mbedTLS on old iOS for HTTPS reliability against modern endpoints.
+    if (LTShouldUseMbedTLS() && [[request.URL.scheme lowercaseString] isEqualToString:@"https"]) {
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            @autoreleasepool {
+                S6HTTPRequest *r = [[S6HTTPRequest alloc] initWithMethod:(request.HTTPMethod.length ? request.HTTPMethod : @"GET")
+                                                                      URL:request.URL];
+                NSDictionary *hdrs = [request allHTTPHeaderFields];
+                if (hdrs.count) r.headers = hdrs;
+                if (request.HTTPBody.length) r.body = request.HTTPBody;
+                NSTimeInterval t = [request timeoutInterval];
+                if (t > 0) r.readTimeout = t;
+                // The old 20s connect budget let a dead endpoint hold up a whole
+                // chain of sequential client attempts. Keep it below the read
+                // timeout so one failed client cannot eat the whole tab budget.
+                r.connectTimeout = 5;
+                __block NSError *failure = nil;
+                r.onComplete = ^(NSError *e) { failure = e; };
+                [r runSynchronously];
+                NSData *data = r.responseBody ?: [NSData data];
+                NSURLResponse *response = nil;
+                if (!failure) {
+                    // NSHTTPURLResponse's statusCode initializer is iOS 5+.
+                    if ([NSHTTPURLResponse instancesRespondToSelector:@selector(initWithURL:statusCode:HTTPVersion:headerFields:)]) {
+                        response = [[NSHTTPURLResponse alloc] initWithURL:request.URL
+                                                               statusCode:r.statusCode
+                                                              HTTPVersion:@"HTTP/1.1"
+                                                             headerFields:r.responseHeaders];
+                    } else {
+                        response = [[NSURLResponse alloc] initWithURL:request.URL
+                                                             MIMEType:@"application/json"
+                                                expectedContentLength:(NSInteger)[data length]
+                                                     textEncodingName:@"utf-8"];
+                    }
+                }
+                LTDeliverAsyncRequestResult(queue, completionHandler, response, failure ? nil : data, failure);
+            }
+        });
+        return;
+    }
+
+    if ([NSURLConnection respondsToSelector:@selector(sendAsynchronousRequest:queue:completionHandler:)]) {
+        [NSURLConnection sendAsynchronousRequest:request queue:queue completionHandler:completionHandler];
+        return;
+    }
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        NSURLResponse *response = nil;
+        NSError *error = nil;
+        NSData *data = [NSURLConnection sendSynchronousRequest:request returningResponse:&response error:&error];
+        LTDeliverAsyncRequestResult(queue, completionHandler, response, data, error);
+    });
+}
+
+// Queue that delivers raw API responses off the main thread, so the JSON parse in
+// the completions below is not main-thread work. A private operation queue
+// rather than nil, which -sendAsynchronousRequest: marks nonnull.
+static NSOperationQueue *LTNetworkCallbackQueue(void) {
+    static NSOperationQueue *queue = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        queue = [[NSOperationQueue alloc] init];
+        queue.maxConcurrentOperationCount = 4;
+        queue.name = @"com.legacymusic.network";
+    });
+    return queue;
+}
 
 - (void)postToHost:(NSString *)host path:(NSString *)path body:(NSDictionary *)body
         completion:(void (^)(id json, NSError *error))completion {
+    [self postToHost:host path:path body:body ingestingVisitorData:YES completion:completion];
+}
+
+// ingestingVisitorData must be NO for any request whose client differs from the
+// one the cached visitorData came from.
+//
+// The visitor token is issued per client, so a reply from the WEB client hands
+// back a token that is meaningless to the Android VR client. Harvesting it anyway
+// used to poison the shared cache: one comments fetch would swap the token, and
+// the following VR -player or -next request would go out carrying a WEB token and
+// come back empty, which surfaced as "No video information returned" on an
+// unrelated page.
+- (void)postToHost:(NSString *)host path:(NSString *)path body:(NSDictionary *)body
+ingestingVisitorData:(BOOL)ingest completion:(void (^)(id json, NSError *error))completion {
     NSString *urlString = [NSString stringWithFormat:@"https://%@/youtubei/v1/%@?key=%@&prettyPrint=false",
                            host, path, LTAPIKey];
     NSURL *url = [NSURL URLWithString:urlString];
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url
                                                            cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
-                                                       timeoutInterval:30.0];
+                                                       timeoutInterval:10.0];
     [request setHTTPMethod:@"POST"];
     [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
     [request setValue:LTBrowserUserAgent forHTTPHeaderField:@"User-Agent"];
     [request setValue:[NSString stringWithFormat:@"https://%@/", host] forHTTPHeaderField:@"Referer"];
 
     NSError *serializeError = nil;
-    NSData *payload = [NSJSONSerialization dataWithJSONObject:body options:0 error:&serializeError];
+    NSData *payload = [S6JSON dataWithObject:body error:&serializeError];
     if (!payload) {
         if (completion) completion(nil, serializeError);
         return;
     }
     [request setHTTPBody:payload];
 
-    [NSURLConnection sendAsynchronousRequest:request queue:[NSOperationQueue mainQueue]
-                           completionHandler:^(NSURLResponse *response, NSData *data, NSError *connectionError) {
+    LTSendAsyncRequest(request, LTNetworkCallbackQueue(),^(NSURLResponse *response, NSData *data, NSError *connectionError) {
         if (connectionError) {
-            if (completion) completion(nil, connectionError);
+            dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(nil, connectionError); });
             return;
         }
-        NSError *parseError = nil;
-        id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:&parseError];
-        if (!obj) {
-            if (completion) completion(nil, parseError);
-            return;
-        }
-        [self ingestVisitorData:obj];
-        if (completion) completion(obj, nil);
-    }];
+        // Parse off the main thread. A YouTube InnerTube search response is
+        // routinely several hundred KB, and NSJSONSerialization on iOS 6 is a
+        // slow recursive-descent parser allocating a container per value; this
+        // ran on the main thread for every search, browse and lyrics fetch.
+        dispatch_async(LTJSONQueue(), ^{
+            @autoreleasepool {
+                NSError *parseError = nil;
+                id obj = [S6JSON objectWithData:data error:&parseError];
+                // Everything that touches app state or UI comes back to main.
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (!obj) {
+                        if (completion) completion(nil, parseError);
+                        return;
+                    }
+                    if (ingest) [self ingestVisitorData:obj];
+                    if (completion) completion(obj, nil);
+                });
+            }
+        });
+    });
 }
 
 - (void)ingestVisitorData:(id)json {
@@ -232,6 +483,112 @@ static id LTPath(id root, id key, ...) {
     }];
 }
 
+- (BOOL)arrayContainsVideoId:(NSArray *)arr videoId:(NSString *)vid {
+    for (LTTrack *t in arr) {
+        if ([t.videoId isEqualToString:vid]) return YES;
+    }
+    return NO;
+}
+
+- (void)extractRadioTracksFromContents:(NSArray *)contents intoArray:(NSMutableArray *)tracks excludeVideoId:(NSString *)exclude {
+    if (![contents isKindOfClass:[NSArray class]]) return;
+    for (id c in contents) {
+        if (![c isKindOfClass:[NSDictionary class]]) continue;
+        NSDictionary *ppr = [c objectForKey:@"playlistPanelVideoRenderer"];
+        if (ppr) {
+            LTTrack *t = [self trackFromPlaylistPanelVideoRenderer:ppr];
+            if (t && ![t.videoId isEqualToString:exclude] && ![self arrayContainsVideoId:tracks videoId:t.videoId]) [tracks addObject:t];
+        }
+    }
+}
+
+- (LTTrack *)trackFromPlaylistPanelVideoRenderer:(NSDictionary *)r {
+    NSString *videoId = [r objectForKey:@"videoId"];
+    if (![videoId isKindOfClass:[NSString class]] || !videoId.length) return nil;
+    LTTrack *t = [[LTTrack alloc] init];
+    t.videoId = videoId;
+    NSArray *truns = LTPath(r, @"title", @"runs", nil);
+    if ([truns isKindOfClass:[NSArray class]]) {
+        t.title = [self textFromRuns:truns];
+    } else {
+        t.title = LTPath(r, @"title", @"simpleText", nil);
+    }
+    if (!t.title.length && [[r objectForKey:@"title"] isKindOfClass:[NSString class]]) t.title = [r objectForKey:@"title"];
+    NSArray *byline = LTPath(r, @"longBylineText", @"runs", nil);
+    if ([byline isKindOfClass:[NSArray class]] && byline.count) {
+        NSArray *f = [self filteredRuns:byline];
+        if (f.count) t.artist = [f objectAtIndex:0];
+    }
+    t.thumbnailURL = [self videoThumbnailURL:r];
+    NSString *len = LTPath(r, @"lengthText", @"simpleText", nil);
+    if (!len) len = LTPath(r, @"lengthText", @"runs", @0, @"text", nil);
+    if ([len isKindOfClass:[NSString class]] && len.length) t.duration = [[self class] timeFromString:len];
+    return t;
+}
+
+- (void)fetchRadioForTrack:(LTTrack *)track completion:(void (^)(NSArray *tracks, NSError *error))completion {
+    if (!track.videoId.length) {
+        if (completion) completion(nil, [self errorWithCode:1 message:@"Missing video id"]);
+        return;
+    }
+    NSDictionary *body = @{
+        @"context": [self webRemixContext],
+        @"enablePersistentPlaylistPanel": @YES,
+        @"isAudioOnly": @YES,
+        @"tunerSettingValue": @"AUTOMIX_SETTING_NORMAL",
+        @"videoId": track.videoId,
+        @"playlistId": [NSString stringWithFormat:@"RDAMVM%@", track.videoId],
+        @"watchEndpointMusicSupportedConfigs": @{
+            @"watchEndpointMusicConfig": @{
+                @"hasPersistentPlaylistPanel": @YES,
+                @"musicVideoType": @"MUSIC_VIDEO_TYPE_ATV",
+            }
+        },
+    };
+    [self postToHost:@"music.youtube.com" path:@"next" body:body completion:^(id json, NSError *error) {
+        if (error || ![json isKindOfClass:[NSDictionary class]]) {
+            if (completion) completion(nil, error);
+            return;
+        }
+        NSMutableArray *tracks = [NSMutableArray array];
+        NSArray *tabs = LTPath(json, @"contents", @"singleColumnMusicWatchNextResultsRenderer", @"tabbedRenderer", @"watchNextTabbedResultsRenderer", @"tabs", nil);
+        if ([tabs isKindOfClass:[NSArray class]]) {
+            for (id tab in tabs) {
+                NSDictionary *tabRenderer = [tab objectForKey:@"tabRenderer"];
+                if (![tabRenderer isKindOfClass:[NSDictionary class]]) continue;
+                NSArray *contents = LTPath(tabRenderer, @"content", @"tabRendererContent", @"listPanelRenderer", @"contents", nil);
+                if (![contents isKindOfClass:[NSArray class]]) {
+                    contents = LTPath(tabRenderer, @"content", @"sectionListRenderer", @"contents", nil);
+                }
+                [self extractRadioTracksFromContents:contents intoArray:tracks excludeVideoId:track.videoId];
+                if (tracks.count > 30) break;
+            }
+        }
+        if (!tracks.count) {
+            [self enumerateRenderersIn:json key:@"playlistPanelVideoRenderer" block:^(NSDictionary *r) {
+                LTTrack *t = [self trackFromPlaylistPanelVideoRenderer:r];
+                if (t && ![t.videoId isEqualToString:track.videoId] && ![self arrayContainsVideoId:tracks videoId:t.videoId]) [tracks addObject:t];
+            }];
+        }
+        if (completion) completion(tracks, nil);
+    }];
+}
+
+- (void)fetchRadioForArtist:(NSString *)artist completion:(void (^)(NSArray *tracks, NSError *error))completion {
+    if (!artist.length) {
+        if (completion) completion(nil, [self errorWithCode:1 message:@"Missing artist"]);
+        return;
+    }
+    [self searchVideosWithQuery:artist completion:^(NSArray *tracks, NSError *error) {
+        if (!tracks.count) {
+            if (completion) completion(nil, error);
+            return;
+        }
+        LTTrack *seed = [tracks objectAtIndex:0];
+        [self fetchRadioForTrack:seed completion:completion];
+    }];
+}
+
 - (void)searchVideosWithQuery:(NSString *)query
                    completion:(void (^)(NSArray *tracks, NSError *error))completion {
     if (!query.length) {
@@ -293,8 +650,8 @@ static id LTPath(id root, id key, ...) {
     NSString *videoId = [renderer objectForKey:@"videoId"];
     if (![videoId isKindOfClass:[NSString class]] || !videoId.length) return nil;
     id titleObj = [renderer objectForKey:@"title"];
-    NSString *title = [self textFromRuns:titleObj[@"runs"]];
-    if (!title.length) title = titleObj[@"simpleText"];
+    NSString *title = [self textFromRuns:[titleObj objectForKey:@"runs"]];
+    if (!title.length) title = [titleObj objectForKey:@"simpleText"];
     if (!title.length) return nil;
 
     LTTrack *track = [[LTTrack alloc] init];
@@ -314,8 +671,8 @@ static id LTPath(id root, id key, ...) {
     NSString *videoId = [renderer objectForKey:@"videoId"];
     if (![videoId isKindOfClass:[NSString class]] || !videoId.length) return nil;
     id titleObj = [renderer objectForKey:@"title"];
-    NSString *title = [self textFromRuns:titleObj[@"runs"]];
-    if (!title.length) title = titleObj[@"simpleText"];
+    NSString *title = [self textFromRuns:[titleObj objectForKey:@"runs"]];
+    if (!title.length) title = [titleObj objectForKey:@"simpleText"];
     if (!title.length) return nil;
 
     LTTrack *track = [[LTTrack alloc] init];
@@ -442,18 +799,50 @@ static id LTPath(id root, id key, ...) {
 }
 
 - (void)browseArtist:(NSString *)browseId
-          completion:(void (^)(NSDictionary *info, NSArray *topSongs, NSArray *albums, NSError *error))completion
+          completion:(void (^)(NSDictionary *info, NSArray *topSongs, NSArray *allSongs, NSArray *albums, NSError *error))completion
           avatarURL:(void (^)(NSString *avatarURL))avatarBlock {
     NSDictionary *body = @{@"context": [self webRemixContext], @"browseId": browseId};
     [self postToHost:@"music.youtube.com" path:@"browse" body:body completion:^(id json, NSError *error) {
         if (error || !json) {
-            if (completion) completion(nil, nil, nil, error);
+            if (completion) completion(nil, nil, nil, nil, error);
             return;
         }
         NSDictionary *info = [self headerInfo:json squareThumbnail:YES];
         NSArray *topSongs = [self artistTopSongs:json];
         NSArray *albums = [self artistAlbums:json];
-        if (completion) completion(info, topSongs, albums, nil);
+
+        // Reuse this same response rather than asking again: gather every song
+        // on the page, following the shelf continuation for the rest, then sort
+        // by play count. The caller's completion waits for all of that so
+        // "all songs" really is all of them.
+        NSMutableArray *allSongs = [NSMutableArray array];
+        NSMutableDictionary *counts = [NSMutableDictionary dictionary];
+        NSMutableSet *seen = [NSMutableSet set];
+        __unsafe_unretained LTYouTubeClient *weakSelf = self;
+        [self collectArtistSongsIn:json
+                            tracks:allSongs
+                            counts:counts
+                              seen:seen
+                    remainingPages:kLTArtistSongPages
+                           onDone:^{
+            LTYouTubeClient *strongSelf = weakSelf;
+            // Stash the count on the track so the list can show it, which is
+            // also the only way to see that the ordering is really by plays.
+            for (LTTrack *track in allSongs) {
+                NSNumber *count = [counts objectForKey:track.videoId];
+                track.playCount = count ? [count longLongValue] : -1;
+            }
+            [strongSelf sortArtistSongs:allSongs counts:counts];
+            // Evidence that the play counts actually parsed: without this the
+            // only symptom of a broken parse is a list that looks unsorted.
+            NSUInteger probe = MIN((NSUInteger)5, allSongs.count);
+            for (NSUInteger i = 0; i < probe; i++) {
+                LTTrack *t = [allSongs objectAtIndex:i];
+                LTLog(@"ARTIST top%lu '%@' plays=%@", (unsigned long)i, t.title,
+                      [counts objectForKey:t.videoId] ?: @"none");
+            }
+            if (completion) completion(info, topSongs, allSongs, albums, nil);
+        }];
     }];
     if (avatarBlock) {
         [self channelAvatarURLForBrowseId:browseId completion:avatarBlock];
@@ -494,7 +883,7 @@ static id LTPath(id root, id key, ...) {
         if (avatarURL.length) {
             [self.channelAvatarCache setObject:avatarURL forKey:browseId];
         }
-        NSArray *waiters = [self.pendingChannelAvatars objectForKey:browseId] ?: @[];
+        NSArray *waiters = [self.pendingChannelAvatars objectForKey:browseId] ?: [NSArray array];
         [self.pendingChannelAvatars removeObjectForKey:browseId];
         dispatch_async(dispatch_get_main_queue(), ^{
             for (void (^waiter)(NSString *) in waiters) {
@@ -526,7 +915,7 @@ static id LTPath(id root, id key, ...) {
     [pending addObject:completion];
     if (pending.count > 1) return;
 
-    __weak LTYouTubeClient *weakSelf = self;
+    __unsafe_unretained LTYouTubeClient *weakSelf = self;
     [self searchWithQuery:trimmed type:@"artists" completion:^(NSArray *items, NSError *error) {
         LTYouTubeClient *strongSelf = weakSelf;
         if (!strongSelf) return;
@@ -549,7 +938,7 @@ static id LTPath(id root, id key, ...) {
                 final = [strongSelf channelAvatarURL:final size:160];
                 [[LTPlaylistStore sharedStore] setArtistAvatarURL:final forName:trimmed];
             }
-            NSArray *waiters = [strongSelf.pendingNameAvatars objectForKey:key] ?: @[];
+            NSArray *waiters = [strongSelf.pendingNameAvatars objectForKey:key] ?: [NSArray array];
             [strongSelf.pendingNameAvatars removeObjectForKey:key];
             dispatch_async(dispatch_get_main_queue(), ^{
                 for (void (^waiter)(NSString *) in waiters) {
@@ -562,6 +951,42 @@ static id LTPath(id root, id key, ...) {
             return;
         }
         [strongSelf channelAvatarURLForBrowseId:browseId completion:finish];
+    }];
+}
+
+- (void)resolveArtistBrowseId:(NSString *)name
+                   completion:(void (^)(NSString *browseId))completion {
+    if (!completion) return;
+    NSString *trimmed = [name stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (!trimmed.length) { completion(nil); return; }
+    NSString *key = [trimmed lowercaseString];
+    __unsafe_unretained LTYouTubeClient *weakSelf = self;
+    [self searchWithQuery:trimmed type:@"artists" completion:^(NSArray *items, NSError *error) {
+        LTYouTubeClient *strongSelf = weakSelf;
+        if (!strongSelf) { completion(nil); return; }
+        NSString *browseId = nil;
+        NSString *partialId = nil;
+        for (id item in items) {
+            if (![item isKindOfClass:[LTBrowseItem class]]) continue;
+            LTBrowseItem *bi = item;
+            if (bi.kind != LTBrowseKindArtist || !bi.browseId.length) continue;
+            if ([[bi.title lowercaseString] isEqualToString:key]) { browseId = bi.browseId; break; }
+            if (!partialId && [bi.title rangeOfString:trimmed options:NSCaseInsensitiveSearch].location != NSNotFound) {
+                partialId = bi.browseId;
+            }
+        }
+        if (!browseId.length) browseId = partialId;
+        // Fallback: first artist result
+        if (!browseId.length) {
+            for (id item in items) {
+                if ([item isKindOfClass:[LTBrowseItem class]]) {
+                    LTBrowseItem *bi = item;
+                    if (bi.kind == LTBrowseKindArtist && bi.browseId.length) { browseId = bi.browseId; break; }
+                }
+            }
+        }
+        LTLog(@"RESOLVE artist '%@' -> browseId=%@", trimmed, browseId ?: @"(none)");
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(browseId); });
     }];
 }
 
@@ -582,7 +1007,7 @@ static id LTPath(id root, id key, ...) {
 
 - (void)fetchTrendingSongsWithCompletion:(void (^)(NSArray *tracks, NSError *error))completion {
     NSDictionary *body = @{@"context": [self webRemixContext], @"browseId": @"FEmusic_charts"};
-    __weak LTYouTubeClient *weakSelf = self;
+    __unsafe_unretained LTYouTubeClient *weakSelf = self;
     [self postToHost:@"music.youtube.com" path:@"browse" body:body completion:^(id json, NSError *error) {
         LTYouTubeClient *strongSelf = weakSelf;
         if (!strongSelf) {
@@ -614,7 +1039,7 @@ static id LTPath(id root, id key, ...) {
     __block NSString *trending = nil;
     __block NSString *fallback = nil;
     [self enumerateRenderersIn:json key:@"musicTwoRowItemRenderer" block:^(NSDictionary *renderer) {
-        NSString *title = [self textFromRuns:[renderer objectForKey:@"title"][@"runs"]];
+        NSString *title = [self textFromRuns:[[renderer objectForKey:@"title"] objectForKey:@"runs"]];
         NSString *browseId = LTPath(renderer, @"navigationEndpoint", @"browseEndpoint", @"browseId", nil);
         if (![browseId isKindOfClass:[NSString class]] || !browseId.length) return;
         if (!fallback && [browseId hasPrefix:@"VL"]) fallback = browseId;
@@ -629,7 +1054,7 @@ static id LTPath(id root, id key, ...) {
 
     id immersive = LTPath(json, @"header", @"musicImmersiveHeaderRenderer", nil);
     if ([immersive isKindOfClass:[NSDictionary class]]) {
-        title = [self textFromRuns:[immersive objectForKey:@"title"][@"runs"]];
+        title = [self textFromRuns:[[immersive objectForKey:@"title"] objectForKey:@"runs"]];
         thumb = [self thumbnailFromHeader:immersive];
     }
 
@@ -640,8 +1065,8 @@ static id LTPath(id root, id key, ...) {
             if (![section isKindOfClass:[NSDictionary class]]) continue;
             NSDictionary *header = [section objectForKey:@"musicResponsiveHeaderRenderer"];
             if (!header) continue;
-            title = [self textFromRuns:[header objectForKey:@"title"][@"runs"]];
-            subtitle = [self textFromRuns:[header objectForKey:@"subtitle"][@"runs"]];
+            title = [self textFromRuns:[[header objectForKey:@"title"] objectForKey:@"runs"]];
+            subtitle = [self textFromRuns:[[header objectForKey:@"subtitle"] objectForKey:@"runs"]];
             thumb = [self thumbnailFromHeader:header];
             break;
         }
@@ -656,7 +1081,7 @@ static id LTPath(id root, id key, ...) {
                             @"tabRenderer", @"content", @"musicDetailHeaderRenderer", nil);
         }
         if ([detail isKindOfClass:[NSDictionary class]]) {
-            title = [self textFromRuns:[detail objectForKey:@"title"][@"runs"]];
+            title = [self textFromRuns:[[detail objectForKey:@"title"] objectForKey:@"runs"]];
             subtitle = [self subtitleForDetailHeader:detail];
             thumb = [self thumbnailFromHeader:detail];
         }
@@ -673,14 +1098,14 @@ static id LTPath(id root, id key, ...) {
 
 - (NSString *)subtitleForDetailHeader:(NSDictionary *)detail {
     NSMutableArray *parts = [NSMutableArray array];
-    NSArray *s1 = [detail objectForKey:@"subtitle"][@"runs"];
+    NSArray *s1 = [[detail objectForKey:@"subtitle"] objectForKey:@"runs"];
     for (id run in s1) {
         if ([run isKindOfClass:[NSDictionary class]]) {
             NSString *text = [run objectForKey:@"text"];
             if (text.length) [parts addObject:text];
         }
     }
-    id affects = [detail objectForKey:@"subtitle"][@"content"];
+    id affects = [[detail objectForKey:@"subtitle"] objectForKey:@"content"];
     if ([affects isKindOfClass:[NSString class]] && ((NSString *)affects).length) {
         [parts addObject:affects];
     }
@@ -763,8 +1188,8 @@ static id LTPath(id root, id key, ...) {
 
     NSArray *fixed = [item objectForKey:@"fixedColumns"];
     if ([fixed isKindOfClass:[NSArray class]] && fixed.count) {
-        NSDictionary *fc = [fixed objectAtIndex:0][@"musicResponsiveListItemFixedColumnRenderer"];
-        NSArray *druns = [fc objectForKey:@"text"][@"runs"];
+        NSDictionary *fc = [[fixed objectAtIndex:0] objectForKey:@"musicResponsiveListItemFixedColumnRenderer"];
+        NSArray *druns = [[fc objectForKey:@"text"] objectForKey:@"runs"];
         NSString *durText = [self textFromRuns:druns];
         track.duration = [[self class] timeFromString:durText];
     } else {
@@ -776,10 +1201,206 @@ static id LTPath(id root, id key, ...) {
     return track;
 }
 
+// The token that continues a song shelf, if it has one. YouTube hangs it off
+// the shelf's last row as a continuationItemRenderer.
+- (NSString *)songShelfContinuationIn:(NSDictionary *)json {
+    __block NSString *token = nil;
+    [self enumerateRenderersIn:json key:@"musicShelfRenderer" block:^(NSDictionary *shelf) {
+        if (token) return;
+        id contents = [shelf objectForKey:@"contents"];
+        if (![contents isKindOfClass:[NSArray class]]) return;
+        for (id row in contents) {
+            if (![row isKindOfClass:[NSDictionary class]]) continue;
+            id found = LTPath(row, @"continuationItemRenderer", @"continuationEndpoint",
+                              @"continuationCommand", @"token", nil);
+            if ([found isKindOfClass:[NSString class]] && [(NSString *)found length]) {
+                token = found;
+                break;
+            }
+        }
+    }];
+    if (!token) {
+        // Also look outside the shelves: a page can hang its continuation off
+        // the section list rather than the last row of a shelf.
+        id continuations = [json objectForKey:@"continuations"];
+        if ([continuations isKindOfClass:[NSArray class]]) {
+            for (id c in continuations) {
+                id found = LTPath(c, @"nextContinuationData", @"continuation", nil);
+                if ([found isKindOfClass:[NSString class]] && [(NSString *)found length]) {
+                    token = found;
+                    break;
+                }
+                found = LTPath(c, @"continuationItemRenderer", @"continuationEndpoint",
+                               @"continuationCommand", @"token", nil);
+                if ([found isKindOfClass:[NSString class]] && [(NSString *)found length]) {
+                    token = found;
+                    break;
+                }
+            }
+        }
+    }
+    LTLog(@"ARTISTPAGE token=%@", token ? [NSString stringWithFormat:@"found(%lu)", (unsigned long)token.length] : @"NONE");
+    return token;
+}
+
+// Harvest every song in a browse payload, then follow the shelf's continuation
+// for more, up to `remainingPages` extra requests.
+//
+// The artist's first page only carries the "Top songs" shelf, so without this
+// "all songs" would mean "the dozen songs on the first page". Pages are capped
+// so a prolific artist cannot turn one tap into a hundred requests on a network
+// that is often blocking anyway.
+//
+// Always finishes on the main thread.
+- (void)collectArtistSongsIn:(NSDictionary *)json
+                       tracks:(NSMutableArray *)tracks
+                       counts:(NSMutableDictionary *)counts
+                         seen:(NSMutableSet *)seen
+                 remainingPages:(NSInteger)remainingPages
+                        onDone:(void (^)(void))onDone {
+    [self enumerateRenderersIn:json key:@"musicShelfRenderer" block:^(NSDictionary *shelf) {
+        id contents = [shelf objectForKey:@"contents"];
+        if (![contents isKindOfClass:[NSArray class]]) return;
+        for (id row in contents) {
+            if (![row isKindOfClass:[NSDictionary class]]) continue;
+            NSDictionary *item = [row objectForKey:@"musicResponsiveListItemRenderer"];
+            if (!item) continue;
+            LTTrack *track = [self trackFromItem:item];
+            if (!track || !track.videoId.length) continue;
+            if ([seen containsObject:track.videoId]) continue;
+            [seen addObject:track.videoId];
+            [tracks addObject:track];
+            long long count = [self playCountFromItem:item];
+            if (count >= 0 && ![counts objectForKey:track.videoId]) {
+                [counts setObject:@(count) forKey:track.videoId];
+            }
+        }
+    }];
+
+    LTLog(@"ARTISTPAGE page harvested=%lu total=%lu",
+          (unsigned long)seen.count, (unsigned long)tracks.count);
+    NSString *token = remainingPages > 0 ? [self songShelfContinuationIn:json] : nil;
+    if (!token.length) {
+        dispatch_async(dispatch_get_main_queue(), ^{ if (onDone) onDone(); });
+        return;
+    }
+
+    NSDictionary *body = @{@"context": [self webRemixContext], @"continuation": token};
+    [self postToHost:@"music.youtube.com" path:@"browse" body:body completion:^(id next, NSError *error) {
+        if (![next isKindOfClass:[NSDictionary class]]) {
+            dispatch_async(dispatch_get_main_queue(), ^{ if (onDone) onDone(); });
+            return;
+        }
+        [self collectArtistSongsIn:next
+                            tracks:tracks
+                            counts:counts
+                              seen:seen
+                    remainingPages:remainingPages - 1
+                           onDone:onDone];
+    }];
+}
+
+// Sorts a harvested song list by play count, descending.
+//
+// In place, because the caller is waiting on it. Songs with no count available
+// sink below every counted one: an unknown count is not evidence of zero plays,
+// and putting them at the top would be worse than putting them at the bottom.
+// Among songs that all lack counts, the page's own order is kept.
+- (void)sortArtistSongs:(NSMutableArray *)tracks counts:(NSDictionary *)counts {
+    [tracks sortUsingComparator:^NSComparisonResult(LTTrack *a, LTTrack *b) {
+        id ra = [counts objectForKey:a.videoId];
+        id rb = [counts objectForKey:b.videoId];
+        BOOL ha = ra != nil, hb = rb != nil;
+        if (ha && hb) {
+            long long ca = [ra longLongValue], cb = [rb longLongValue];
+            if (ca > cb) return NSOrderedAscending;
+            if (ca < cb) return NSOrderedDescending;
+        } else if (ha != hb) {
+            return ha ? NSOrderedAscending : NSOrderedDescending;
+        }
+        if (!ha && !hb) {
+            NSUInteger ia = [tracks indexOfObject:a];
+            NSUInteger ib = [tracks indexOfObject:b];
+            if (ia < ib) return NSOrderedAscending;
+            if (ia > ib) return NSOrderedDescending;
+        }
+        return NSOrderedSame;
+    }];
+}
+
+// A song row's play count, parsed from its subtitle.
+//
+// The runs concatenate with no separator between them, so the subtitle arrives
+// as one glued string: "Synthion87K plays", where "87K" is the count and
+// "Synthion" the artist. The count is also frequently followed by the *next*
+// row's title in the same string. Neither is a word boundary, so the number is
+// found by walking backwards from "plays" over numeric characters rather than
+// by splitting on whitespace, which yields "Synthion87K" and parses as nothing.
+//
+// Returns -1 when the row genuinely carries no count, which sorts below every
+// row that has one.
+- (long long)playCountFromItem:(NSDictionary *)item {
+    NSArray *flex = [item objectForKey:@"flexColumns"];
+    if (![flex isKindOfClass:[NSArray class]] || flex.count < 2) return -1;
+
+    NSMutableString *subtitle = [NSMutableString string];
+    // Every column after the title, so a count that has drifted into another
+    // column is still found.
+    for (NSUInteger i = 1; i < flex.count; i++) {
+        NSArray *runs = [self runsFromFlexColumn:[flex objectAtIndex:i]];
+        if (![runs isKindOfClass:[NSArray class]]) continue;
+        [subtitle appendString:[self textFromRuns:runs]];
+    }
+    if (!subtitle.length) return -1;
+
+    NSRange plays = [subtitle rangeOfString:@"play" options:NSCaseInsensitiveSearch];
+    if (plays.location == NSNotFound) return -1;
+
+    // Walk backwards from "plays" collecting the numeric characters directly
+    // before it.
+    //
+    // NOT a whitespace split. The runs concatenate with no separator, so the
+    // artist name arrives glued to the count - "Synthion87K plays" - and a
+    // token split yields "Synthion87K", which is not a number. Scanning back
+    // over digits and a K/M/B suffix stops at the first letter instead, and so
+    // also survives the trailing title of the *next* row that ends up in the
+    // same string.
+    // Skip any whitespace sitting directly before "plays" - "87K plays" puts a
+    // space there, and treating the space as the end of the number stopped the
+    // walk before it ever reached the digits.
+    NSUInteger end = plays.location;
+    while (end > 0) {
+        unichar c = [subtitle characterAtIndex:end - 1];
+        if (c != ' ' && c != '\t' && c != 0x00A0) break;
+        end--;
+    }
+
+    NSUInteger start = end;
+    while (start > 0) {
+        unichar c = [subtitle characterAtIndex:start - 1];
+        BOOL numeric = (c >= '0' && c <= '9') || c == '.' || c == ',' ||
+                       c == 'K' || c == 'k' || c == 'M' || c == 'm' ||
+                       c == 'B' || c == 'b';
+        if (!numeric) break;
+        start--;
+    }
+    if (start == end) return -1;
+
+    NSString *token = [subtitle substringWithRange:NSMakeRange(start, end - start)];
+    // A stray suffix can leave a dangling separator, e.g. "2," - drop any
+    // trailing punctuation before parsing.
+    while (token.length > 1) {
+        unichar last = [token characterAtIndex:token.length - 1];
+        if (last != '.' && last != ',') break;
+        token = [token substringToIndex:token.length - 1];
+    }
+    return LTParseCountToken(token);
+}
+
 - (NSArray *)artistTopSongs:(NSDictionary *)json {
     NSMutableArray *tracks = [NSMutableArray array];
     [self enumerateRenderersIn:json key:@"musicShelfRenderer" block:^(NSDictionary *shelf) {
-        NSString *shelfTitle = [self textFromRuns:[shelf objectForKey:@"title"][@"runs"]];
+        NSString *shelfTitle = [self textFromRuns:[[shelf objectForKey:@"title"] objectForKey:@"runs"]];
         if (![shelfTitle isEqualToString:@"Top songs"]) return;
         id contents = [shelf objectForKey:@"contents"];
         if (![contents isKindOfClass:[NSArray class]]) return;
@@ -813,8 +1434,8 @@ static id LTPath(id root, id key, ...) {
             LTBrowseItem *bi = [[LTBrowseItem alloc] init];
             bi.kind = LTBrowseKindAlbum;
             bi.browseId = browseId;
-            bi.title = [self textFromRuns:[it objectForKey:@"title"][@"runs"]];
-            bi.subtitle = [self textFromRuns:[it objectForKey:@"subtitle"][@"runs"]];
+            bi.title = [self textFromRuns:[[it objectForKey:@"title"] objectForKey:@"runs"]];
+            bi.subtitle = [self textFromRuns:[[it objectForKey:@"subtitle"] objectForKey:@"runs"]];
             NSArray *thumbs = LTPath(it, @"thumbnailRenderer", @"musicThumbnailRenderer", @"thumbnail", @"thumbnails", nil);
             bi.thumbnailURL = [self largestThumbnailURLFromArray:thumbs];
             [albums addObject:bi];
@@ -831,7 +1452,7 @@ static id LTPath(id root, id key, ...) {
         if (completion) completion(nil, NO, 0, [self errorWithCode:1 message:@"Missing video id"]);
         return;
     }
-    __weak LTYouTubeClient *weakSelf = self;
+    __unsafe_unretained LTYouTubeClient *weakSelf = self;
     // ANDROID first: it is the only client whose stream URLs googlevideo
     // still accepts (ANDROID_VR URLs now 403 from PO-token enforcement, and
     // IOS only returns URL-less SABR formats). VR stays as a later fallback.
@@ -1067,6 +1688,15 @@ static id LTPath(id root, id key, ...) {
                              completion:completion];
         return;
     }
+    // The watch page is a 1.4MB HTML download that is decoded into an NSString on
+    // the device. On the mbedTLS path (iOS < 7) that routinely took 60-90s and, in
+    // practice, never yielded caption tracks the player endpoint had already
+    // reported as absent. Fail fast there rather than stalling the lyrics pane.
+    if (LTShouldUseMbedTLS()) {
+        LTLog(@"LYRICS skip watch page on legacy TLS videoId=%@", videoId);
+        if (completion) completion(nil, [self errorWithCode:4 message:@"No lyrics available"]);
+        return;
+    }
     LTLog(@"LYRICS trying watch page fallback for videoId=%@", videoId);
     [self loadCaptionTracksFromWatchPage:videoId completion:completion];
 }
@@ -1076,10 +1706,9 @@ static id LTPath(id root, id key, ...) {
     NSString *urlString = [NSString stringWithFormat:@"https://www.youtube.com/watch?v=%@", videoId];
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlString]
                                                            cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
-                                                       timeoutInterval:30.0];
+                                                       timeoutInterval:10.0];
     [request setValue:LTBrowserUserAgent forHTTPHeaderField:@"User-Agent"];
-    [NSURLConnection sendAsynchronousRequest:request queue:[NSOperationQueue mainQueue]
-                           completionHandler:^(NSURLResponse *response, NSData *data, NSError *connectionError) {
+    LTSendAsyncRequest(request, [NSOperationQueue mainQueue],^(NSURLResponse *response, NSData *data, NSError *connectionError) {
         if (connectionError || !data.length) {
             LTLog(@"LYRICS watch page fetch error videoId=%@ err=%@", videoId, connectionError ?: @"no-data");
             if (completion) completion(nil, connectionError ?: [self errorWithCode:6 message:@"Watch page fetch failed"]);
@@ -1106,8 +1735,7 @@ static id LTPath(id root, id key, ...) {
             return;
         }
         NSError *jsonErr = nil;
-        id obj = [NSJSONSerialization JSONObjectWithData:[playerJSON dataUsingEncoding:NSUTF8StringEncoding]
-                                                options:0 error:&jsonErr];
+        id obj = [S6JSON objectWithData:[playerJSON dataUsingEncoding:NSUTF8StringEncoding] error:&jsonErr];
         if (jsonErr || ![obj isKindOfClass:[NSDictionary class]]) {
             LTLog(@"LYRICS watch page JSON parse failed for videoId=%@", videoId);
             if (completion) completion(nil, jsonErr ?: [self errorWithCode:6 message:@"JSON parse failed"]);
@@ -1141,7 +1769,7 @@ static id LTPath(id root, id key, ...) {
             return;
         }
         if (completion) completion(baseUrl, nil);
-    }];
+    });
 }
 
 - (NSInteger)occurrencesOf:(NSString *)needle in:(NSString *)haystack {
@@ -1199,10 +1827,9 @@ static id LTPath(id root, id key, ...) {
     }
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:requestURL]
                                                            cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
-                                                       timeoutInterval:30.0];
+                                                       timeoutInterval:10.0];
     [request setValue:LTBrowserUserAgent forHTTPHeaderField:@"User-Agent"];
-    [NSURLConnection sendAsynchronousRequest:request queue:[NSOperationQueue mainQueue]
-                           completionHandler:^(NSURLResponse *response, NSData *data, NSError *connectionError) {
+    LTSendAsyncRequest(request, [NSOperationQueue mainQueue],^(NSURLResponse *response, NSData *data, NSError *connectionError) {
         if (connectionError) {
             if (completion) completion(nil, connectionError);
             return;
@@ -1228,7 +1855,7 @@ static id LTPath(id root, id key, ...) {
             return;
         }
         if (completion) completion([lines componentsJoinedByString:@"\n"], nil);
-    }];
+    });
 }
 
 - (NSArray *)parseCaptionLinesFromXML:(NSString *)raw {
@@ -1253,7 +1880,7 @@ static id LTPath(id root, id key, ...) {
 
 - (NSArray *)parseCaptionLinesFromJSON:(NSString *)raw {
     NSData *data = [raw dataUsingEncoding:NSUTF8StringEncoding];
-    id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    id obj = [S6JSON objectWithData:data error:nil];
     if (![obj isKindOfClass:[NSDictionary class]]) return nil;
     NSArray *events = [obj objectForKey:@"events"];
     if (![events isKindOfClass:[NSArray class]]) return nil;
@@ -1505,7 +2132,7 @@ static id LTPath(id root, id key, ...) {
         @"racyCheckOk": @YES,
         @"contentCheckOk": @YES,
     };
-    __weak LTYouTubeClient *weakSelf = self;
+    __unsafe_unretained LTYouTubeClient *weakSelf = self;
     [self postToHost:@"www.youtube.com" path:@"player" body:body completion:^(id json, NSError *error) {
         if (error || !json) {
             if (completion) completion(nil, nil, 0, nil, error);
@@ -1532,6 +2159,178 @@ static id LTPath(id root, id key, ...) {
     }];
 }
 
+// Tries each client context in turn until one returns videoDetails.
+- (void)playerDetailsForVideoId:(NSString *)videoId
+                       contexts:(NSArray *)contexts
+                          names:(NSArray *)names
+                           index:(NSUInteger)index
+                      completion:(void (^)(NSDictionary *details, NSError *error))completion {
+    if (index >= contexts.count) {
+        LTLog(@"GENERAL no client returned videoDetails videoId=%@", videoId);
+        if (completion) completion(nil, [self errorWithCode:3 message:@"No video information returned"]);
+        return;
+    }
+    NSString *name = [names objectAtIndex:index];
+    BOOL ingest = [name isEqualToString:@"ANDROID"] || [name isEqualToString:@"ANDROID_VR"];
+    NSDictionary *body = @{
+        @"context": [contexts objectAtIndex:index],
+        @"videoId": videoId,
+        @"racyCheckOk": @YES,
+        @"contentCheckOk": @YES,
+    };
+    __unsafe_unretained LTYouTubeClient *weakSelf = self;
+    [self postToHost:@"www.youtube.com" path:@"player" body:body ingestingVisitorData:ingest completion:^(id json, NSError *error) {
+        LTYouTubeClient *strongSelf = weakSelf;
+        if (!strongSelf) return;
+        NSDictionary *details = LTPath(json, @"videoDetails", nil);
+        if ([details isKindOfClass:[NSDictionary class]]) {
+            LTLog(@"GENERAL videoDetails via %@ videoId=%@", name, videoId);
+            if (completion) completion(details, nil);
+            return;
+        }
+        NSString *status = LTPath(json, @"playabilityStatus", @"status", nil);
+        NSString *reason = LTPath(json, @"playabilityStatus", @"reason", nil) ?: @"";
+        LTLog(@"GENERAL client %@ unusable videoId=%@ status=%@ reason=%@",
+              name, videoId, status ?: @"?", reason);
+        // Bot walls do not clear between tracks. Cache them briefly so the client
+        // is skipped rather than retried on the next load.
+        if ([status isEqualToString:@"LOGIN_REQUIRED"] ||
+            [reason rangeOfString:@"not a bot" options:NSCaseInsensitiveSearch].location != NSNotFound) {
+            [strongSelf markPlayerClientBlocked:name];
+        }
+        [strongSelf playerDetailsForVideoId:videoId contexts:contexts names:names index:index + 1 completion:completion];
+    }];
+}
+
+#pragma mark - Video general information
+
+// Collects the descriptive facts about a video for the player's General page:
+// the original YouTube title, who uploaded it, view count, like count and the
+// uploader's channel.
+//
+// This needs two endpoints. -player carries videoDetails, which is where the view
+// count lives -- note that the existing -trackMetadataForVideoId: fetches this
+// same payload and discards viewCount. -next carries the like button and the
+// video owner, and neither appears in -player at all.
+//
+// The Android VR client is used for both because it already returns both halves;
+// the comment continuation endpoint only exists under WEB/MWEB, but that is not
+// needed here.
+//
+// Yields a dictionary that may contain any of: title, uploader, channelId,
+// viewCount, likeCount, avatarURL, durationSeconds. Missing fields are simply
+// absent rather than nil-filled, so the caller can show only what it got.
+- (void)fetchVideoGeneralInfoForVideoId:(NSString *)videoId
+                              completion:(void (^)(NSDictionary *info, NSError *error))completion {
+    if (!videoId.length) {
+        if (completion) completion(nil, [self errorWithCode:1 message:@"Missing video id"]);
+        return;
+    }
+    // This page is opened repeatedly for the same track. Answer from the bounded
+    // cache first so a reopen costs nothing and never waits on the network.
+    NSDictionary *cachedInfo = [self.generalInfoCache objectForKey:videoId];
+    if (cachedInfo) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (completion) completion(cachedInfo, nil);
+        });
+        return;
+    }
+    __unsafe_unretained LTYouTubeClient *weakSelf = self;
+
+    // The player endpoint is the one call that gets bot-blocked, and it is blocked
+    // per client: the VR context started returning playabilityStatus
+    // LOGIN_REQUIRED / "Sign in to confirm you're not a bot" while search, playback
+    // and lyrics carried on working. So -player is tried across a chain of clients
+    // and the first one that yields videoDetails wins, the same shape as the
+    // ANDROID -> ANDROID_VR -> IOS chain used for stream URLs.
+    //
+    // visitorData is harvested only from the ANDROID family. IOS and WEB issue
+    // their own tokens, and folding those into the shared cache is what previously
+    // broke unrelated VR requests.
+    // ANDROID_VR goes last: on the 3GS it is the one that reliably answers
+    // LOGIN_REQUIRED, and trying it first put a doomed handshake at the head of
+    // every load. The others have been returning videoDetails consistently.
+    NSMutableArray *contexts = [NSMutableArray arrayWithCapacity:4];
+    NSMutableArray *names = [NSMutableArray arrayWithCapacity:4];
+    NSArray *candidates = @[@"ANDROID", @"IOS", @"WEB", @"ANDROID_VR"];
+    for (NSString *name in candidates) {
+        if ([self isPlayerClientBlocked:name]) continue;
+        [names addObject:name];
+        if ([name isEqualToString:@"ANDROID_VR"]) [contexts addObject:[self androidVRContext]];
+        else if ([name isEqualToString:@"ANDROID"]) [contexts addObject:[self androidContext]];
+        else if ([name isEqualToString:@"IOS"]) [contexts addObject:[self iosContext]];
+        else [contexts addObject:[self webContext]];
+    }
+    if (!names.count) {
+        if (completion) completion(nil, [self errorWithCode:3 message:@"No video information returned"]);
+        return;
+    }
+    [self playerDetailsForVideoId:videoId
+                        contexts:contexts
+                           names:names
+                            index:0
+                       completion:^(NSDictionary *details, NSError *error) {
+        LTYouTubeClient *strongSelf = weakSelf;
+        if (!strongSelf) return;
+
+        NSMutableDictionary *info = [NSMutableDictionary dictionary];
+        if ([details isKindOfClass:[NSDictionary class]]) {
+            NSString *title = [details objectForKey:@"title"];
+            if ([title isKindOfClass:[NSString class]] && title.length) [info setObject:title forKey:@"title"];
+
+            NSString *author = [details objectForKey:@"author"];
+            if ([author isKindOfClass:[NSString class]] && author.length) [info setObject:author forKey:@"uploader"];
+
+            NSString *channelId = [details objectForKey:@"channelId"];
+            if ([channelId isKindOfClass:[NSString class]] && channelId.length) [info setObject:channelId forKey:@"channelId"];
+
+            NSString *views = LTFormatCount([details objectForKey:@"viewCount"]);
+            if (views) [info setObject:views forKey:@"viewCount"];
+
+            NSString *seconds = [details objectForKey:@"lengthSeconds"];
+            if (seconds.length) [info setObject:seconds forKey:@"durationSeconds"];
+        }
+
+        NSDictionary *nextBody = @{
+            @"context": [strongSelf androidVRContext],
+            @"videoId": videoId,
+        };
+        [strongSelf postToHost:@"www.youtube.com" path:@"next" body:nextBody completion:^(id nextJSON, NSError *nextError) {
+            LTYouTubeClient *innerSelf = weakSelf;
+            if (!innerSelf) return;
+
+            if (nextJSON) {
+                NSDictionary *meta = LTFindFirstValue(nextJSON, @"videoMetadataRenderer", 14);
+                NSString *likes = LTFormatCount(LTPath(meta, @"likeButton", @"likeButtonRenderer", @"likeCount", nil));
+                if (likes) [info setObject:likes forKey:@"likeCount"];
+
+                NSDictionary *owner = LTFindFirstValue(nextJSON, @"videoOwnerRenderer", 14);
+                if ([owner isKindOfClass:[NSDictionary class]]) {
+                    NSString *ownerTitle = LTRunText([owner objectForKey:@"title"]);
+                    if (ownerTitle.length && ![info objectForKey:@"uploader"]) [info setObject:ownerTitle forKey:@"uploader"];
+                    NSString *browseId = LTPath(owner, @"navigationEndpoint", @"browseEndpoint", @"browseId", nil);
+                    if (browseId.length && ![info objectForKey:@"channelId"]) [info setObject:browseId forKey:@"channelId"];
+                    NSArray *thumbs = LTPath(owner, @"thumbnail", @"thumbnails", nil);
+                    NSString *avatar = [innerSelf largestThumbnailURLFromArray:thumbs];
+                    if (avatar) [info setObject:avatar forKey:@"avatarURL"];
+                }
+            }
+
+            if (!info.count && error) {
+                if (completion) completion(nil, error);
+                return;
+            }
+            // Always finish on the main thread; postToHost: already does, but the
+            // nested call makes that worth being explicit about.
+            NSDictionary *finalInfo = info.count ? [NSDictionary dictionaryWithDictionary:info] : nil;
+            if (finalInfo) [innerSelf.generalInfoCache setObject:finalInfo forKey:videoId];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (completion) completion(finalInfo, finalInfo ? nil : (error ?: [strongSelf errorWithCode:3 message:@"No video information returned"]));
+            });
+        }];
+    }];
+}
+
 #pragma mark - Images
 
 static BOOL LTBorderRowUniform(const UInt8 *px, size_t W, size_t y,
@@ -1551,6 +2350,16 @@ static BOOL LTBorderColUniform(const UInt8 *px, size_t W, size_t x,
         if (abs(p[0] - ref[0]) > 18 || abs(p[1] - ref[1]) > 18 || abs(p[2] - ref[2]) > 18) return NO;
     }
     return YES;
+}
+
+// Cost in bytes for the artwork cache, so its totalCostLimit is actually
+// enforced: an NSCache ignores the limit entirely unless every entry is stored
+// with a cost. Assumes 4 bytes/pixel, the budget LTImageCacheBudget is set to
+// multiply out against.
+static NSUInteger LTImageCacheCost(UIImage *image) {
+    CGImageRef cg = image.CGImage;
+    if (!cg) return 1;
+    return CGImageGetWidth(cg) * CGImageGetHeight(cg) * 4;
 }
 
 // Removes uniform border padding YouTube pads onto some cover art so the
@@ -1603,7 +2412,12 @@ static UIImage *LTTrimmedArtworkImage(UIImage *image, BOOL allowCenterCrop) {
 
     size_t cw = right - left;
     size_t ch = bottom - top;
-    if (cw >= W && ch >= H) return image;
+    // Center-crop to a square for video thumbnails.
+    //
+    // This has to run even when the border scan above trimmed nothing. A plain
+    // 16:9 video still has no uniform bars for that scan to find, so it used to
+    // hit the "nothing was trimmed" early return and stay landscape, leaving a
+    // letterboxed strip down each side of the artwork in a square frame.
     if (allowCenterCrop && cw != ch) {
         if (cw > ch) {
             left += (cw - ch) / 2;
@@ -1612,6 +2426,8 @@ static UIImage *LTTrimmedArtworkImage(UIImage *image, BOOL allowCenterCrop) {
             top += (ch - cw) / 2;
             ch = cw;
         }
+    } else if (cw >= W && ch >= H) {
+        return image;
     }
 
     CGImageRef sub = CGImageCreateWithImageInRect(cg, CGRectMake((CGFloat)left, (CGFloat)top, (CGFloat)cw, (CGFloat)ch));
@@ -1621,12 +2437,184 @@ static UIImage *LTTrimmedArtworkImage(UIImage *image, BOOL allowCenterCrop) {
     return trimmed ?: image;
 }
 
+// Scales an image down so its long edge is at most maxPixel.
+//
+// WHY: the artwork cache held full-resolution YouTube covers -- 1200x1200
+// JPEGs of 700-800KB each, 31MB across 191 files on a test device. Decoding one
+// costs a 5.7MB RGBA allocation before anything else can happen to it. Moving
+// that to a background queue did not make it free: a 3GS has effectively one
+// core, so several decodes running concurrently starve the main thread and the
+// incoming tab stalls anyway.
+//
+// The result is what actually gets cached and what gets written back to disk, so
+// the cache shrinks toward ~1.6MB per entry as files are revisited, and the
+// large files already on disk are rewritten smaller for free.
+//
+// 640 covers the largest artwork the app ever draws (a full-width cover on a
+// 320pt-wide @2x screen), so this is not a visible quality trade.
+static UIImage *LTDownscaledImage(UIImage *image, CGFloat maxPixel) {
+    CGImageRef cg = image.CGImage;
+    if (!cg) return image;
+    size_t W = CGImageGetWidth(cg);
+    size_t H = CGImageGetHeight(cg);
+    CGFloat longest = (CGFloat)MAX(W, H);
+    if (longest <= maxPixel) return image;
+
+    CGFloat scale = maxPixel / longest;
+    size_t w = (size_t)MAX(1.0f, roundf((CGFloat)W * scale));
+    size_t h = (size_t)MAX(1.0f, roundf((CGFloat)H * scale));
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    if (!cs) return image;
+    CGContextRef ctx = CGBitmapContextCreate(NULL, w, h, 8, 0, cs,
+                                             kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Host);
+    CGColorSpaceRelease(cs);
+    if (!ctx) return image;
+    CGContextSetInterpolationQuality(ctx, kCGInterpolationMedium);
+    CGContextDrawImage(ctx, CGRectMake(0, 0, (CGFloat)w, (CGFloat)h), cg);
+    CGImageRef scaled = CGBitmapContextCreateImage(ctx);
+    CGContextRelease(ctx);
+    if (!scaled) return image;
+    UIImage *out = [UIImage imageWithCGImage:scaled];
+    CGImageRelease(scaled);
+    return out;
+}
+
+// Longest edge any decoded artwork is allowed to be.
+static const CGFloat kLTArtworkMaxPixel = 640.0f;
+
+// Queue for decode/downsample/trim work.
+//
+// Kept simple and iOS 4.1-compatible: iOS 4.1 lacks
+// DISPATCH_QUEUE_PRIORITY_BACKGROUND and retargeting private queues can be
+// problematic, so avoid background-priority retargeting here.
+static dispatch_queue_t LTArtworkQueue(void) {
+    static dispatch_queue_t queue = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        queue = dispatch_queue_create("com.legacymusic.artwork", NULL);
+    });
+    return queue;
+}
+
+// Caps how many artwork jobs run at once. Two was chosen by eye: enough that a
+// list of thumbnails fills in without feeling serialised, few enough that the
+// main thread is not competing with a dozen decodes.
+static dispatch_semaphore_t LTArtworkSlots(void) {
+    static dispatch_semaphore_t sem = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ sem = dispatch_semaphore_create(2); });
+    return sem;
+}
+
+// Disk paths whose artwork has already had the uniform-border trim applied.
+//
+// The trimmed image is what gets written back to disk, so re-reading it and
+// trimming again is pure waste: a malloc, a full-image RGBA resample and up to
+// four passes of per-pixel comparison, per image, on every load. Artwork paths
+// are content-addressed (an MD5 of the URL) so the contents of a given path never
+// change, which makes this safe to remember for the life of the process.
+static BOOL LTPathIsTrimmed(NSString *path) {
+    static NSMutableSet *trimmed = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ trimmed = [[NSMutableSet alloc] init]; });
+    @synchronized (trimmed) { return [trimmed containsObject:path]; }
+}
+
+static void LTMarkPathTrimmed(NSString *path) {
+    static NSMutableSet *trimmed = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ trimmed = [[NSMutableSet alloc] init]; });
+    @synchronized (trimmed) {
+        // Bounded: the cache can outlive a lot of browsing, and this is only ever
+        // an optimisation. When it overflows, start over rather than grow.
+        if (trimmed.count > 3000) [trimmed removeAllObjects];
+        [trimmed addObject:path];
+    }
+}
+
+// On-disk artwork is only rewritten when the cached file is a full-resolution
+// one. Re-encoding on every single hit cost a JPEG encode plus an atomic file
+// write per image per read, which is most of why a "disk hit" measured 400ms.
+static const unsigned long long kLTArtworkRewriteThreshold = 150 * 1024;
+
+// Queue for JSON response parsing.
+//
+// Serial at low/background priority: on a single-core device a few hundred KB of
+// JSON parsed on the main thread is a visible freeze. iOS 4.1 lacks
+// DISPATCH_QUEUE_PRIORITY_BACKGROUND and is sensitive to retargeting private
+// queues, so keep this simple and compatible.
+static dispatch_queue_t LTJSONQueue(void) {
+    static dispatch_queue_t queue = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        queue = dispatch_queue_create("com.legacymusic.json", NULL);
+    });
+    return queue;
+}
+
+// Loads artwork, hitting the in-memory cache, then the on-disk JPEG cache, then
+// the network.
+//
+// THREADING: the disk read, the JPEG decode and the border-trim scan all happen
+// on a background queue and the completion is always delivered on the main
+// queue. They used to run synchronously on the calling thread, which is almost
+// always the main thread. A memory-cache hit still completes synchronously, so
+// the common already-warm case (scrolling back through a list) keeps its
+// zero-latency behaviour and callers that care still see the image set by the
+// time this returns.
+// Token recording what a cell was last asked to display. An associated object
+// rather than a property on UITableViewCell so it works for the plain and
+// custom cells alike, and cannot collide with accessibilityIdentifier (which
+// these lists already use to hold artist names).
+static const void *kLTArtworkCellTokenKey = &kLTArtworkCellTokenKey;
+
+- (void)loadArtworkURL:(NSString *)urlString intoCell:(UITableViewCell *)cell {
+    if (!cell) return;
+    // Empty is a legitimate token: it means "this row has no artwork", so a
+    // late reply for a real URL must not land on it.
+    NSString *token = urlString ?: @"";
+    objc_setAssociatedObject(cell, kLTArtworkCellTokenKey, token, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    cell.imageView.image = nil;
+    if (!urlString.length) return;
+
+    NSString *artURL = [self highResThumbnailURL:urlString];
+    if (!artURL.length) return;
+
+    // Hold the cell strongly until the reply lands. With an unsafe-unretained
+    // capture a scrolled-away cell can be gone by then, and the callback then
+    // messages freed memory (seen on the 3GS as an unrecognised selector).
+    [self loadImageWithURL:artURL completion:^(UIImage *image) {
+        UITableViewCell *strongCell = cell;
+        if (!strongCell) return;
+        NSString *current = objc_getAssociatedObject(strongCell, kLTArtworkCellTokenKey);
+        if (![current isEqualToString:token]) return; // recycled onto another row
+        if (image) strongCell.imageView.image = image;
+    }];
+}
+
 - (void)loadImageWithURL:(NSString *)urlString
               completion:(void (^)(UIImage *image))completion {
     if (!urlString.length) {
         if (completion) completion(nil);
         return;
     }
+
+    // A signed i.ytimg video thumb is not a usable artwork source on its own:
+    // once its token lapses the body it returns will not decode, and the caller
+    // gets nil and draws an empty cell. Almost every in-app surface loads
+    // artwork straight from track.thumbnailURL, so this is the common case, not
+    // an edge one. Walk the size ladder instead, starting from the equivalent
+    // permanent named size rather than the dead signature.
+    if ([self isSignedYouTubeThumbURL:urlString]) {
+        NSString *bare = [urlString substringToIndex:[urlString rangeOfString:@"?"].location];
+        NSArray *candidates = [self artworkCandidateURLsForBaseURL:bare];
+        if (candidates.count) {
+            LTLog(@"IMG load signed thumb -> ladder of %d", (int)candidates.count);
+            [self loadArtworkFromCandidates:candidates index:0 completion:completion];
+            return;
+        }
+    }
+
     LTLog(@"IMG load url=%@", urlString);
     UIImage *cached = [self.imageCache objectForKey:urlString];
     if (cached) {
@@ -1634,20 +2622,48 @@ static UIImage *LTTrimmedArtworkImage(UIImage *image, BOOL allowCenterCrop) {
         return;
     }
     NSString *diskPath = [self diskCachePathForURL:urlString];
-    UIImage *diskImage = [UIImage imageWithContentsOfFile:diskPath];
-    if (diskImage) {
-        LTLog(@"IMG disk-hit url=%@", urlString);
-        diskImage = LTTrimmedArtworkImage(diskImage, [urlString rangeOfString:@"i.ytimg.com"].location != NSNotFound);
-        [self.imageCache setObject:diskImage forKey:urlString];
-        if (completion) completion(diskImage);
-        return;
-    }
-    NSString *fallback = nil;
-    if ([urlString hasSuffix:@"maxresdefault.jpg"]) {
-        fallback = [urlString stringByReplacingOccurrencesOfString:@"maxresdefault.jpg"
-                                                        withString:@"sddefault.jpg"];
-    }
-    [self fetchImageAtURL:urlString fallbackURL:fallback diskPath:diskPath cacheKey:urlString completion:completion];
+    NSString *cacheKey = urlString;
+    BOOL centerCrop = [urlString rangeOfString:@"i.ytimg.com"].location != NSNotFound;
+    dispatch_async(LTArtworkQueue(), ^{
+        dispatch_semaphore_wait(LTArtworkSlots(), DISPATCH_TIME_FOREVER);
+        @autoreleasepool {
+            // TEMP instrumentation: see LTTabBarController -snapshotContentOfView.
+            CFAbsoluteTime tArt = CFAbsoluteTimeGetCurrent();
+            UIImage *diskImage = [UIImage imageWithContentsOfFile:diskPath];
+            if (diskImage) {
+                // Shrink only when the file on disk is still full-resolution, so this
+                // is a one-time cost per image rather than work on every read.
+                NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:diskPath error:nil];
+                BOOL oversized = [(NSNumber *)[attrs objectForKey:NSFileSize] unsignedLongLongValue] > kLTArtworkRewriteThreshold;
+                if (oversized) diskImage = LTDownscaledImage(diskImage, kLTArtworkMaxPixel);
+                if (!LTPathIsTrimmed(diskPath)) {
+                    diskImage = LTTrimmedArtworkImage(diskImage, centerCrop);
+                    LTMarkPathTrimmed(diskPath);
+                }
+                LTLog(@"TABPROF art disk %.0fx%.0f took=%.0fms%s", (double)diskImage.size.width,
+                      (double)diskImage.size.height, (CFAbsoluteTimeGetCurrent() - tArt) * 1000.0,
+                      oversized ? " (rewritten)" : "");
+                LTLog(@"IMG disk-hit url=%@", cacheKey);
+                [[self imageCache] setObject:diskImage forKey:cacheKey cost:LTImageCacheCost(diskImage)];
+                if (oversized) {
+                    // Self-heal: write the downscaled version back so the next read
+                    // decodes a small file instead of a full-size one.
+                    NSData *smaller = UIImageJPEGRepresentation(diskImage, 0.85);
+                    if (smaller.length) [smaller writeToFile:diskPath atomically:YES];
+                }
+                dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(diskImage); });
+            } else {
+                NSString *fallback = nil;
+                if ([cacheKey hasSuffix:@"maxresdefault.jpg"]) {
+                    fallback = [cacheKey stringByReplacingOccurrencesOfString:@"maxresdefault.jpg"
+                                                                    withString:@"sddefault.jpg"];
+                }
+                // fetchImageAtURL: is NSURLConnection-based and already async.
+                [self fetchImageAtURL:cacheKey fallbackURL:fallback diskPath:diskPath cacheKey:cacheKey completion:completion];
+            }
+        }
+        dispatch_semaphore_signal(LTArtworkSlots());
+    });
 }
 
 - (void)fetchImageAtURL:(NSString *)urlString
@@ -1657,51 +2673,133 @@ static UIImage *LTTrimmedArtworkImage(UIImage *image, BOOL allowCenterCrop) {
              completion:(void (^)(UIImage *image))completion {
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlString]
                                                             cachePolicy:NSURLRequestReturnCacheDataElseLoad
-                                                        timeoutInterval:30.0];
+                                                        timeoutInterval:10.0];
     [request setValue:LTBrowserUserAgent forHTTPHeaderField:@"User-Agent"];
 
     void (^handleResponse)(NSData *, NSError *) = ^(NSData *data, NSError *connectionError) {
-        UIImage *image = nil;
-        if (!connectionError && data.length) image = [UIImage imageWithData:data];
-        BOOL usable = image && ([cacheKey rangeOfString:@"maxresdefault"].location == NSNotFound || image.size.width >= 200);
-        LTLog(@"ART fetch url=%@ len=%lu decoded=%dx%d usable=%d err=%@",
-              urlString,
-              (unsigned long)data.length,
-              image ? (int)image.size.width : 0,
-              image ? (int)image.size.height : 0,
-              usable ? 1 : 0,
-              connectionError ? connectionError.localizedDescription : @"none");
-        if (!usable) {
-            if (fallbackURL.length) {
-                [self fetchImageAtURL:fallbackURL fallbackURL:nil diskPath:diskPath cacheKey:cacheKey completion:completion];
-                return;
+        // Everything from here down is heavy: a full JPEG decode of a 1200x1200
+        // cover, a resample, a per-pixel border scan, a JPEG encode and a flash
+        // write. That is well over a second of CPU on a 3GS.
+        //
+        // THREADING: this used to run wherever the network callback landed, which
+        // on iOS 6 meant the main thread -- NSURLConnection takes a queue and the
+        // app passed the main one. That showed up as the UI freezing solid
+        // whenever a screen's artwork arrived (a measured 913ms main-thread
+        // stall), and because the artwork queue is serial it also blocked every
+        // other image load queued behind it.
+        //
+        // The work now always goes to LTArtworkQueue() no matter which path
+        // delivered the bytes, and only the caller's completion hops back to main.
+        // Everything in here is safe off-main: the cache is an NSCache, and the
+        // only UIKit-facing object, completion, is deferred.
+        dispatch_async(LTArtworkQueue(), ^{
+            @autoreleasepool {
+                UIImage *image = nil;
+                if (!connectionError && data.length) image = [UIImage imageWithData:data];
+                BOOL usable = image && ([cacheKey rangeOfString:@"maxresdefault"].location == NSNotFound || image.size.width >= 200);
+                LTLog(@"ART fetch url=%@ len=%lu decoded=%dx%d usable=%d err=%@",
+                      urlString,
+                      (unsigned long)data.length,
+                      image ? (int)image.size.width : 0,
+                      image ? (int)image.size.height : 0,
+                      usable ? 1 : 0,
+                      connectionError ? connectionError.localizedDescription : @"none");
+                if (!usable) {
+                    if (fallbackURL.length) {
+                        [self fetchImageAtURL:fallbackURL fallbackURL:nil diskPath:diskPath cacheKey:cacheKey completion:completion];
+                        return;
+                    }
+                    dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(nil); });
+                    return;
+                }
+                image = LTDownscaledImage(image, kLTArtworkMaxPixel);
+                image = LTTrimmedArtworkImage(image, [cacheKey rangeOfString:@"i.ytimg.com"].location != NSNotFound);
+                [[self imageCache] setObject:image forKey:cacheKey cost:LTImageCacheCost(image)];
+                NSData *encoded = UIImageJPEGRepresentation(image, 0.85);
+                if (encoded) [encoded writeToFile:diskPath atomically:YES];
+                // Always call completion on the main thread so UI updates work
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (completion) completion(image);
+                });
             }
-            if (completion) completion(nil);
-            return;
-        }
-        image = LTTrimmedArtworkImage(image, [cacheKey rangeOfString:@"i.ytimg.com"].location != NSNotFound);
-        [self.imageCache setObject:image forKey:cacheKey];
-        NSData *encoded = UIImageJPEGRepresentation(image, 0.85);
-        if (encoded) [encoded writeToFile:diskPath atomically:YES];
-        // Always call completion on the main thread so UI updates work
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (completion) completion(image);
         });
     };
 
     // Use NSURLSession on iOS 7+ (NSURLConnection is deprecated and silently fails on iOS 10+)
-    if (NSClassFromString(@"NSURLSession")) {
-        NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:request
-            completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-                handleResponse(data, error);
-            }];
-        [task resume];
+    Class sessionClass = NSClassFromString(@"NSURLSession");
+    if (sessionClass) {
+        id session = [sessionClass performSelector:@selector(sharedSession)];
+        id task = nil;
+        if (session) {
+            SEL sel = @selector(dataTaskWithRequest:completionHandler:);
+            if ([session respondsToSelector:sel]) {
+                // performSelector supports up to 2 object args; use NSInvocation for 2+.
+                NSMethodSignature *sig = [session methodSignatureForSelector:sel];
+                NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+                [inv setSelector:sel];
+                [inv setTarget:session];
+                [inv setArgument:&request atIndex:2];
+                void (^handler)(NSData *, NSURLResponse *, NSError *) = ^(NSData *data, NSURLResponse *response, NSError *error) {
+                    handleResponse(data, error);
+                };
+                [inv setArgument:&handler atIndex:3];
+                [inv invoke];
+                [inv getReturnValue:&task];
+            }
+        }
+        if (task) { [task performSelector:@selector(resume)]; }
+        else {
+            LTSendAsyncRequest(request, [NSOperationQueue mainQueue],^(NSURLResponse *response, NSData *data, NSError *connectionError) {
+                handleResponse(data, connectionError);
+            });
+        }
     } else {
-        [NSURLConnection sendAsynchronousRequest:request queue:[NSOperationQueue mainQueue]
-                               completionHandler:^(NSURLResponse *response, NSData *data, NSError *connectionError) {
+        LTSendAsyncRequest(request, [NSOperationQueue mainQueue],^(NSURLResponse *response, NSData *data, NSError *connectionError) {
             handleResponse(data, connectionError);
-        }];
+        });
     }
+}
+
+// Walk a list of candidate artwork URLs, best first, and deliver the first one
+// that is genuinely large enough.
+//
+// This exists because a missing YouTube "maxresdefault" is not an error: it
+// answers HTTP 404 with a valid 120x90 JPEG. Decoding succeeds, so naive code
+// happily displays a blurry thumbnail. Anything narrower than
+// kMinUsableArtworkWidth is treated as a placeholder and the next candidate is
+// tried.
+- (void)loadArtworkFromCandidates:(NSArray *)urls
+                              index:(NSUInteger)index
+                        completion:(void (^)(UIImage *image))completion {
+    if (index >= [urls count]) {
+        if (completion) completion(nil);
+        return;
+    }
+    NSString *url = [urls objectAtIndex:index];
+    __unsafe_unretained LTYouTubeClient *weakSelf = self;
+    [self loadImageWithURL:url completion:^(UIImage *image) {
+        LTYouTubeClient *strongSelf = weakSelf;
+        if (!image) {
+            [strongSelf loadArtworkFromCandidates:urls index:index + 1 completion:completion];
+            return;
+        }
+        if (image.size.width < (CGFloat)kMinUsableArtworkWidth && index + 1 < [urls count]) {
+            // Placeholder (or unusually small): try a better one. Do not cache
+            // this image under the higher-quality URL, or we would keep
+            // rediscovering the placeholder on every launch.
+            LTLog(@"ART placeholder %dx%d from %@, trying next", (int)image.size.width, (int)image.size.height, url);
+            [strongSelf loadArtworkFromCandidates:urls index:index + 1 completion:completion];
+            return;
+        }
+        if (completion) completion(image);
+    }];
+}
+
+- (UIImage *)cachedArtworkForURL:(NSString *)urlString {
+    if (![urlString isKindOfClass:[NSString class]] || !urlString.length) return nil;
+    NSString *path = [self diskCachePathForURL:urlString];
+    if (![[NSFileManager defaultManager] fileExistsAtPath:path]) return nil;
+    return [UIImage imageWithContentsOfFile:path];
 }
 
 - (NSString *)diskCachePathForURL:(NSString *)urlString {
@@ -1735,9 +2833,9 @@ static UIImage *LTTrimmedArtworkImage(UIImage *image, BOOL allowCenterCrop) {
 - (NSArray *)runsFromFlexColumn:(NSDictionary *)flex {
     if (![flex isKindOfClass:[NSDictionary class]]) return nil;
     NSDictionary *col = [flex objectForKey:@"musicResponsiveListItemFlexColumnRenderer"];
-    id runs = [col objectForKey:@"text"][@"runs"];
+    id runs = [[col objectForKey:@"text"] objectForKey:@"runs"];
     if ([runs isKindOfClass:[NSArray class]]) return runs;
-    id simple = [col objectForKey:@"text"][@"simpleText"];
+    id simple = [[col objectForKey:@"text"] objectForKey:@"simpleText"];
     if ([simple isKindOfClass:[NSString class]] && [(NSString *)simple length]) {
         return @[@{@"text": simple}];
     }
@@ -1821,23 +2919,121 @@ static UIImage *LTTrimmedArtworkImage(UIImage *image, BOOL allowCenterCrop) {
     return ([url isKindOfClass:[NSString class]] && url.length) ? url : nil;
 }
 
+// Upgrade a thumbnail URL to the largest variant that is actually available.
+//
+// YouTube serves exactly one size per name:
+//   sddefault       640x480  (what list browsing uses, and what we ship today)
+//   hqdefault       480x360  (always present)
+//   maxresdefault  1280x720  (ABSENT for many videos -- ~3 in 8 in a sample)
+//
+// maxresdefault is the sharp one and is what the lock screen needs, but a
+// missing maxres returns HTTP 404 with a 120x90 placeholder body, so a naive
+// upgrade silently ships a blurry image -- which is why this previously looked
+// "unreliable" and was skipped. The fix is not to avoid maxres but to detect
+// the placeholder and fall back: LTLoadArtworkAtQuality does that, and only
+// accepts a fetched image once it is at least kMinUsableArtWidth pixels wide.
+//
+// For non-i.ytimg URLs (lh3/ggpht avatars, which already carry a =wNNN-hNNN
+// size parameter) just widen the existing size to the largest we ask for.
 - (NSString *)highResThumbnailURL:(NSString *)urlString {
     if (![urlString isKindOfClass:[NSString class]] || urlString.length < 8) return urlString;
-    // i.ytimg.com paths are left alone: sddefault is already disk-cached from
-    // list browsing and trims to a clean square, while maxresdefault fetches
-    // proved unreliable on device.
+    // This only widens URLs that carry an explicit size parameter. Plain
+    // i.ytimg.com URLs (".../sddefault.jpg") name their own size and are left
+    // alone here -- artworkURLsForTrack: is what builds the real size ladder for
+    // those, because a missing maxresdefault answers 404 with a 120x90
+    // placeholder that has to be detected rather than trusted.
+    //
+    // Nothing to rewrite means return the input untouched: that is the common
+    // case (any URL without an =wNN-hNN or /wNN-hNN segment), and this runs on
+    // every cell dequeue. Caching the rest is worth it because the alternative is
+    // a mutable copy, a two-element array literal and two full regex replacement
+    // passes per call.
+    if ([urlString rangeOfString:@"-h"].location == NSNotFound) return urlString;
+
+    static NSCache *cache = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        cache = [[NSCache alloc] init];
+        cache.countLimit = 500;
+    });
+    NSString *hit = [cache objectForKey:urlString];
+    if (hit) return hit;
+
+    // The patterns are compiled once. Building an NSRegularExpression is an ICU
+    // compile, and this runs for every cell dequeue.
+    static NSRegularExpression *querySize = nil;   // =w1200-h1200
+    static NSRegularExpression *pathSize = nil;    // /w1200-h1200
+    static dispatch_once_t regexOnce;
+    dispatch_once(&regexOnce, ^{
+        querySize = [NSRegularExpression regularExpressionWithPattern:@"=w\\d+-h\\d+" options:0 error:nil];
+        pathSize = [NSRegularExpression regularExpressionWithPattern:@"/w\\d+-h\\d+" options:0 error:nil];
+    });
     NSMutableString *result = [urlString mutableCopy];
-    NSArray *patterns = @[
-        @[@"=w\\d+-h\\d+", @"=w1200-h1200"],
-        @[@"/w\\d+-h\\d+", @"/w1200-h1200"],
-    ];
-    for (NSArray *pair in patterns) {
-        NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:[pair objectAtIndex:0]
-                                                                               options:0 error:nil];
+    NSArray *regexes = @[ querySize ?: [NSNull null], pathSize ?: [NSNull null] ];
+    NSArray *templates = @[ @"=w1200-h1200", @"/w1200-h1200" ];
+    for (NSUInteger i = 0; i < 2; i++) {
+        NSRegularExpression *regex = [regexes objectAtIndex:i];
+        if (regex == (id)[NSNull null]) continue;
         [regex replaceMatchesInString:result options:0 range:NSMakeRange(0, result.length)
-                         withTemplate:[pair objectAtIndex:1]];
+                         withTemplate:[templates objectAtIndex:i]];
     }
-    return result;
+    NSString *out = [result copy];
+    [cache setObject:out forKey:urlString];
+    return out;
+}
+
+// Candidate URLs for artwork, best first. Callers walk this until one yields a
+// large-enough image. Exposed so the now-playing path can prefer quality while
+// list cells keep using the cheap already-cached size.
+- (NSArray *)artworkURLsForTrack:(LTTrack *)track {
+    NSString *base = track.thumbnailURL;
+    if (![base isKindOfClass:[NSString class]]) return [NSArray array];
+    return [self artworkCandidateURLsForBaseURL:base];
+}
+
+// YouTube hands back two very different kinds of thumbnail URL and only one of
+// them is a stable artwork source:
+//
+//   * i.ytimg.com/vi/<id>/hqdefault.jpg  - a plain, named, permanent size.
+//   * i.ytimg.com/vi/<id>/hq720.jpg?sqp=..&rs=..  - a *signed* URL carrying an
+//     expiry token. These decode fine once, then start answering with a body
+//     that is not an image at all.
+//
+// Callers that only have a URL string used to load it directly and silently got
+// nothing back when it was the signed form. Route those through the ladder so
+// a dead signature costs one skipped request instead of an empty cell.
+- (BOOL)isSignedYouTubeThumbURL:(NSString *)urlString {
+    if (!urlString.length) return NO;
+    if ([urlString rangeOfString:@"i.ytimg.com"].location == NSNotFound) return NO;
+    if ([urlString rangeOfString:@"/vi/"].location == NSNotFound) return NO;
+    // The named sizes are unsuffixed; anything carrying a query string is signed.
+    return [urlString rangeOfString:@"?"].location != NSNotFound;
+}
+
+- (NSArray *)artworkCandidateURLsForBaseURL:(NSString *)base {
+    NSMutableArray *urls = [NSMutableArray array];
+    if (![base isKindOfClass:[NSString class]] || base.length < 8) return urls;
+
+    NSString *wide = [self highResThumbnailURL:base];
+    if ([wide isKindOfClass:[NSString class]] && wide.length) [urls addObject:wide];
+
+    // i.ytimg.com named sizes, in descending preference.
+    if ([base rangeOfString:@"i.ytimg.com"].location != NSNotFound &&
+        [base rangeOfString:@"/vi/"].location != NSNotFound) {
+        NSRange last = [base rangeOfString:@"/vi/" options:NSBackwardsSearch];
+        if (last.location != NSNotFound) {
+            NSString *prefix = [base substringToIndex:last.location + last.length];
+            NSString *vid = [base substringFromIndex:last.location + last.length];
+            // Strip any trailing /sddefault.jpg etc.
+            NSRange slash = [vid rangeOfString:@"/" options:NSBackwardsSearch];
+            if (slash.location != NSNotFound) vid = [vid substringToIndex:slash.location];
+            for (NSString *name in @[ @"maxresdefault.jpg", @"hqdefault.jpg", @"sddefault.jpg" ]) {
+                NSString *candidate = [NSString stringWithFormat:@"%@%@/%@", prefix, vid, name];
+                if (![urls containsObject:candidate]) [urls addObject:candidate];
+            }
+        }
+    }
+    return urls;
 }
 
 - (LTBrowseKind)kindForBrowseId:(NSString *)browseId {

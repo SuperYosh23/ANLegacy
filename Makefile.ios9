@@ -1,0 +1,105 @@
+# Theos Makefile for iOS 9+ 32-bit (armv7, e.g. iPhone 6s on iOS 9).
+# Builds with modern runtime/SDK for better compatibility than the iOS 4.0 backport.
+TARGET = iphone:clang:9.3:9.0
+ARCHS = armv7
+
+include $(THEOS)/makefiles/common.mk
+
+APPLICATION_NAME = LegacyMusic
+LegacyMusic_RESOURCE_DIRS = Resources
+LegacyMusic_FILES = main.m \
+	LTAppDelegate.m \
+	LTModel.m \
+	LTYouTubeClient.m \
+	LTTabBarController.m \
+	LTSplitContainerViewController.m \
+	LTHomeViewController.m \
+	LTSettingsViewController.m \
+	LTSpotifyImportViewController.m \
+	LTSpotifyConnectViewController.m \
+	LTArtworkBackground.m \
+	LTGraphics.m \
+	LTHaptics.m \
+	LTHapticStrengthViewController.m \
+	LTLog.m \
+	LTTextPrompt.m \
+	LTAppIcon.m \
+	LTSleepTimer.m \
+	LTLyricsOffsetViewController.m \
+	LTLyricsPaperView.m \
+	LTLyricsSettings.m \
+	LTPlaylistPeekViewController.m \
+	LTStationPeekViewController.m \
+	LTPeekCoordinator.m \
+	LTArtworkPeekViewController.m \
+	LTLucideIcons.m \
+	LTSearchViewController.m \
+	LTTrackListViewController.m \
+	LTArtistViewController.m \
+	LTArtistSongsViewController.m \
+	LTPlayerViewController.m \
+	LTPlayerController.m \
+	LTQueueViewController.m \
+	LTPlaylistStore.m \
+	LTListenBrainzScrobbler.m \
+	LTListenBrainzAuthViewController.m \
+	LTDownloadQueueViewController.m \
+	LTPlaylistPicker.m \
+	LTSongMenu.m \
+	LTSyncServer.m \
+	LTP2PSync.m \
+	LTLocalPlaylistDetailViewController.m \
+	LTSmartPlaylistDetailViewController.m \
+	LTStationDetailViewController.m \
+	LTSeedSearchViewController.m \
+	LTMediaCell.m \
+	LTTextUtils.m \
+	LTTheme.m \
+	LTThemedTableView.m \
+	LTCardControls.m \
+	LTCardNavBar.m \
+	LTWebServer.m \
+	LTWebAPI.m \
+	LTWebShellViewController.m \
+	LTThemePickerViewController.m \
+	LTAccentPickerViewController.m \
+	LTSafeArea.m \
+	LTSimpleCell.m \
+	LTHeaderView.m \
+	LTCustomActionSheet.m \
+	LTTransitionSettings.m \
+	LTTransitionSpeedViewController.m \
+	LTRecentsTileSizeViewController.m \
+	LTOneHandedMode.m \
+	LTOneHandedModeViewController.m \
+	LTAppTabBar.m \
+	LTWebExporter.m \
+	LTPlaylistSelectViewController.m \
+	LTLibraryViewController.m \
+	LTLibrarySongsViewController.m \
+	LTSpinnerView.m \
+	LTStatsViewController.m \
+	LTStatsDetailViewController.m \
+	LTDebugMenuViewController.m \
+	LTDebugSettings.m \
+	LTiPodViewController.m
+
+LegacyMusic_FRAMEWORKS = UIKit Foundation CoreGraphics QuartzCore MediaPlayer AVFoundation AudioToolbox CoreMedia CoreText ImageIO SystemConfiguration Security
+LegacyMusic_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -Wno-objc-interface-ivars -Wno-unguarded-availability -Wno-unguarded-availability-new -Wno-error=unguarded-availability -Wno-error=unguarded-availability-new -Wno-arc-unsafe-retained-assign -Wno-mismatched-return-types \
+	-Isrc -Isrc/Net -Isrc/Spotify -Isrc/Audio -Isrc/UI -Isrc/Util \
+	-Ivendor -Ivendor/mbedtls/include -Ivendor/mbedtls/library
+LegacyMusic_LDFLAGS = -lz
+
+# Sixify (spotify-ios6) protocol sources — MIT licensed, see THIRD-PARTY-NOTICES.
+LegacyMusic_FILES += $(wildcard src/*.m) \
+                    $(wildcard src/Spotify/*.m) $(wildcard src/Spotify/*.c) \
+                    $(wildcard src/Net/*.m) $(wildcard src/Net/*.c) \
+                    $(wildcard src/Util/*.m) $(wildcard src/Util/*.c) \
+                    $(wildcard src/Audio/*.m) $(wildcard src/Audio/*.c) \
+                    vendor/mbedtls_glue.c vendor/s6_stb_vorbis.c vendor/qrcodegen/qrcodegen.c \
+                    $(wildcard vendor/mbedtls/library/*.c)
+
+include $(THEOS_MAKE_PATH)/application.mk
+
+ADDITIONAL_CFLAGS += -Wno-error=unguarded-availability -Wno-error=unguarded-availability-new
+ADDITIONAL_OBJCFLAGS += -Wno-error=unguarded-availability -Wno-error=unguarded-availability-new

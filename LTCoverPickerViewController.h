@@ -6,6 +6,6 @@
 @end
 
 @interface LTCoverPickerViewController : UIViewController
-@property (nonatomic, weak) id<LTCoverPickerDelegate> delegate;
+@property (nonatomic, unsafe_unretained) id<LTCoverPickerDelegate> delegate;
 + (void)presentFromViewController:(UIViewController *)viewController delegate:(id<LTCoverPickerDelegate>)delegate;
 @end

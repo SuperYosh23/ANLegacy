@@ -6,4 +6,6 @@
 
 - (id)initWithType:(NSString *)type;
 
+- (void)focusSearchField;   // used by the home screen quick action
+
 @end

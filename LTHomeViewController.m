@@ -1,5 +1,11 @@
 #import "LTHomeViewController.h"
+#import "LTTraitCompat.h"
+#import "LTCardControls.h"
+#import "LTPeekCoordinator.h"
+#import "LTPlaylistPeekViewController.h"
 #import "LTPlaylistStore.h"
+#import "LTLog.h"
+#import "LTYouTubeClient.h"
 #import "LTPlayerController.h"
 #import "LTTabBarController.h"
 #import "LTLocalPlaylistDetailViewController.h"
@@ -9,6 +15,7 @@
 #import "LTModel.h"
 #import "LTTheme.h"
 #import <QuartzCore/QuartzCore.h>
+#import "LTThemedTableView.h"
 
 #pragma mark - Recently played horizontal strip
 
@@ -20,6 +27,10 @@
 @implementation LTHomeRecentsCell {
     UIScrollView *_scrollView;
     NSArray *_tracks;
+    // What the currently-built tiles represent, so an identical -setTracks: is a
+    // no-op. See -setTracks:.
+    NSArray *_builtIds;
+    BOOL _builtDark;
 }
 
 const CGFloat kHomeTileMinWidth = 90.0f;
@@ -68,7 +79,29 @@ const CGFloat kHomeTileArtRatio = 104.0f / 116.0f;
 }
 
 - (void)setTracks:(NSArray *)tracks {
+    // Rebuilding this strip destroys and recreates 20 tiles (4 views each) and
+    // kicks off 20 artwork loads. It is called from -cellForRowAtIndexPath:, so
+    // every dequeue paid for it — and every tab switch to Home re-reads
+    // recents.plist, producing a fresh-but-equal array each time, so the rebuild
+    // produced the identical result every single time.
+    //
+    // Skip it when the list and the theme are unchanged; the existing tiles are
+    // already correct. The comparison is by videoId array rather than pointer
+    // identity because -recentTracks returns newly-parsed LTTrack objects on
+    // every call. An array of ids compares directly, with no per-item string
+    // formatting -- the previous signature built 20 formatted strings per dequeue,
+    // which is a real cost when its only job is to answer "did this change?".
+    NSMutableArray *ids = [NSMutableArray arrayWithCapacity:tracks.count];
+    for (LTTrack *track in tracks) [ids addObject:track.videoId ?: @""];
+    BOOL dark = [LTTheme isDark];
+    if (_builtIds && [_builtIds isEqualToArray:ids] && _builtDark == dark) {
+        _tracks = tracks;
+        return;
+    }
+
     _tracks = tracks;
+    _builtIds = ids;
+    _builtDark = dark;
     _scrollView.backgroundColor = [LTTheme background];
     self.backgroundColor = [LTTheme background];
     self.contentView.backgroundColor = [LTTheme background];
@@ -98,9 +131,11 @@ const CGFloat kHomeTileArtRatio = 104.0f / 116.0f;
         [imageButton addSubview:artwork];
         if (track.thumbnailURL.length) {
             NSString *artURL = [[LTYouTubeClient sharedClient] highResThumbnailURL:track.thumbnailURL];
-            __weak UIImageView *weakArtwork = artwork;
+            // Retain the view until the image arrives; the strip is rebuilt
+            // when the section reloads, so an unsafe-unretained view can be
+            // gone by the time the completion runs.
             [[LTYouTubeClient sharedClient] loadImageWithURL:artURL completion:^(UIImage *image) {
-                if (image) weakArtwork.image = image;
+                if (image) artwork.image = image;
             }];
         }
 
@@ -137,6 +172,7 @@ const CGFloat kHomeTileArtRatio = 104.0f / 116.0f;
 
 @interface LTHomeViewController ()
 @property (nonatomic, strong) UITableView *tableView;
+@property (nonatomic, strong) LTPeekCoordinator *peekCoordinator;
 @property (nonatomic, strong) NSArray *recentTracks;
 @property (nonatomic, strong) NSArray *playlists;
 @property (nonatomic, strong) UILabel *emptyLabel;
@@ -149,7 +185,7 @@ const CGFloat kHomeTileArtRatio = 104.0f / 116.0f;
 - (void)viewDidLoad {
     [super viewDidLoad];
     if ([self respondsToSelector:@selector(setEdgesForExtendedLayout:)]) {
-        self.edgesForExtendedLayout = UIRectEdgeNone;
+        [(id)self setValue:[NSNumber numberWithInteger:0] forKey:@"edgesForExtendedLayout"];
     }
     self.title = @"Home";
     self.view.backgroundColor = [LTTheme background];
@@ -159,7 +195,7 @@ const CGFloat kHomeTileArtRatio = 104.0f / 116.0f;
                                                                             action:@selector(statsTapped:)];
 
     CGRect bounds = self.view.bounds;
-    self.tableView = [[UITableView alloc] initWithFrame:CGRectMake(0, 0, bounds.size.width, bounds.size.height)
+    self.tableView = [[LTThemedTableView alloc] initWithFrame:CGRectMake(0, 0, bounds.size.width, bounds.size.height)
                                                   style:UITableViewStylePlain];
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
@@ -175,24 +211,44 @@ const CGFloat kHomeTileArtRatio = 104.0f / 116.0f;
     self.emptyLabel.numberOfLines = 0;
     self.emptyLabel.hidden = YES;
     [self.view addSubview:self.emptyLabel];
+
+    // 3D Touch peek on playlist rows; a no-op below iOS 9.
+    __unsafe_unretained LTHomeViewController *peekSelf = self;
+    self.peekCoordinator = [[LTPeekCoordinator alloc] initWithOwner:self
+                                                      sourceView:self.tableView
+                                                   peekProvider:^UIViewController *(CGPoint point) {
+        LTLocalPlaylist *playlist = [peekSelf peekPlaylistAtPoint:point];
+        if (!playlist) return nil;
+        return [[LTPlaylistPeekViewController alloc] initWithPlaylist:playlist];
+    } commit:^(UIViewController *peek) {
+        if (![peek isKindOfClass:[LTPlaylistPeekViewController class]]) return;
+        [peekSelf peekCommitPlaylist:[(LTPlaylistPeekViewController *)peek playlist]];
+    }];
+    [self.peekCoordinator registerPreview];
 }
 
 - (UIView *)buildBanner {
     CGFloat width = self.view.bounds.size.width;
     UIView *banner = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 92)];
 
+    // The banner takes the theme's accent colour, so the modern themes get the
+    // amber rather than the fixed blue the native theme has always used.
+    UIColor *bannerColour = [LTTheme isModern]
+        ? ([LTTheme accent] ?: [UIColor colorWithRed:0.72f green:0.28f blue:0.37f alpha:1.0f])
+        : [UIColor colorWithRed:0.0f green:0.42f blue:0.85f alpha:1.0f];
+    UIColor *topCol = [LTTheme shade:bannerColour by:0.55f] ?: bannerColour;
+    UIColor *botCol = [LTTheme shade:bannerColour by:1.0f] ?: bannerColour;
     CAGradientLayer *gradient = [CAGradientLayer layer];
     gradient.frame = banner.bounds;
-    gradient.colors = @[
-        (id)[UIColor colorWithRed:0.06f green:0.22f blue:0.46f alpha:1.0f].CGColor,
-        (id)[UIColor colorWithRed:0.0f green:0.42f blue:0.85f alpha:1.0f].CGColor,
-    ];
+    CGColorRef topCG = topCol.CGColor ?: [UIColor blueColor].CGColor;
+    CGColorRef botCG = botCol.CGColor ?: [UIColor blueColor].CGColor;
+    gradient.colors = @[(__bridge id)topCG, (__bridge id)botCG];
     [banner.layer insertSublayer:gradient atIndex:0];
 
     UILabel *titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(16, 20, width - 32, 30)];
     titleLabel.text = @"Welcome back.";
     titleLabel.font = [UIFont boldSystemFontOfSize:24];
-    titleLabel.textColor = [UIColor whiteColor];
+    if ([UIColor respondsToSelector:@selector(whiteColor)]) titleLabel.textColor = [UIColor whiteColor];
     titleLabel.backgroundColor = [UIColor clearColor];
     self.bannerTitleLabel = titleLabel;
     [banner addSubview:titleLabel];
@@ -233,7 +289,7 @@ const CGFloat kHomeTileArtRatio = 104.0f / 116.0f;
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
-- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+- (void)traitCollectionDidChange:(id)previousTraitCollection {
     [super traitCollectionDidChange:previousTraitCollection];
     self.view.backgroundColor = [LTTheme background];
     self.tableView.backgroundColor = [LTTheme background];
@@ -243,6 +299,7 @@ const CGFloat kHomeTileArtRatio = 104.0f / 116.0f;
 - (void)reloadData {
     self.recentTracks = [[LTPlaylistStore sharedStore] recentTracks];
     self.playlists = [[LTPlaylistStore sharedStore] playlists];
+
     [self updateBannerText];
     [self.tableView reloadData];
     if (!self.recentTracks.count && !self.playlists.count) {
@@ -270,6 +327,7 @@ const CGFloat kHomeTileArtRatio = 104.0f / 116.0f;
     return [self hasRecents] ? 1 : 0;
 }
 
+
 #pragma mark - UITableViewDataSource
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
@@ -277,6 +335,15 @@ const CGFloat kHomeTileArtRatio = 104.0f / 116.0f;
     if ([self hasRecents]) sections += 1;
     if (self.playlists.count) sections += 1;
     return sections;
+}
+
+// The section title, drawn by us so it can be themed. UITableView draws its
+// own header titles in a colour that cannot be set, which is black on every
+// iOS before 13.
+- (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
+    NSString *title = [self tableView:tableView titleForHeaderInSection:section];
+    if (!title.length) return nil;
+    return [LTSectionHeaderView headerWithTitle:title];
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
@@ -297,7 +364,7 @@ const CGFloat kHomeTileArtRatio = 104.0f / 116.0f;
         if (!cell) {
             cell = [[LTHomeRecentsCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:StripCellId];
         }
-        __weak LTHomeViewController *weakSelf = self;
+        __unsafe_unretained LTHomeViewController *weakSelf = self;
         cell.onTrackTapped = ^(LTTrack *track) {
             LTHomeViewController *strongSelf = weakSelf;
             if (!strongSelf) return;
@@ -323,18 +390,7 @@ const CGFloat kHomeTileArtRatio = 104.0f / 116.0f;
     cell.detailTextLabel.text = [NSString stringWithFormat:@"%d tracks", (int)playlist.tracks.count];
     cell.accessoryView = nil;
     cell.imageView.image = nil;
-    if (playlist.coverPath.length) {
-        cell.imageView.image = [UIImage imageWithContentsOfFile:playlist.coverPath];
-    } else if (playlist.tracks.count) {
-        LTTrack *first = [playlist.tracks objectAtIndex:0];
-        if (first.thumbnailURL.length) {
-            NSString *artURL = [[LTYouTubeClient sharedClient] highResThumbnailURL:first.thumbnailURL];
-            __weak UITableViewCell *weakCell = cell;
-            [[LTYouTubeClient sharedClient] loadImageWithURL:artURL completion:^(UIImage *image) {
-                if (image) weakCell.imageView.image = image;
-            }];
-        }
-    }
+    [LTPlaylistStore providePlaylistArtwork:playlist toCell:cell];
     return cell;
 }
 
@@ -348,8 +404,12 @@ const CGFloat kHomeTileArtRatio = 104.0f / 116.0f;
     if (editingStyle != UITableViewCellEditingStyleDelete) return;
     if (indexPath.section != [self playlistSection]) return;
     LTLocalPlaylist *playlist = [self.playlists objectAtIndex:(NSUInteger)indexPath.row];
-    [[LTPlaylistStore sharedStore] deletePlaylist:playlist];
-    [self.tableView reloadData];
+    // Confirm first: the row stays put until the prompt is answered, so the
+    // table never shows a playlist that is still there.
+    __unsafe_unretained LTHomeViewController *weakSelf = self;
+    [LTPlaylistStore confirmDeletePlaylist:playlist presenting:self completion:^(BOOL deleted) {
+        if (deleted) [weakSelf.tableView reloadData];
+    }];
 }
 
 #pragma mark - UITableViewDelegate
@@ -363,6 +423,25 @@ const CGFloat kHomeTileArtRatio = 104.0f / 116.0f;
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     if (indexPath.section != [self playlistSection]) return;
     LTLocalPlaylist *playlist = [self.playlists objectAtIndex:(NSUInteger)indexPath.row];
+    LTLocalPlaylistDetailViewController *detail = [[LTLocalPlaylistDetailViewController alloc] initWithPlaylist:playlist];
+    [self.navigationController pushViewController:detail animated:YES];
+}
+
+
+#pragma mark - 3D Touch peek
+
+// Pressing a playlist row in shows LTPlaylistPeekViewController; pressing all
+// the way in commits and pushes the same detail screen a tap would have.
+- (LTLocalPlaylist *)peekPlaylistAtPoint:(CGPoint)point {
+    NSIndexPath *indexPath = [self.tableView indexPathForRowAtPoint:point];
+    if (!indexPath) return nil;
+    if (indexPath.section != [self playlistSection]) return nil;
+    if ((NSUInteger)indexPath.row >= self.playlists.count) return nil;
+    return [self.playlists objectAtIndex:(NSUInteger)indexPath.row];
+}
+
+- (void)peekCommitPlaylist:(LTLocalPlaylist *)playlist {
+    if (!playlist.identifier.length) return;
     LTLocalPlaylistDetailViewController *detail = [[LTLocalPlaylistDetailViewController alloc] initWithPlaylist:playlist];
     [self.navigationController pushViewController:detail animated:YES];
 }

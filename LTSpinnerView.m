@@ -1,4 +1,5 @@
 #import "LTSpinnerView.h"
+#import "LTTransitionSettings.h"
 #import <QuartzCore/QuartzCore.h>
 
 @implementation LTSpinnerView {
@@ -48,13 +49,17 @@
     if (_animating) return;
     _animating = YES;
     self.hidden = NO;
-    CABasicAnimation *rotation = [CABasicAnimation animationWithKeyPath:@"transform.rotation"];
-    rotation.fromValue = @(0);
-    rotation.toValue = @(2 * M_PI);
-    rotation.duration = 0.85;
-    rotation.repeatCount = INFINITY;
-    rotation.removedOnCompletion = NO;
-    [self.layer addAnimation:rotation forKey:@"LTSpinnerRotation"];
+    // Follow the app-wide animation speed and on/off setting, like every
+    // UIView transition does. With animations off the ring simply sits still.
+    if ([LTTransitionSettings animationsEnabled]) {
+        CABasicAnimation *rotation = [CABasicAnimation animationWithKeyPath:@"transform.rotation"];
+        rotation.fromValue = @(0);
+        rotation.toValue = @(2 * M_PI);
+        rotation.duration = [LTTransitionSettings durationFor:0.85f];
+        rotation.repeatCount = INFINITY;
+        rotation.removedOnCompletion = NO;
+        [self.layer addAnimation:rotation forKey:@"LTSpinnerRotation"];
+    }
 }
 
 - (void)stopAnimating {

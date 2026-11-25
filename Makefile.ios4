@@ -1,0 +1,113 @@
+# Theos Makefile for iOS 4.0+ backport (armv7, 3GS/iPhone 4 era).
+# Build against an iOS 4.3 or 5.x SDK with deployment target 4.0.
+# Example: THEOS=~/theos make -f Makefile.ios4
+TARGET = iphone:clang:5.0:4.0
+ARCHS = armv7
+
+include $(THEOS)/makefiles/common.mk
+
+APPLICATION_NAME = LegacyMusic
+LegacyMusic_RESOURCE_DIRS = Resources
+LegacyMusic_FILES = main.m \
+	S6ARCLiteShim.m \
+	LTAppDelegate.m \
+	LTModel.m \
+	LTYouTubeClient.m \
+	LTTabBarController.m \
+	LTSplitContainerViewController.m \
+	LTHomeViewController.m \
+	LTSettingsViewController.m \
+	LTSpotifyImportViewController.m \
+	LTSpotifyConnectViewController.m \
+	LTArtworkBackground.m \
+	LTGraphics.m \
+	LTHaptics.m \
+	LTHapticStrengthViewController.m \
+	LTLog.m \
+	LTTextPrompt.m \
+	LTAppIcon.m \
+	LTSleepTimer.m \
+	LTLyricsOffsetViewController.m \
+	LTLyricsPaperView.m \
+	LTLyricsSettings.m \
+	LTPlaylistPeekViewController.m \
+	LTStationPeekViewController.m \
+	LTPeekCoordinator.m \
+	LTArtworkPeekViewController.m \
+	LTLucideIcons.m \
+	LTSearchViewController.m \
+	LTTrackListViewController.m \
+	LTArtistViewController.m \
+	LTArtistSongsViewController.m \
+	LTPlayerViewController.m \
+	LTPlayerController.m \
+	LTQueueViewController.m \
+	LTPlaylistStore.m \
+	LTListenBrainzScrobbler.m \
+	LTListenBrainzAuthViewController.m \
+	LTDownloadQueueViewController.m \
+	LTPlaylistPicker.m \
+	LTSongMenu.m \
+	LTSyncServer.m \
+	LTP2PSync.m \
+	LTLocalPlaylistDetailViewController.m \
+	LTSmartPlaylistDetailViewController.m \
+	LTStationDetailViewController.m \
+	LTSeedSearchViewController.m \
+	LTMediaCell.m \
+	LTTextUtils.m \
+	LTTheme.m \
+	LTThemedTableView.m \
+	LTCardControls.m \
+	LTCardNavBar.m \
+	LTWebServer.m \
+	LTWebAPI.m \
+	LTWebShellViewController.m \
+	LTThemePickerViewController.m \
+	LTAccentPickerViewController.m \
+	LTSafeArea.m \
+	LTSimpleCell.m \
+	LTHeaderView.m \
+	LTCustomActionSheet.m \
+	LTTransitionSettings.m \
+	LTTransitionSpeedViewController.m \
+	LTRecentsTileSizeViewController.m \
+	LTOneHandedMode.m \
+	LTOneHandedModeViewController.m \
+	LTAppTabBar.m \
+	LTWebExporter.m \
+	LTPlaylistSelectViewController.m \
+	LTLibraryViewController.m \
+	LTLibrarySongsViewController.m \
+	LTSpinnerView.m \
+	LTStatsViewController.m \
+	LTStatsDetailViewController.m \
+	LTDebugMenuViewController.m \
+	LTDebugSettings.m \
+	LTiPodViewController.m
+
+# ARC retained for practicality on 4.x; `weak` replaced with unsafe_unretained.
+# If runtime crashes from dangling delegate/block captures, consider -fno-objc-arc
+# and full MRC conversion for affected modules.
+LegacyMusic_FRAMEWORKS = UIKit Foundation CoreGraphics QuartzCore MediaPlayer AVFoundation AudioToolbox CoreMedia CoreText ImageIO SystemConfiguration Security
+# WebKit removed from weak-link for 4.x baseline; guard/re-add only if needed and available.
+LegacyMusic_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -Wno-objc-interface-ivars -Wno-unguarded-availability -Wno-unguarded-availability-new -Wno-error=unguarded-availability -Wno-error=unguarded-availability-new \
+	-Isrc -Isrc/Net -Isrc/Spotify -Isrc/Audio -Isrc/UI -Isrc/Util \
+	-Ivendor -Ivendor/mbedtls/include -Ivendor/mbedtls/library
+LegacyMusic_LDFLAGS = -Wl,-U,_memcpy -Wl,-U,__Unwind_Resume -lz
+
+# Sixify (spotify-ios6) protocol sources — MIT licensed, see THIRD-PARTY-NOTICES.
+LegacyMusic_FILES += $(wildcard src/*.m) \
+                    $(wildcard src/Spotify/*.m) $(wildcard src/Spotify/*.c) \
+                    $(wildcard src/Net/*.m) $(wildcard src/Net/*.c) \
+                    $(wildcard src/Util/*.m) $(wildcard src/Util/*.c) \
+                    $(wildcard src/Audio/*.m) $(wildcard src/Audio/*.c) \
+                    vendor/mbedtls_glue.c vendor/s6_stb_vorbis.c vendor/qrcodegen/qrcodegen.c \
+                    $(wildcard vendor/mbedtls/library/*.c)
+
+include $(THEOS_MAKE_PATH)/application.mk
+
+ADDITIONAL_CFLAGS += -Wno-error=unguarded-availability -Wno-error=unguarded-availability-new
+ADDITIONAL_OBJCFLAGS += -Wno-error=unguarded-availability -Wno-error=unguarded-availability-new
+
+S6ARCLiteShim.m_CFLAGS = -fno-objc-arc

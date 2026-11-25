@@ -1,6 +1,8 @@
 #import "LTPlaylistSelectViewController.h"
+#import "LTTheme.h"
 #import "LTPlaylistStore.h"
 #import "LTSimpleCell.h"
+#import "LTThemedTableView.h"
 
 @interface LTPlaylistSelectViewController ()
 @property (nonatomic, strong) UITableView *tableView;
@@ -16,7 +18,7 @@
                        completion:(LTPlaylistSelectCompletion)completion {
     self = [super init];
     if (self) {
-        _playlists = playlists ?: @[];
+        _playlists = playlists ?: [NSArray array];
         _completion = [completion copy];
         _selectedIdentifiers = [NSMutableSet set];
         for (LTLocalPlaylist *p in _playlists) {
@@ -29,10 +31,10 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     if ([self respondsToSelector:@selector(setEdgesForExtendedLayout:)]) {
-        self.edgesForExtendedLayout = UIRectEdgeNone;
+        [(id)self setValue:[NSNumber numberWithInteger:0] forKey:@"edgesForExtendedLayout"];
     }
     self.title = @"Include Playlists";
-    self.view.backgroundColor = [UIColor colorWithWhite:0.11f alpha:1.0f];
+    self.view.backgroundColor = [LTTheme background];
 
     self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
         initWithBarButtonSystemItem:UIBarButtonSystemItemCancel
@@ -51,7 +53,7 @@
     self.footerLabel.textAlignment = NSTextAlignmentCenter;
     [self.view addSubview:self.footerLabel];
 
-    self.tableView = [[UITableView alloc] initWithFrame:CGRectMake(0, top + 52, bounds.size.width, bounds.size.height - top - 52)
+    self.tableView = [[LTThemedTableView alloc] initWithFrame:CGRectMake(0, top + 52, bounds.size.width, bounds.size.height - top - 52)
                                                   style:UITableViewStylePlain];
     self.tableView.dataSource = self;
     self.tableView.delegate = self;

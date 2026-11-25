@@ -1,6 +1,8 @@
 #import "LTMediaCell.h"
+#import <QuartzCore/QuartzCore.h>
 #import "LTYouTubeClient.h"
 #import "LTTextUtils.h"
+#import "LTTheme.h"
 
 @implementation LTMediaCell {
     NSString *_cachedFullTitle;
@@ -14,7 +16,7 @@
     if (self) {
         self.imageView.contentMode = UIViewContentModeScaleAspectFill;
         self.imageView.clipsToBounds = YES;
-        self.imageView.layer.cornerRadius = 4.0f;
+        self.imageView.layer.cornerRadius = [LTTheme largeCornerRadius];
     }
     return self;
 }
@@ -68,9 +70,13 @@
     self.imageView.image = nil;
     if (!urlString.length) return;
     NSString *artURL = [[LTYouTubeClient sharedClient] highResThumbnailURL:urlString];
-    __weak LTMediaCell *weakCell = self;
+    // The block holds the cell strongly. An __unsafe_unretained capture is a
+    // use-after-free: a cell that scrolls off can deallocate (and have its
+    // memory recycled, e.g. as an NSString) before the artwork arrives, and
+    // -imageURL then crashes with an unrecognised selector. The URL check below
+    // still stops a reused cell from showing another row's artwork.
+    LTMediaCell *cell = self;
     [[LTYouTubeClient sharedClient] loadImageWithURL:artURL completion:^(UIImage *image) {
-        LTMediaCell *cell = weakCell;
         if (!cell) return;
         if ([cell.imageURL isEqualToString:urlString]) {
             cell.imageView.image = image;

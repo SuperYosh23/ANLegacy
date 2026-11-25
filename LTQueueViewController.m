@@ -1,12 +1,15 @@
 #import "LTQueueViewController.h"
+#import "LTArtworkBackground.h"
+#import "LTTheme.h"
 #import "LTPlayerController.h"
 #import "LTYouTubeClient.h"
 #import "LTGraphics.h"
 #import "LTLog.h"
 #import "LTSimpleCell.h"
+#import "LTThemedTableView.h"
 
 @interface LTQueueViewController () <UITableViewDataSource, UITableViewDelegate>
-@property (nonatomic, strong) UITableView *tableView;
+@property (nonatomic, strong) LTThemedTableView *tableView;
 @property (nonatomic, strong) UILabel *headerLabel;
 @property (nonatomic, strong) UIImageView *backgroundImageView;
 @property (nonatomic, strong) UIView *scrimView;
@@ -18,10 +21,10 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     if ([self respondsToSelector:@selector(setEdgesForExtendedLayout:)]) {
-        self.edgesForExtendedLayout = UIRectEdgeNone;
+        [(id)self setValue:[NSNumber numberWithInteger:0] forKey:@"edgesForExtendedLayout"];
     }
     self.title = @"Queue";
-    self.view.backgroundColor = [UIColor colorWithWhite:0.15f alpha:1.0f];
+    self.view.backgroundColor = [LTTheme background];
 
     self.headerLabel = [[UILabel alloc] initWithFrame:CGRectMake(16, 8, self.view.bounds.size.width - 32, 24)];
     self.headerLabel.font = [UIFont boldSystemFontOfSize:15];
@@ -29,10 +32,14 @@
     self.headerLabel.backgroundColor = [UIColor clearColor];
     [self.view addSubview:self.headerLabel];
 
-    self.tableView = [[UITableView alloc] initWithFrame:CGRectMake(0, 36, self.view.bounds.size.width, self.view.bounds.size.height - 36)
+    self.tableView = [[LTThemedTableView alloc] initWithFrame:CGRectMake(0, 36, self.view.bounds.size.width, self.view.bounds.size.height - 36)
                                                   style:UITableViewStylePlain];
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
+    // The rows keep clear of the editing controls, which the platform only
+    // moves in when the table goes into editing mode. Without this the rows
+    // would jump sideways when Edit is tapped.
+    self.tableView.leadingRowInset = 38.0f;
     self.tableView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     self.tableView.backgroundColor = [UIColor clearColor];
     [self.view addSubview:self.tableView];
@@ -102,13 +109,7 @@
 }
 
 - (BOOL)artworkBackgroundEnabled {
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    if ([defaults objectForKey:@"LTPlayerArtworkBackground"] == nil) {
-        BOOL modern = ([UIDevice currentDevice].systemVersion.intValue >= 7);
-        [defaults setBool:modern forKey:@"LTPlayerArtworkBackground"];
-        return modern;
-    }
-    return [defaults boolForKey:@"LTPlayerArtworkBackground"];
+    return [LTArtworkBackground enabled];
 }
 
 - (void)applyBackgroundPref {
@@ -139,15 +140,14 @@
     LTTrack *track = [[LTPlayerController sharedController] currentTrack];
     if (!track || !track.thumbnailURL.length) return;
     NSString *url = [[LTYouTubeClient sharedClient] highResThumbnailURL:track.thumbnailURL];
-    __weak LTQueueViewController *weakSelf = self;
+    // Keep the queue screen alive until the blurred background is ready.
     [[LTYouTubeClient sharedClient] loadImageWithURL:url completion:^(UIImage *image) {
         if (!image) return;
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
             UIImage *blurred = [LTGraphics blurredImageFromImage:image];
             if (!blurred) return;
             dispatch_async(dispatch_get_main_queue(), ^{
-                LTQueueViewController *strongSelf = weakSelf;
-                if (strongSelf) strongSelf.backgroundImageView.image = blurred;
+                self.backgroundImageView.image = blurred;
             });
         });
     }];

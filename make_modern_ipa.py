@@ -44,6 +44,14 @@ EXECUTABLE = "LegacyMusic"
 
 # arm64 deployment target: must stay compatible with iOS 11 and newer.
 MIN_OS = "11.0"
+
+# iOS still honoured a fat binary's per-slice minos when picking a slice, but
+# from iOS 11 onwards a 32-bit app cannot be installed at all, so the two
+# populations are split at build time instead of relying on the loader:
+#   * the rootful deb keeps both slices, and the arm64 one is rewritten to
+#     minos 11.0 so iOS 9/10 pick armv7 and iOS 11+ pick arm64;
+#   * the rootless deb and modern ipa are arm64-only, for jailbreaks that are
+#     iOS 15+ anyway.
 # SDK reported in the Mach-O (LC_BUILD_VERSION) and Info.plist. Kept at the
 # iOS 14 SDK so iOS 26+ does not apply the Liquid Glass redesign, which breaks
 # this app's hand-built UI. (Reporting a >= 26 SDK turned Liquid Glass on.)

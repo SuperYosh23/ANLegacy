@@ -1,6 +1,24 @@
 #import "LTPlaylistStore.h"
+#import "S6JSON.h"
 #import "LTYouTubeClient.h"
+#import "S6HTTPRequest.h"
 #import "LTLog.h"
+// For LTDataDirectory(), the root of all app storage.
+#import "LTFilePaths.h"
+#import <objc/runtime.h>
+
+// Per-cell marker of which playlist a row is showing, so a late artwork reply
+// for one row cannot be written onto another. See +providePlaylistArtwork:.
+static const void *kLTPlaylistArtTokenKey = &kLTPlaylistArtTokenKey;
+
+// iOS 6+ only has NSUUID; CoreFoundation's CFUUID works all the way back to
+// iOS 2.0, so use it unconditionally for identifiers (stations, sync device).
+static NSString *LTGenerateUUIDString(void) {
+    CFUUIDRef uuid = CFUUIDCreate(NULL);
+    NSString *string = (__bridge_transfer NSString *)CFUUIDCreateString(NULL, uuid);
+    CFRelease(uuid);
+    return string;
+}
 
 #define kLTListenedSongIDsKey @"LTListenedSongIDs2"
 
@@ -29,9 +47,11 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
 
 @interface LTPlaylistStore () <NSURLConnectionDataDelegate>
 @property (nonatomic, strong) NSMutableArray *playlists;
+@property (nonatomic, strong) NSMutableArray *stations;
 // Persistent pending queue (LTDownloadItem). Survives relaunch.
 @property (nonatomic, strong) NSMutableArray *downloadQueue;
 @property (nonatomic, strong) NSURLConnection *downloadConnection;
+@property (nonatomic, strong) S6HTTPRequest *downloadS6Request;
 @property (nonatomic, strong) NSMutableData *downloadData;
 @property (nonatomic, copy) NSString *downloadingVideoId;
 @property (nonatomic, strong) LTTrack *downloadingTrack;
@@ -49,10 +69,217 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
 @property (nonatomic, assign) BOOL downloadCancelling;
 @property (nonatomic, strong) NSMutableArray *libraryTracks;
 @property (nonatomic, strong) NSMutableDictionary *artistAvatarURLs;
+// Listening-stats ledger held in memory so the 5-second playback commit does not
+// re-parse and re-serialise a file that grows with every track ever played.
+// See -statsFileDict and -writeStatsFileDict:.
+@property (nonatomic, strong) NSMutableDictionary *statsCache;
+@property (nonatomic, assign) BOOL statsDirty;
+@property (nonatomic, assign) BOOL statsFlushScheduled;
+// Recently played, parsed once. Invalidated wherever recents.plist is written;
+// see -recentTracks.
+@property (nonatomic, strong) NSArray *recentsCache;
 @end
 
 @implementation LTStatsEntry
 @end
+
+#pragma mark - Duplicate-name guard
+
+
+// Drives a per-song duplicate confirmation. UIAlertView keeps only a weak
+// delegate reference, so one long-lived instance acts as the delegate for every
+// prompt and carries the pending batch on the side.
+//
+// The prompt is per song rather than per batch on purpose: with an album of 30
+// tracks, "3 tracks share a name with tracks already in this playlist" forces
+// the listener to decide about the whole album at once, including the 27 they
+// never looked at. Asking one at a time keeps each decision about one song, and
+// "Don't Add" means exactly that one song.
+//
+// Only one batch is in flight at a time. Reaching this with a second batch
+// already up is not possible through the UI (the picker has to be dismissed
+// before Add All can be tapped again), so it is ignored rather than stacked.
+@interface LTDuplicatePrompt : NSObject <UIAlertViewDelegate>
+@property (nonatomic, strong) LTLocalPlaylist *playlist;
+// Duplicate tracks still awaiting an answer, in the order they were found.
+@property (nonatomic, strong) NSMutableArray *queue;
+@property (nonatomic, copy) void (^completion)(NSInteger);
+@property (nonatomic, assign) NSInteger addedCount;
+@property (nonatomic, assign) BOOL inFlight;
++ (instancetype)shared;
+- (void)startWithQueue:(NSArray *)duplicates
+              playlist:(LTLocalPlaylist *)playlist
+             presenter:(UIViewController *)presenter
+           addedSoFar:(NSInteger)addedSoFar
+            completion:(void (^)(NSInteger addedCount))completion;
+@end
+
+@implementation LTDuplicatePrompt
+
++ (instancetype)shared {
+    static LTDuplicatePrompt *shared = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ shared = [[LTDuplicatePrompt alloc] init]; });
+    return shared;
+}
+
+- (void)startWithQueue:(NSArray *)duplicates
+              playlist:(LTLocalPlaylist *)playlist
+             presenter:(UIViewController *)presenter
+           addedSoFar:(NSInteger)addedSoFar
+            completion:(void (^)(NSInteger addedCount))completion {
+    if (self.inFlight) {
+        LTLog(@"DUPLICATE prompt already in flight; ignoring extra batch");
+        return;
+    }
+    self.playlist = playlist;
+    self.queue = [NSMutableArray arrayWithArray:duplicates];
+    self.completion = completion;
+    self.addedCount = addedSoFar;
+    self.inFlight = YES;
+
+    // Presenting controller is gone: nobody can answer, so treat every remaining
+    // duplicate as "Don't Add" rather than raising a dialog into a dead flow.
+    if (presenter && !presenter.view) { [self finish]; return; }
+    [self presentNext];
+}
+
+- (void)presentNext {
+    if (!self.queue.count) { [self finish]; return; }
+    LTTrack *track = [self.queue objectAtIndex:0];
+
+    // Name the clash on both sides so the listener can tell "same song twice"
+    // apart from "a different cut that happens to share a name".
+    NSString *existing = [self existingTitleForTrack:track];
+    NSString *message;
+    if (existing.length) {
+        message = [NSString stringWithFormat:
+                   @"\"%@\" is already in \"%@\" as \"%@\".\n\n"
+                   @"That is a different recording with the same name. Add it anyway?",
+                   track.title ?: @"This track", self.playlist.name, existing];
+    } else {
+        message = [NSString stringWithFormat:
+                   @"\"%@\" is already in \"%@\".\n\n"
+                   @"That is a different recording with the same name. Add it anyway?",
+                   track.title ?: @"This track", self.playlist.name];
+    }
+
+    UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"Duplicate Name"
+                                                    message:message
+                                                   delegate:self
+                                          cancelButtonTitle:@"Don't Add"
+                                          otherButtonTitles:@"Add Anyway", nil];
+    // UIAlertView only offers -show; there is no -showInView:.
+    [alert show];
+}
+
+// The already-present track whose title this one collides with, for the message.
+- (NSString *)existingTitleForTrack:(LTTrack *)track {
+    for (LTTrack *existing in self.playlist.tracks) {
+        if ([track.title caseInsensitiveCompare:existing.title] == NSOrderedSame) return existing.title;
+    }
+    return nil;
+}
+
+- (void)finish {
+    self.inFlight = NO;
+    self.queue = nil;
+    self.playlist = nil;
+    void (^completion)(NSInteger) = self.completion;
+    self.completion = nil;
+    NSInteger added = self.addedCount;
+    self.addedCount = 0;
+    if (completion) completion(added);
+}
+
+- (void)alertView:(UIAlertView *)alertView clickedButtonAtIndex:(NSInteger)buttonIndex {
+    if (!self.inFlight || !self.queue.count) return;
+    LTTrack *track = [self.queue objectAtIndex:0];
+    // 0 is "Don't Add"; anything else means the listener chose "Add Anyway".
+    if (buttonIndex != 0) {
+        [[LTPlaylistStore sharedStore] addTrack:track toPlaylist:self.playlist];
+        self.addedCount++;
+    }
+    [self.queue removeObjectAtIndex:0];
+    [self presentNext];
+}
+
+@end
+
+#pragma mark - Duplicate-name guard
+
+// Delete confirmation. Same shape as LTDuplicatePrompt and for the same reason:
+// UIAlertView holds its delegate weakly, so a long-lived object has to stand in
+// for it and carry the pending action. Keeping it here rather than in each of
+// the three controllers that can delete a playlist also means one implementation
+// of the wording and no risk of two controllers claiming the same alert tag.
+@interface LTPlaylistDeletePrompt : NSObject <UIAlertViewDelegate>
+@property (nonatomic, strong) LTLocalPlaylist *playlist;
+@property (nonatomic, copy) void (^completion)(BOOL);
+@property (nonatomic, assign) BOOL inFlight;
++ (instancetype)shared;
+- (void)askToDelete:(LTLocalPlaylist *)playlist completion:(void (^)(BOOL deleted))completion;
+@end
+
+@implementation LTPlaylistDeletePrompt
+
++ (instancetype)shared {
+    static LTPlaylistDeletePrompt *shared = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ shared = [[LTPlaylistDeletePrompt alloc] init]; });
+    return shared;
+}
+
+- (void)askToDelete:(LTLocalPlaylist *)playlist completion:(void (^)(BOOL deleted))completion {
+    // A second swipe while a prompt is already up is not reachable through the
+    // UI (the row stays until the prompt resolves), so ignore rather than stack.
+    if (self.inFlight) {
+        LTLog(@"DELETE prompt already in flight; ignoring");
+        if (completion) completion(NO);
+        return;
+    }
+
+    NSString *message;
+    NSInteger count = (NSInteger)playlist.tracks.count;
+    if (count == 0) {
+        message = [NSString stringWithFormat:@"\"%@\" will be deleted.", playlist.name];
+    } else {
+        message = [NSString stringWithFormat:
+                   @"\"%@\" and its %d song%@ will be permanently deleted.",
+                   playlist.name, (int)count, count == 1 ? @"" : @"s"];
+    }
+
+    self.playlist = playlist;
+    self.completion = completion;
+    self.inFlight = YES;
+
+    UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"Delete Playlist?"
+                                                    message:message
+                                                   delegate:self
+                                          cancelButtonTitle:@"Cancel"
+                                          otherButtonTitles:@"Delete", nil];
+    [alert show];
+}
+
+- (void)alertView:(UIAlertView *)alertView clickedButtonAtIndex:(NSInteger)buttonIndex {
+    if (!self.inFlight) return;
+    self.inFlight = NO;
+    LTLocalPlaylist *playlist = self.playlist;
+    void (^completion)(BOOL) = self.completion;
+    self.playlist = nil;
+    self.completion = nil;
+
+    BOOL deleted = NO;
+    if (buttonIndex != 0 && playlist) {
+        [[LTPlaylistStore sharedStore] deletePlaylist:playlist];
+        deleted = YES;
+        LTLog(@"DELETE confirmed playlist %@", playlist.name);
+    }
+    if (completion) completion(deleted);
+}
+
+@end
+
 
 @implementation LTPlaylistStore
 
@@ -69,11 +296,13 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     self = [super init];
     if (self) {
         _playlists = [NSMutableArray array];
+        _stations = [NSMutableArray array];
         _downloadQueue = [NSMutableArray array];
         _libraryTracks = [NSMutableArray array];
         _artistAvatarURLs = [NSMutableDictionary dictionary];
         [self ensureDirectories];
         [self loadPlaylists];
+        [self loadStations];
         [self loadLibrary];
         [self loadArtistAvatars];
         [self loadDownloadQueue];
@@ -100,6 +329,13 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     return [self.baseDirectory stringByAppendingPathComponent:@"art"];
 }
 
+// Lyrics are cached here so they survive relaunches and work with no network.
+// Without this, every track change paid a round-trip and offline always ended
+// in "No lyrics available".
+- (NSString *)lyricsDirectory {
+    return [self.baseDirectory stringByAppendingPathComponent:@"lyrics"];
+}
+
 - (void)ensureDirectories {
     NSError *error = nil;
     [[NSFileManager defaultManager] createDirectoryAtPath:[self baseDirectory]
@@ -113,10 +349,86 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     [[NSFileManager defaultManager] createDirectoryAtPath:[self artDirectory]
                               withIntermediateDirectories:YES attributes:nil error:&error];
     if (error) LTLog(@"STORE mkdir art error: %@", error);
+    error = nil;
+    [[NSFileManager defaultManager] createDirectoryAtPath:[self lyricsDirectory]
+                              withIntermediateDirectories:YES attributes:nil error:&error];
+    if (error) LTLog(@"STORE mkdir lyrics error: %@", error);
+}
+
+#pragma mark - Lyrics cache
+
+// Filenames come from the video id, which is a fixed YouTube charset, so it is
+// safe to use directly -- but strip anything unexpected anyway rather than let a
+// stray "/" turn into a path traversal.
+- (NSString *)lyricsCachePathForVideoId:(NSString *)videoId {
+    NSMutableString *safe = [NSMutableString stringWithCapacity:videoId.length];
+    for (NSUInteger i = 0; i < videoId.length; i++) {
+        unichar c = [videoId characterAtIndex:i];
+        BOOL ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                  (c >= '0' && c <= '9') || c == '-' || c == '_';
+        if (ok) [safe appendFormat:@"%C", c];
+    }
+    if (!safe.length) return nil;
+    return [[[self lyricsDirectory] stringByAppendingPathComponent:safe]
+            stringByAppendingPathExtension:@"json"];
+}
+
+- (NSDictionary *)cachedLyricsForVideoId:(NSString *)videoId {
+    if (!videoId.length) return nil;
+    NSString *path = [self lyricsCachePathForVideoId:videoId];
+    if (!path) return nil;
+    NSData *data = [NSData dataWithContentsOfFile:path];
+    if (!data.length) return nil;
+    id json = [S6JSON objectWithData:data error:NULL];
+    return [json isKindOfClass:[NSDictionary class]] ? json : nil;
+}
+
+- (void)cacheLyrics:(NSDictionary *)payload forVideoId:(NSString *)videoId {
+    if (!videoId.length) return;
+    NSString *path = [self lyricsCachePathForVideoId:videoId];
+    if (!path) return;
+
+    // An empty dictionary is a meaningful result: "this song has no lyrics".
+    // Recording it stops us re-fetching on every play for songs that will never
+    // have any.
+    NSDictionary *body = [payload isKindOfClass:[NSDictionary class]] ? payload : [NSDictionary dictionary];
+    NSData *data = [S6JSON dataWithObject:body error:NULL];
+    if (!data) return;
+
+    NSError *error = nil;
+    if (![data writeToFile:path options:NSDataWritingAtomic error:&error]) {
+        LTLog(@"LYRICS cache write failed for %@: %@", videoId, error);
+    }
+}
+
+- (void)clearLyricsCache {
+    NSString *dir = [self lyricsDirectory];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSArray *names = [fm contentsOfDirectoryAtPath:dir error:NULL];
+    for (NSString *name in names) {
+        if ([name hasSuffix:@".json"]) [fm removeItemAtPath:[dir stringByAppendingPathComponent:name] error:NULL];
+    }
+    LTLog(@"LYRICS cache cleared (%lu files)", (unsigned long)[names count]);
+}
+
+- (unsigned long long)lyricsCacheSize {
+    NSString *dir = [self lyricsDirectory];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSArray *names = [fm contentsOfDirectoryAtPath:dir error:NULL];
+    unsigned long long total = 0;
+    for (NSString *name in names) {
+        NSDictionary *attrs = [fm attributesOfItemAtPath:[dir stringByAppendingPathComponent:name] error:NULL];
+        if (attrs) total += [[attrs objectForKey:NSFileSize] unsignedLongLongValue];
+    }
+    return total;
 }
 
 - (NSString *)playlistsFilePath {
     return [[self baseDirectory] stringByAppendingPathComponent:@"playlists.plist"];
+}
+
+- (NSString *)stationsFilePath {
+    return [[self baseDirectory] stringByAppendingPathComponent:@"stations.plist"];
 }
 
 - (void)loadPlaylists {
@@ -129,12 +441,31 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     LTLog(@"STORE loaded %d playlists", (int)self.playlists.count);
 }
 
+- (void)loadStations {
+    NSArray *plist = [NSArray arrayWithContentsOfFile:[self stationsFilePath]];
+    if (![plist isKindOfClass:[NSArray class]]) return;
+    for (NSDictionary *dict in plist) {
+        LTStation *station = [LTStation stationWithDictionary:dict];
+        if (station.identifier.length) [_stations addObject:station];
+    }
+    LTLog(@"STORE loaded %d stations", (int)self.stations.count);
+}
+
 - (void)savePlaylists {
     NSMutableArray *plist = [NSMutableArray array];
     for (LTLocalPlaylist *playlist in self.playlists) {
         [plist addObject:[playlist dictionaryRepresentation]];
     }
     BOOL ok = [plist writeToFile:[self playlistsFilePath] atomically:YES];
+    if (!ok) LTLog(@"STORE save failed");
+}
+
+- (void)saveStations {
+    NSMutableArray *plist = [NSMutableArray array];
+    for (LTStation *station in self.stations) {
+        [plist addObject:[station dictionaryRepresentation]];
+    }
+    BOOL ok = [plist writeToFile:[self stationsFilePath] atomically:YES];
     if (!ok) LTLog(@"STORE save failed");
 }
 
@@ -224,6 +555,73 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     [self saveLibrary];
     [self postPlaylistsChanged];
     LTLog(@"STORE added %@ to library", track.videoId);
+}
+
+- (void)removeTrackFromLibrary:(LTTrack *)track {
+    if (!track.videoId.length) return;
+    LTTrack *match = nil;
+    for (LTTrack *existing in [_libraryTracks copy]) {
+        if ([existing.videoId isEqualToString:track.videoId]) { match = existing; break; }
+    }
+    if (!match) return;
+    [_libraryTracks removeObject:match];
+    [self saveLibrary];
+    [self postPlaylistsChanged];
+    LTLog(@"STORE removed %@ from library", track.videoId);
+}
+
+- (NSArray *)stations {
+    return [_stations copy];
+}
+
+- (LTStation *)createStationWithName:(NSString *)name seeds:(NSArray *)seeds {
+    NSString *trimmed = [name stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (!trimmed.length) trimmed = @"New Station";
+    LTStation *station = [[LTStation alloc] init];
+    station.identifier = LTGenerateUUIDString();
+    station.name = trimmed;
+    station.seeds = [seeds mutableCopy] ?: [NSMutableArray array];
+    [_stations addObject:station];
+    [self saveStations];
+    [[NSNotificationCenter defaultCenter] postNotificationName:LTPlaylistsDidChangeNotification object:self];
+    return station;
+}
+
+- (void)deleteStation:(LTStation *)station {
+    if (!station) return;
+    [_stations removeObject:station];
+    [self saveStations];
+    [[NSNotificationCenter defaultCenter] postNotificationName:LTPlaylistsDidChangeNotification object:self];
+}
+
+- (void)renameStation:(LTStation *)station name:(NSString *)name {
+    if (!station) return;
+    NSString *trimmed = [name stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (!trimmed.length) return;
+    station.name = trimmed;
+    [self saveStations];
+    [[NSNotificationCenter defaultCenter] postNotificationName:LTPlaylistsDidChangeNotification object:self];
+}
+
+- (void)setCoverImage:(UIImage *)image forStation:(LTStation *)station {
+    if (!station.identifier.length) return;
+    // Remove old cover if exists
+    if (station.coverPath.length) {
+        [[NSFileManager defaultManager] removeItemAtPath:station.coverPath error:nil];
+        station.coverPath = nil;
+    }
+    if (image) {
+        NSString *path = [[self artDirectory] stringByAppendingPathComponent:
+                          [NSString stringWithFormat:@"station-cover-%@.jpg", station.identifier]];
+        NSData *data = UIImageJPEGRepresentation(image, 0.85);
+        if (data) {
+            [data writeToFile:path atomically:YES];
+            station.coverPath = path;
+            LTLog(@"STORE saved cover for station %@ at %@", station.name, path);
+        }
+    }
+    [self saveStations];
+    [[NSNotificationCenter defaultCenter] postNotificationName:LTPlaylistsDidChangeNotification object:self];
 }
 
 - (NSArray *)downloadedTracks {
@@ -331,15 +729,76 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     [self postPlaylistsChanged];
 }
 
++ (BOOL)providePlaylistArtwork:(LTLocalPlaylist *)playlist toCell:(UITableViewCell *)cell {
+    if (!cell) return YES;
+    // An associated-object token, as in -loadArtworkURL:intoCell:, so a reply
+    // for one row cannot land on another.
+    if (playlist.coverPath.length) {
+        objc_setAssociatedObject(cell, kLTPlaylistArtTokenKey, playlist.identifier ?: @"",
+                                 OBJC_ASSOCIATION_COPY_NONATOMIC);
+        cell.imageView.image = [UIImage imageWithContentsOfFile:playlist.coverPath];
+        return YES;
+    }
+    if (!playlist.tracks.count) return YES;
+    LTTrack *first = [playlist.tracks objectAtIndex:0];
+    if (!first.thumbnailURL.length) return YES;
+
+    NSString *token = playlist.identifier.length ? playlist.identifier : (first.thumbnailURL ?: @"");
+    objc_setAssociatedObject(cell, kLTPlaylistArtTokenKey, token, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    cell.imageView.image = nil;
+
+    // Retain the cell for the duration of the load: an unsafe-unretained cell
+    // can be deallocated after scrolling, and the late reply then writes into
+    // freed memory. The token check still prevents cross-row artwork.
+    [[LTYouTubeClient sharedClient] loadImageWithURL:first.thumbnailURL completion:^(UIImage *image) {
+        UITableViewCell *strongCell = cell;
+        if (!strongCell || !image) return;
+        NSString *current = objc_getAssociatedObject(strongCell, kLTPlaylistArtTokenKey);
+        if (![current isEqualToString:token]) return; // recycled onto another row
+        strongCell.imageView.image = image;
+        // Keep it, so this row never has to go back to the network for art.
+        [[LTPlaylistStore sharedStore] cacheDerivedCoverImage:image forPlaylist:playlist];
+    }];
+    return NO;
+}
+
+- (void)cacheDerivedCoverImage:(UIImage *)image forPlaylist:(LTLocalPlaylist *)playlist {
+    if (!image || !playlist.identifier.length) return;
+    if (playlist.coverPath.length) return; // a cover is already set
+    NSString *path = [[self artDirectory] stringByAppendingPathComponent:
+                      [NSString stringWithFormat:@"cover-%@.jpg", playlist.identifier]];
+    NSData *data = UIImageJPEGRepresentation(image, 0.85);
+    if (!data.length) return;
+    // Another list may have derived a cover for this playlist while this
+    // fetch was in flight.
+    if (playlist.coverPath.length) return;
+    [data writeToFile:path atomically:YES];
+    playlist.coverPath = path;
+    [self savePlaylists]; // no notification: this runs during cell rendering
+    LTLog(@"STORE cached derived cover for playlist %@", playlist.name);
+}
+
 - (void)addTrack:(LTTrack *)track toPlaylist:(LTLocalPlaylist *)playlist {
     if (!track.videoId.length) return;
+
+    BOOL alreadyInPlaylist = NO;
     for (LTTrack *existing in playlist.tracks) {
-        if ([existing.videoId isEqualToString:track.videoId]) return;
+        if ([existing.videoId isEqualToString:track.videoId]) { alreadyInPlaylist = YES; break; }
     }
-    [playlist.tracks addObject:track];
-    [self savePlaylists];
+
+    if (!alreadyInPlaylist) {
+        [playlist.tracks addObject:track];
+        [self savePlaylists];
+        LTLog(@"STORE added track %@ to %@", track.videoId, playlist.name);
+    }
+
+    // Putting a song in a playlist means it belongs to you, so it goes to the
+    // library too. Previously only a completed download did that, which left a
+    // playlist you had deliberately assembled missing from Library. This runs
+    // even when the track was already in the playlist: playlists created before
+    // this behaviour existed can hold tracks the library has never seen.
+    [self addTrackToLibrary:track];
     [self postPlaylistsChanged];
-    LTLog(@"STORE added track %@ to %@", track.videoId, playlist.name);
 }
 
 - (void)removeTrackAtIndex:(NSInteger)index fromPlaylist:(LTLocalPlaylist *)playlist {
@@ -347,6 +806,88 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     [playlist.tracks removeObjectAtIndex:(NSUInteger)index];
     [self savePlaylists];
     [self postPlaylistsChanged];
+}
+
++ (NSArray *)duplicateTitledTracks:(NSArray *)tracks inPlaylist:(LTLocalPlaylist *)playlist {
+    NSMutableArray *duplicates = [NSMutableArray array];
+    if (!playlist.tracks.count) return duplicates;
+    for (LTTrack *candidate in tracks) {
+        if (![candidate isKindOfClass:[LTTrack class]]) continue;
+        NSString *title = candidate.title;
+        if (!title.length) continue;
+        for (LTTrack *existing in playlist.tracks) {
+            if ([title caseInsensitiveCompare:existing.title] == NSOrderedSame) {
+                [duplicates addObject:candidate];
+                break;
+            }
+        }
+    }
+    return duplicates;
+}
+
++ (void)confirmDeletePlaylist:(LTLocalPlaylist *)playlist
+                  presenting:(UIViewController *)presenter
+                  completion:(void (^)(BOOL deleted))completion {
+    if (!playlist) {
+        if (completion) completion(NO);
+        return;
+    }
+    if (presenter && !presenter.view) {
+        // The controller went away behind the prompt; do not raise a dialog
+        // into a dead flow.
+        if (completion) completion(NO);
+        return;
+    }
+    [[LTPlaylistDeletePrompt shared] askToDelete:playlist completion:completion];
+}
+
++ (void)addTracks:(NSArray *)tracks
+      toPlaylist:(LTLocalPlaylist *)playlist
+   confirmingFrom:(UIViewController *)presenter
+      completion:(void (^)(NSInteger addedCount))completion {
+    if (!playlist || !tracks.count) {
+        if (completion) completion(0);
+        return;
+    }
+
+    NSArray *duplicates = [self duplicateTitledTracks:tracks inPlaylist:playlist];
+
+    // Everything with a new name goes in straight away; only the name clashes
+    // need a decision. Asking about the whole batch would mean answering for
+    // tracks that were never in question.
+    NSInteger added = 0;
+    for (LTTrack *track in tracks) {
+        if (![track isKindOfClass:[LTTrack class]]) continue;
+        if ([duplicates containsObject:track]) continue;
+        [[LTPlaylistStore sharedStore] addTrack:track toPlaylist:playlist];
+        added++;
+    }
+
+    if (!duplicates.count) {
+        if (completion) completion(added);
+        return;
+    }
+
+    // One prompt per clashing track, walked in order by LTDuplicatePrompt. The
+    // completion fires after the last of them is answered, not before.
+    [[LTDuplicatePrompt shared] startWithQueue:duplicates
+                                      playlist:playlist
+                                     presenter:presenter
+                                   addedSoFar:added
+                                    completion:completion];
+}
+
++ (void)addTrack:(LTTrack *)track
+     toPlaylist:(LTLocalPlaylist *)playlist
+  confirmingFrom:(UIViewController *)presenter
+      completion:(void (^)(BOOL added))completion {
+    if (!track) {
+        if (completion) completion(NO);
+        return;
+    }
+    [self addTracks:@[track] toPlaylist:playlist confirmingFrom:presenter completion:^(NSInteger added) {
+        if (completion) completion(added > 0);
+    }];
 }
 
 #pragma mark - Offline files
@@ -386,7 +927,16 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     return [[self baseDirectory] stringByAppendingPathComponent:@"recents.plist"];
 }
 
+// Recently played, newest first, capped at 20.
+//
+// Cached in memory. This re-read and re-parsed recents.plist and rebuilt 20
+// LTTrack objects on every call, and it is called on every Home tab switch, on
+// every recents-changed notification, and twice per track change (once here to
+// rewrite the file, once via the notification). There are only two writers of
+// the file in this class, -recordRecentTrack: and -mergeSyncPayload:, and both
+// now drop the cache, so a stale recents list is not possible.
 - (NSArray *)recentTracks {
+    if (_recentsCache) return _recentsCache;
     NSArray *plist = [NSArray arrayWithContentsOfFile:[self recentsFilePath]];
     NSMutableArray *tracks = [NSMutableArray array];
     if ([plist isKindOfClass:[NSArray class]]) {
@@ -395,7 +945,8 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
             if (track.videoId.length) [tracks addObject:track];
         }
     }
-    return tracks;
+    _recentsCache = tracks;
+    return _recentsCache;
 }
 
 - (void)recordRecentTrack:(LTTrack *)track {
@@ -415,6 +966,8 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
         if (count >= 20) break;
     }
     [plist writeToFile:[self recentsFilePath] atomically:YES];
+    // Drop the cached list; the next -recentTracks re-reads what was just written.
+    _recentsCache = nil;
     [[NSNotificationCenter defaultCenter] postNotificationName:LTRecentsDidChangeNotification object:self];
 }
 
@@ -446,7 +999,7 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
 
 - (NSArray *)searchHistory {
     NSArray *terms = [[NSUserDefaults standardUserDefaults] arrayForKey:@"LTSearchHistory"];
-    if (![terms isKindOfClass:[NSArray class]]) return @[];
+    if (![terms isKindOfClass:[NSArray class]]) return [NSArray array];
     return terms;
 }
 
@@ -465,24 +1018,94 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"LTSearchHistory"];
 }
 
+- (void)clearRecents {
+    [[NSFileManager defaultManager] removeItemAtPath:[self recentsFilePath] error:nil];
+    _recentsCache = nil;
+    [[NSNotificationCenter defaultCenter] postNotificationName:LTRecentsDidChangeNotification object:self];
+}
+
 #pragma mark - Listening stats
 
 - (NSString *)statsFilePath {
     return [[self baseDirectory] stringByAppendingPathComponent:@"stats.plist"];
 }
 
+// The stats ledger, cached in memory.
+//
+// WHY: playback commits listening time on a 5-second timer, and each commit used
+// to re-read and re-parse the entire plist, mutate it, then serialise and write
+// it back atomically (temp file + rename). The file grows by one entry per track
+// ever played, so that got steadily more expensive and ran on the main thread
+// during playback: a visible hitch every five seconds on a 3GS.
+//
+// Every read and every write in this file already goes through these two
+// methods, so holding the dictionary here keeps them consistent, including the
+// P2P sync merge paths further down.
+//
+// DURABILITY: writes are debounced rather than deferred indefinitely. The ledger
+// is small and this is a local file, so a short coalescing window plus a flush on
+// background is indistinguishable in practice from writing every time, and
+// -flushStatsNow is also called from the app delegate on the way out.
 - (NSMutableDictionary *)statsFileDict {
-    NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:[self statsFilePath]];
-    if ([dict isKindOfClass:[NSDictionary class]]) {
-        return [NSMutableDictionary dictionaryWithDictionary:dict];
+    @synchronized (self) {
+        if (!_statsCache) {
+            NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:[self statsFilePath]];
+            _statsCache = ([dict isKindOfClass:[NSDictionary class]]
+                           ? [NSMutableDictionary dictionaryWithDictionary:dict]
+                           : [NSMutableDictionary dictionary]);
+        }
+        return _statsCache;
     }
-    return [NSMutableDictionary dictionary];
 }
 
 - (void)writeStatsFileDict:(NSDictionary *)dict {
-    if (![dict writeToFile:[self statsFilePath] atomically:YES]) {
-        LTLog(@"STATS write failed");
+    @synchronized (self) {
+        // Most callers pass back the very object -statsFileDict handed them and
+        // mutated in place, which is the common case now. Copy it only when it
+        // is genuinely a different dictionary: copying on every 5-second commit
+        // would deep-copy the whole ledger, which is the cost being removed here.
+        if (dict == _statsCache) {
+            // already the live cache
+        } else if ([dict isKindOfClass:[NSDictionary class]]) {
+            _statsCache = [dict mutableCopy];
+        } else {
+            _statsCache = [NSMutableDictionary dictionary];
+        }
+        _statsDirty = YES;
     }
+    [self scheduleStatsFlush];
+}
+
+// Coalesces bursts of writes into one. A pending flush is rescheduled rather
+// than stacked, so a track change followed by three commits still writes once.
+- (void)scheduleStatsFlush {
+    @synchronized (self) {
+        if (!_statsFlushScheduled) {
+            _statsFlushScheduled = YES;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                [self flushStatsNow];
+            });
+        }
+    }
+}
+
+- (void)flushStatsNow {
+    NSDictionary *snapshot = nil;
+    @synchronized (self) {
+        _statsFlushScheduled = NO;
+        if (!_statsDirty || !_statsCache) return;
+        _statsDirty = NO;
+        snapshot = [_statsCache copy];
+    }
+    // Serialise off the main thread. `snapshot` is an immutable copy, so the
+    // write cannot race a later mutation of the live cache.
+    NSString *path = [self statsFilePath];
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+        if (![snapshot writeToFile:path atomically:YES]) {
+            LTLog(@"STATS write failed");
+        }
+    });
 }
 
 - (NSMutableDictionary *)statsEntryForVideoId:(NSString *)videoId inDict:(NSMutableDictionary *)dict {
@@ -526,8 +1149,20 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     [self writeStatsFileDict:dict];
 }
 
+- (void)flushListeningStats {
+    [self flushStatsNow];
+}
+
 - (void)clearListeningStats {
     [[NSFileManager defaultManager] removeItemAtPath:[self statsFilePath] error:nil];
+    @synchronized (self) {
+        // Drop the in-memory ledger too, and cancel any pending flush: otherwise
+        // the next read repopulates the cache from the deleted data and a
+        // scheduled flush writes it straight back.
+        _statsCache = nil;
+        _statsDirty = NO;
+        _statsFlushScheduled = NO;
+    }
     [[NSUserDefaults standardUserDefaults] removeObjectForKey:kLTListenedSongIDsKey];
     [[NSNotificationCenter defaultCenter] postNotificationName:LTRecentsDidChangeNotification object:self];
 }
@@ -535,7 +1170,7 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
 - (NSArray *)statsEntries {
     NSMutableDictionary *dict = [self statsFileDict];
     NSDictionary *tracks = [dict objectForKey:@"tracks"];
-    if (![tracks isKindOfClass:[NSDictionary class]]) tracks = @{};
+    if (![tracks isKindOfClass:[NSDictionary class]]) tracks = [NSDictionary dictionary];
 
     NSMutableDictionary *combined = [NSMutableDictionary dictionary];
     for (NSString *videoId in tracks) {
@@ -560,20 +1195,20 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
                 NSMutableDictionary *entry = [combined objectForKey:videoId];
                 if (!entry) {
                     entry = [NSMutableDictionary dictionary];
-                    entry[@"title"] = remote[@"title"] ?: @"";
-                    entry[@"artist"] = remote[@"artist"] ?: @"";
-                    entry[@"album"] = remote[@"album"] ?: @"";
-                    entry[@"thumbnailURL"] = remote[@"thumbnailURL"] ?: @"";
-                    entry[@"plays"] = @(0);
-                    entry[@"seconds"] = @(0.0);
+                    [entry setObject:[remote objectForKey:@"title"] ?: @"" forKey:@"title"];
+                    [entry setObject:[remote objectForKey:@"artist"] ?: @"" forKey:@"artist"];
+                    [entry setObject:[remote objectForKey:@"album"] ?: @"" forKey:@"album"];
+                    [entry setObject:[remote objectForKey:@"thumbnailURL"] ?: @"" forKey:@"thumbnailURL"];
+                    [entry setObject:@(0) forKey:@"plays"];
+                    [entry setObject:@(0.0) forKey:@"seconds"];
                     [combined setObject:entry forKey:videoId];
                 }
-                if (![[entry objectForKey:@"title"] length]) entry[@"title"] = remote[@"title"] ?: @"";
-                if (![[entry objectForKey:@"artist"] length]) entry[@"artist"] = remote[@"artist"] ?: @"";
-                if (![[entry objectForKey:@"album"] length]) entry[@"album"] = remote[@"album"] ?: @"";
-                if (![[entry objectForKey:@"thumbnailURL"] length]) entry[@"thumbnailURL"] = remote[@"thumbnailURL"] ?: @"";
-                entry[@"plays"] = @([[entry objectForKey:@"plays"] integerValue] + [[remote objectForKey:@"plays"] integerValue]);
-                entry[@"seconds"] = @([[entry objectForKey:@"seconds"] doubleValue] + [[remote objectForKey:@"seconds"] doubleValue]);
+                if (![[entry objectForKey:@"title"] length]) [entry setObject:[remote objectForKey:@"title"] ?: @"" forKey:@"title"];
+                if (![[entry objectForKey:@"artist"] length]) [entry setObject:[remote objectForKey:@"artist"] ?: @"" forKey:@"artist"];
+                if (![[entry objectForKey:@"album"] length]) [entry setObject:[remote objectForKey:@"album"] ?: @"" forKey:@"album"];
+                if (![[entry objectForKey:@"thumbnailURL"] length]) [entry setObject:[remote objectForKey:@"thumbnailURL"] ?: @"" forKey:@"thumbnailURL"];
+                [entry setObject:@([[entry objectForKey:@"plays"] integerValue] + [[remote objectForKey:@"plays"] integerValue]) forKey:@"plays"];
+                [entry setObject:@([[entry objectForKey:@"seconds"] doubleValue] + [[remote objectForKey:@"seconds"] doubleValue]) forKey:@"seconds"];
             }
         }
     }
@@ -591,6 +1226,68 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
         [entries addObject:entry];
     }
     return entries;
+}
+
+- (NSArray *)topPlayedTracks:(NSInteger)count {
+    NSArray *entries = [self mostPlayedTracks];
+    NSMutableArray *out = [NSMutableArray array];
+    for (id e in entries) {
+        if ((NSInteger)out.count >= count) break;
+        // Extract track via helper below; entries are LTStatsEntry
+        NSString *vid = nil;
+        if ([e respondsToSelector:@selector(videoId)]) vid = [e valueForKey:@"videoId"];
+        if (!vid) continue;
+        // Try library first
+        LTTrack *found = nil;
+        for (LTTrack *t in self.libraryTracks) {
+            if ([t.videoId isEqualToString:vid]) { found = t; break; }
+        }
+        if (!found) {
+            // Search in playlists
+            for (LTLocalPlaylist *pl in self.playlists) {
+                for (LTTrack *t in pl.tracks) {
+                    if ([t.videoId isEqualToString:vid]) { found = t; break; }
+                }
+                if (found) break;
+            }
+        }
+        if (!found) {
+            for (LTTrack *t in self.recentTracks) {
+                if ([t.videoId isEqualToString:vid]) { found = t; break; }
+            }
+        }
+        if (found) [out addObject:found];
+    }
+    return out;
+}
+
+- (NSArray *)recentlyPlayedTracks:(NSInteger)count {
+    NSArray *recents = [self recentTracks];
+    if ((NSInteger)recents.count <= count) return recents;
+    return [recents subarrayWithRange:NSMakeRange(0, count)];
+}
+
+- (NSArray *)mostTimeListenedTracks:(NSInteger)count {
+    NSMutableArray *sorted = [[self mostPlayedTracks] mutableCopy];
+    // mostPlayedTracks is sorted by plays; re-sort by seconds via statsEntries
+    NSArray *entries = [self statsEntries];
+    sorted = [[entries sortedArrayUsingComparator:^NSComparisonResult(LTStatsEntry *a, LTStatsEntry *b) {
+        if (a.seconds != b.seconds) return (a.seconds > b.seconds) ? NSOrderedAscending : NSOrderedDescending;
+        return [a.title compare:b.title];
+    }] mutableCopy];
+    NSMutableArray *out = [NSMutableArray array];
+    for (id e in sorted) {
+        if ((NSInteger)out.count >= count) break;
+        NSString *vid = nil;
+        if ([e respondsToSelector:@selector(videoId)]) vid = [e valueForKey:@"videoId"];
+        if (!vid) continue;
+        LTTrack *found = nil;
+        for (LTTrack *t in self.libraryTracks) { if ([t.videoId isEqualToString:vid]) { found = t; break; } }
+        if (!found) { for (LTLocalPlaylist *pl in self.playlists) { for (LTTrack *t in pl.tracks) { if ([t.videoId isEqualToString:vid]) { found = t; break; } } if (found) break; } }
+        if (!found) { for (LTTrack *t in self.recentTracks) { if ([t.videoId isEqualToString:vid]) { found = t; break; } } }
+        if (found) [out addObject:found];
+    }
+    return out;
 }
 
 - (NSArray *)mostPlayedTracks {
@@ -821,6 +1518,7 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     self.downloadCancelled = YES;
     self.downloadCancelling = NO;
     [self.downloadConnection cancel];
+    [self.downloadS6Request cancel];
 }
 
 - (void)cancelPendingDownloads {
@@ -829,6 +1527,7 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     if ([self isDownloadBusy]) {
         // The delegate discards the in-flight item; we drop the pending ones now.
         [self.downloadConnection cancel];
+        [self.downloadS6Request cancel];
     }
     for (LTDownloadItem *item in [self.downloadQueue copy]) {
         [self releaseItem:item];
@@ -874,7 +1573,7 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
         [self finishDownloads];
         return;
     }
-    LTDownloadItem *item = self.downloadQueue.firstObject;
+    LTDownloadItem *item = [self.downloadQueue count] ? [self.downloadQueue objectAtIndex:0] : nil;
     if (!item) {
         [self finishDownloads];
         return;
@@ -902,7 +1601,7 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     self.downloadingVideoId = track.videoId;
     self.downloadingTrack = track;
     [self postProgressStatus:@"fetching"];
-    __weak LTPlaylistStore *weakSelf = self;
+    __unsafe_unretained LTPlaylistStore *weakSelf = self;
     [[LTYouTubeClient sharedClient] streamURLForVideo:track.videoId completion:^(NSString *streamURL, BOOL muxedStream, NSInteger audioBitrateKbps, NSError *error) {
         LTPlaylistStore *strongSelf = weakSelf;
         if (!strongSelf) return;
@@ -924,13 +1623,63 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
 }
 
 - (void)startDownloadURL:(NSString *)urlString videoId:(NSString *)videoId {
+    self.downloadData = [NSMutableData data];
+    self.downloadHTTPStatus = 0;
+
+    // iOS 6.x system HTTPS often cannot negotiate with googlevideo CDNs; use
+    // mbedTLS there for compatibility.
+    if ([[[UIDevice currentDevice] systemVersion] floatValue] < 7.0f) {
+        NSURL *url = [NSURL URLWithString:urlString];
+        S6HTTPRequest *req = [[S6HTTPRequest alloc] initWithMethod:@"GET" URL:url];
+        req.headers = @{ @"Range": @"bytes=0-",
+                         @"User-Agent": LTBrowserUserAgent ?: @"" };
+        req.connectTimeout = 30;
+        req.readTimeout = 120;
+        req.noCompression = YES;
+        __unsafe_unretained LTPlaylistStore *weakSelf = self;
+        __unsafe_unretained S6HTTPRequest *weakReq = req;
+        req.onHeaders = ^(NSInteger status, NSDictionary *headers) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                LTPlaylistStore *strongSelf = weakSelf;
+                if (!strongSelf || strongSelf.downloadS6Request != weakReq) return;
+                strongSelf.downloadHTTPStatus = status;
+                [strongSelf.downloadData setLength:0];
+                LTLog(@"STORE DL_RESPONSE status=%d (mbedTLS)", (int)status);
+            });
+        };
+        req.onData = ^(NSData *chunk) {
+            if (!chunk.length) return;
+            NSData *chunkCopy = [chunk copy];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                LTPlaylistStore *strongSelf = weakSelf;
+                if (!strongSelf || strongSelf.downloadS6Request != weakReq) return;
+                [strongSelf.downloadData appendData:chunkCopy];
+            });
+        };
+        req.onComplete = ^(NSError *error) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                LTPlaylistStore *strongSelf = weakSelf;
+                if (!strongSelf) return;
+                if (strongSelf.downloadS6Request != weakReq) return;
+                strongSelf.downloadS6Request = nil;
+                if (error) {
+                    [strongSelf handleDownloadDidFailWithError:error];
+                } else {
+                    [strongSelf handleDownloadDidFinishLoading];
+                }
+            });
+        };
+        self.downloadS6Request = req;
+        LTLog(@"STORE DL start %@ (mbedTLS)", videoId);
+        [req start];
+        return;
+    }
+
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlString]
                                                             cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
                                                         timeoutInterval:120.0];
     [request setValue:@"bytes=0-" forHTTPHeaderField:@"Range"];
     [request setValue:LTBrowserUserAgent forHTTPHeaderField:@"User-Agent"];
-    self.downloadData = [NSMutableData data];
-    self.downloadHTTPStatus = 0;
     self.downloadConnection = [[NSURLConnection alloc] initWithRequest:request delegate:self startImmediately:YES];
     LTLog(@"STORE DL start %@", videoId);
 }
@@ -938,6 +1687,7 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
 - (void)finishDownloads {
     self.downloading = NO;
     self.downloadConnection = nil;
+    self.downloadS6Request = nil;
     self.downloadData = nil;
     self.downloadingVideoId = nil;
     self.downloadingTrack = nil;
@@ -986,7 +1736,7 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     }
 
     LTYouTubeClient *client = [LTYouTubeClient sharedClient];
-    __weak LTPlaylistStore *weakSelf = self;
+    __unsafe_unretained LTPlaylistStore *weakSelf = self;
     __block NSInteger done = 0;
     __block NSInteger updated = 0;
     __block NSInteger failed = 0;
@@ -1039,7 +1789,7 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
         if (completion) completion(nil);
         return;
     }
-    __weak LTPlaylistStore *weakSelf = self;
+    __unsafe_unretained LTPlaylistStore *weakSelf = self;
     [[LTYouTubeClient sharedClient] trackMetadataForVideoId:track.videoId
         completion:^(NSString *title, NSString *artist, NSTimeInterval duration, NSString *thumbnailURL, NSError *error) {
         __strong LTPlaylistStore *strongSelf = weakSelf;
@@ -1099,7 +1849,7 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     [self.downloadData appendData:data];
 }
 
-- (void)connection:(NSURLConnection *)connection didFailWithError:(NSError *)error {
+- (void)handleDownloadDidFailWithError:(NSError *)error {
     LTLog(@"STORE DL_ERROR %@ for %@", error, self.downloadingVideoId);
     NSString *videoId = self.downloadingVideoId;
     [self postTrackChanged:videoId];
@@ -1120,6 +1870,7 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
         self.downloadCancelling = NO;
         self.downloading = NO;
         self.downloadConnection = nil;
+        self.downloadS6Request = nil;
         self.downloadData = nil;
         if (wasCancelling) {
             self.downloadTotal = 0;
@@ -1137,7 +1888,12 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     [self startNextDownload];
 }
 
-- (void)connectionDidFinishLoading:(NSURLConnection *)connection {
+- (void)connection:(NSURLConnection *)connection didFailWithError:(NSError *)error {
+    (void)connection;
+    [self handleDownloadDidFailWithError:error];
+}
+
+- (void)handleDownloadDidFinishLoading {
     LTLog(@"STORE DL_FINISH bytes=%d status=%d for %@", (int)self.downloadData.length, (int)self.downloadHTTPStatus, self.downloadingVideoId);
     NSString *videoId = self.downloadingVideoId;
     BOOL ok = (videoId.length && self.downloadData.length && self.downloadHTTPStatus < 400);
@@ -1161,6 +1917,11 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     [self startNextDownload];
 }
 
+- (void)connectionDidFinishLoading:(NSURLConnection *)connection {
+    (void)connection;
+    [self handleDownloadDidFinishLoading];
+}
+
 - (NSArray *)syncArrayRepresentation {
     NSMutableArray *exportArray = [NSMutableArray array];
     for (LTLocalPlaylist *playlist in self.playlists) {
@@ -1180,7 +1941,7 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
             @"name": playlist.name ?: @"",
             @"description": @"",
             @"songs": songs,
-            @"updatedAt": [NSDate date].description,
+            @"updatedAt": [[NSDate date] description],
         }];
     }
     return exportArray;
@@ -1191,8 +1952,8 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     if (![incomingArray isKindOfClass:[NSArray class]]) return 0;
     NSInteger merged = 0;
     for (NSDictionary *playlistDict in incomingArray) {
-        NSString *playlistId = playlistDict[@"id"];
-        NSString *name = playlistDict[@"name"];
+        NSString *playlistId = [playlistDict objectForKey:@"id"];
+        NSString *name = [playlistDict objectForKey:@"name"];
         if (!playlistId.length || !name.length) continue;
         LTLocalPlaylist *existing = nil;
         for (LTLocalPlaylist *p in [_playlists copy]) {
@@ -1208,10 +1969,10 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
         } else {
             existing.name = name;
         }
-        NSArray *songs = playlistDict[@"songs"];
+        NSArray *songs = [playlistDict objectForKey:@"songs"];
         if ([songs isKindOfClass:[NSArray class]]) {
             for (NSDictionary *songDict in songs) {
-                NSString *videoId = songDict[@"videoId"];
+                NSString *videoId = [songDict objectForKey:@"videoId"];
                 if (!videoId.length) continue;
                 LTTrack *track = [LTTrack trackWithDictionary:songDict];
                 LTTrack *haveTrack = nil;
@@ -1241,7 +2002,7 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
 
 - (BOOL)exportPlaylistsToJSONFile:(NSString *)filePath error:(NSError **)error {
     NSError *writeError = nil;
-    NSData *data = [NSJSONSerialization dataWithJSONObject:[self syncArrayRepresentation] options:NSJSONWritingPrettyPrinted error:&writeError];
+    NSData *data = [S6JSON dataWithObject:[self syncArrayRepresentation] error:&writeError];
     if (!data) {
         if (error) *error = writeError;
         return NO;
@@ -1259,7 +2020,7 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
         return NO;
     }
     NSError *parseError = nil;
-    NSArray *importArray = [NSJSONSerialization JSONObjectWithData:data options:0 error:&parseError];
+    NSArray *importArray = [S6JSON objectWithData:data error:&parseError];
     if (!importArray) {
         if (error) *error = parseError;
         return NO;
@@ -1287,10 +2048,18 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     return result;
 }
 
+- (NSArray *)stationsSyncArray {
+    NSMutableArray *result = [NSMutableArray array];
+    for (LTStation *station in self.stations) {
+        [result addObject:[station dictionaryRepresentation]];
+    }
+    return result;
+}
+
 - (NSDictionary *)statsSyncDict {
     NSDictionary *dict = [self statsFileDict];
     NSDictionary *tracks = [dict objectForKey:@"tracks"];
-    if (![tracks isKindOfClass:[NSDictionary class]]) tracks = @{};
+    if (![tracks isKindOfClass:[NSDictionary class]]) tracks = [NSDictionary dictionary];
     // Only ship this phone's OWN listening stats. Received (synced) stats live
     // in a separate per-device ledger and must not be re-exported.
     NSMutableDictionary *trimmedTracks = [NSMutableDictionary dictionary];
@@ -1298,12 +2067,12 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
         NSDictionary *entry = [tracks objectForKey:videoId];
         if (![entry isKindOfClass:[NSDictionary class]]) continue;
         NSMutableDictionary *trimmed = [NSMutableDictionary dictionary];
-        trimmed[@"title"] = entry[@"title"] ?: @"";
-        trimmed[@"artist"] = entry[@"artist"] ?: @"";
-        trimmed[@"album"] = entry[@"album"] ?: @"";
-        trimmed[@"thumbnailURL"] = entry[@"thumbnailURL"] ?: @"";
-        trimmed[@"plays"] = @([[entry objectForKey:@"plays"] integerValue]);
-        trimmed[@"seconds"] = @([[entry objectForKey:@"seconds"] doubleValue]);
+        [trimmed setObject:[entry objectForKey:@"title"] ?: @"" forKey:@"title"];
+        [trimmed setObject:[entry objectForKey:@"artist"] ?: @"" forKey:@"artist"];
+        [trimmed setObject:[entry objectForKey:@"album"] ?: @"" forKey:@"album"];
+        [trimmed setObject:[entry objectForKey:@"thumbnailURL"] ?: @"" forKey:@"thumbnailURL"];
+        [trimmed setObject:@([[entry objectForKey:@"plays"] integerValue]) forKey:@"plays"];
+        [trimmed setObject:@([[entry objectForKey:@"seconds"] doubleValue]) forKey:@"seconds"];
         [trimmedTracks setObject:trimmed forKey:videoId];
     }
     return @{@"tracks": trimmedTracks};
@@ -1315,6 +2084,7 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
         @"deviceId": [self syncDeviceId],
         @"timestamp": @([[NSDate date] timeIntervalSince1970]),
         @"playlists": [self syncArrayRepresentation],
+        @"stations": [self stationsSyncArray],
         @"library": [self librarySyncArray],
         @"recents": [self recentsSyncArray],
         @"stats": [self statsSyncDict],
@@ -1325,8 +2095,17 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
 - (NSString *)syncDeviceId {
     NSString *deviceId = [[NSUserDefaults standardUserDefaults] stringForKey:@"LTSyncDeviceId"];
     if (!deviceId.length) {
-        deviceId = [[[UIDevice currentDevice] identifierForVendor] UUIDString];
-        if (!deviceId.length) deviceId = [[NSUUID UUID] UUIDString];
+        // identifierForVendor is iOS 6+; on iOS 4/5 fall back to a persisted
+        // random UUID so the sync identity stays stable across launches.
+        UIDevice *device = [UIDevice currentDevice];
+        if ([device respondsToSelector:@selector(identifierForVendor)]) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+            id vendor = [device performSelector:@selector(identifierForVendor)];
+#pragma clang diagnostic pop
+            if ([vendor respondsToSelector:@selector(UUIDString)]) deviceId = [vendor UUIDString];
+        }
+        if (!deviceId.length) deviceId = LTGenerateUUIDString();
         [[NSUserDefaults standardUserDefaults] setObject:deviceId forKey:@"LTSyncDeviceId"];
     }
     return deviceId;
@@ -1336,13 +2115,31 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
     if (![payload isKindOfClass:[NSDictionary class]]) return;
     BOOL changed = NO;
 
-    NSArray *playlists = payload[@"playlists"];
+    NSArray *playlists = [payload objectForKey:@"playlists"];
     if ([playlists isKindOfClass:[NSArray class]]) {
         NSInteger m = [self mergeSyncArray:playlists];
         if (m > 0) changed = YES;
     }
 
-    NSArray *library = payload[@"library"];
+    NSArray *stations = [payload objectForKey:@"stations"];
+    if ([stations isKindOfClass:[NSArray class]]) {
+        for (NSDictionary *dict in stations) {
+            if (![dict isKindOfClass:[NSDictionary class]]) continue;
+            LTStation *incoming = [LTStation stationWithDictionary:dict];
+            if (!incoming.identifier.length) continue;
+            BOOL exists = NO;
+            for (LTStation *local in self.stations) {
+                if ([local.identifier isEqualToString:incoming.identifier]) { exists = YES; break; }
+            }
+            if (!exists) {
+                [_stations addObject:incoming];
+                changed = YES;
+            }
+        }
+        if (changed) [self saveStations];
+    }
+
+    NSArray *library = [payload objectForKey:@"library"];
     if ([library isKindOfClass:[NSArray class]]) {
         for (NSDictionary *dict in library) {
             if (![dict isKindOfClass:[NSDictionary class]]) continue;
@@ -1353,7 +2150,7 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
         }
     }
 
-    NSArray *recents = payload[@"recents"];
+    NSArray *recents = [payload objectForKey:@"recents"];
     if ([recents isKindOfClass:[NSArray class]]) {
         // Merge recents newest-first, de-duplicating by videoId.
         NSMutableArray *merged = [NSMutableArray array];
@@ -1374,10 +2171,11 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
             [merged removeObjectsInRange:NSMakeRange(20, merged.count - 20)];
         }
         [merged writeToFile:[self recentsFilePath] atomically:YES];
+        _recentsCache = nil;
         changed = YES;
     }
 
-    NSDictionary *stats = payload[@"stats"];
+    NSDictionary *stats = [payload objectForKey:@"stats"];
     if ([stats isKindOfClass:[NSDictionary class]]) {
         NSDictionary *incomingTracks = [stats objectForKey:@"tracks"];
         if ([incomingTracks isKindOfClass:[NSDictionary class]]) {
@@ -1420,10 +2218,10 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
                     double inSeconds = [[incoming objectForKey:@"seconds"] doubleValue];
                     double localSeconds = [[entry objectForKey:@"seconds"] doubleValue];
                     [entry setObject:@(localSeconds + inSeconds) forKey:@"seconds"];
-                    if (![[entry objectForKey:@"title"] length]) [entry setObject:incoming[@"title"] ?: @"" forKey:@"title"];
-                    if (![[entry objectForKey:@"artist"] length]) [entry setObject:incoming[@"artist"] ?: @"" forKey:@"artist"];
-                    if (![[entry objectForKey:@"album"] length]) [entry setObject:incoming[@"album"] ?: @"" forKey:@"album"];
-                    if (![[entry objectForKey:@"thumbnailURL"] length]) [entry setObject:incoming[@"thumbnailURL"] ?: @"" forKey:@"thumbnailURL"];
+                    if (![[entry objectForKey:@"title"] length]) [entry setObject:[incoming objectForKey:@"title"] ?: @"" forKey:@"title"];
+                    if (![[entry objectForKey:@"artist"] length]) [entry setObject:[incoming objectForKey:@"artist"] ?: @"" forKey:@"artist"];
+                    if (![[entry objectForKey:@"album"] length]) [entry setObject:[incoming objectForKey:@"album"] ?: @"" forKey:@"album"];
+                    if (![[entry objectForKey:@"thumbnailURL"] length]) [entry setObject:[incoming objectForKey:@"thumbnailURL"] ?: @"" forKey:@"thumbnailURL"];
                 }
                 [self writeStatsFileDict:dict];
                 changed = YES;
@@ -1431,7 +2229,7 @@ NSString *const LTRecentsDidChangeNotification = @"LTRecentsDidChangeNotificatio
         }
     }
 
-    NSArray *listenedIds = payload[@"listenedIds"];
+    NSArray *listenedIds = [payload objectForKey:@"listenedIds"];
     if ([listenedIds isKindOfClass:[NSArray class]]) {
         NSMutableArray *ids = [NSMutableArray arrayWithArray:[self listenedSongIDs]];
         BOOL idChanged = NO;

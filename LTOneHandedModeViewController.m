@@ -1,7 +1,9 @@
 #import "LTOneHandedModeViewController.h"
+#import "LTTraitCompat.h"
 #import "LTOneHandedMode.h"
 #import "LTAppDelegate.h"
 #import "LTTheme.h"
+#import "LTThemedTableView.h"
 
 @interface LTOneHandedModeViewController () <UITableViewDataSource, UITableViewDelegate>
 @property (nonatomic, strong) UITableView *tableView;
@@ -12,12 +14,12 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     if ([self respondsToSelector:@selector(setEdgesForExtendedLayout:)]) {
-        self.edgesForExtendedLayout = UIRectEdgeNone;
+        [(id)self setValue:[NSNumber numberWithInteger:0] forKey:@"edgesForExtendedLayout"];
     }
     self.title = @"One-Handed Mode";
     self.view.backgroundColor = [LTTheme groupedBackground];
 
-    self.tableView = [[UITableView alloc] initWithFrame:self.view.bounds style:UITableViewStyleGrouped];
+    self.tableView = [[LTThemedTableView alloc] initWithFrame:self.view.bounds style:UITableViewStyleGrouped];
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
     self.tableView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -30,7 +32,7 @@
     [self.tableView reloadData];
 }
 
-- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+- (void)traitCollectionDidChange:(id)previousTraitCollection {
     [super traitCollectionDidChange:previousTraitCollection];
     self.view.backgroundColor = [LTTheme groupedBackground];
     self.tableView.backgroundColor = [LTTheme groupedBackground];

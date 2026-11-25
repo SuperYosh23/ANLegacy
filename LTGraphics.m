@@ -1,4 +1,5 @@
 #import "LTGraphics.h"
+#import "LTTheme.h"
 #import "LTLucideIcons.h"
 #import <CoreText/CoreText.h>
 
@@ -61,6 +62,16 @@ static NSString *LTLucideNameForFAGlyph(unichar glyph) {
 }
 
 + (UIFont *)fontAwesomeFontWithSize:(CGFloat)size {
+    // Cache by size. This walks up to five CoreText font lookups and allocates
+    // an array on every call, and the iPod list view calls it twice per visible
+    // row from inside -drawRect:, which re-runs on every wheel tick.
+    static NSMutableDictionary *cache = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ cache = [[NSMutableDictionary alloc] init]; });
+    NSNumber *key = [NSNumber numberWithFloat:(float)size];
+    UIFont *hit = [cache objectForKey:key];
+    if (hit) return hit;
+
     NSArray *names = @[
         @"FontAwesome6Free-Solid",
         @"Font Awesome 6 Free",
@@ -70,7 +81,10 @@ static NSString *LTLucideNameForFAGlyph(unichar glyph) {
     ];
     for (NSString *name in names) {
         UIFont *font = [UIFont fontWithName:name size:size];
-        if (font) return font;
+        if (font) {
+            [cache setObject:font forKey:key];
+            return font;
+        }
     }
     return nil;
 }
@@ -193,10 +207,39 @@ static NSString *LTLucideNameForFAGlyph(unichar glyph) {
     return [LTLucideIcons iconNamed:@"repeat-1" size:size color:color];
 }
 
-+ (UIImage *)playIcon {
-    UIImage *lucide = [LTLucideIcons iconNamed:@"play" size:30.0f color:[UIColor colorWithRed:0.35f green:0.68f blue:0.88f alpha:1.0f]];
++ (UIImage *)musicIcon {
+    UIImage *lucide = [LTLucideIcons iconNamed:@"music" size:30.0f color:[UIColor colorWithWhite:0.65f alpha:1.0f]];
     if (lucide) return lucide;
-    UIImage *glyph = [self coloredGlyphIcon:0xF04B color:[UIColor colorWithRed:0.35f green:0.68f blue:0.88f alpha:1.0f]];
+    return [self iconWithDrawing:^(CGContextRef ctx) {
+        [[UIColor colorWithWhite:0.65f alpha:1.0f] setStroke];
+        UIBezierPath *note = [UIBezierPath bezierPath];
+        note.lineWidth = 2.2f; note.lineCapStyle = kCGLineCapRound; [note stroke];
+        [[UIColor colorWithWhite:0.65f alpha:1.0f] setFill];
+        CGContextFillEllipseInRect(ctx, CGRectMake(8, 20, 7, 6));
+        CGContextFillEllipseInRect(ctx, CGRectMake(19, 16, 7, 6));
+        UIBezierPath *stem = [UIBezierPath bezierPath];
+        [stem moveToPoint:CGPointMake(14.5, 24)];
+        [stem addLineToPoint:CGPointMake(14.5, 7)];
+        [stem addLineToPoint:CGPointMake(25.5, 5)];
+        [stem addLineToPoint:CGPointMake(25.5, 20)];
+        stem.lineWidth = 2.2f; stem.lineCapStyle = kCGLineCapRound; [stem stroke];
+    }];
+}
+
+// The colour the action icons are drawn in.
+//
+// They have always been a fixed blue. The modern themes use the accent colour
+// instead, so the play and shuffle keys on a playlist match the rest of the
+// theme, and the native theme keeps its blue.
++ (UIColor *)actionIconColor {
+    if ([LTTheme isModern]) return [LTTheme accent];
+    return [UIColor colorWithRed:0.35f green:0.68f blue:0.88f alpha:1.0f];
+}
+
++ (UIImage *)playIcon {
+    UIImage *lucide = [LTLucideIcons iconNamed:@"play" size:30.0f color:[self actionIconColor]];
+    if (lucide) return lucide;
+    UIImage *glyph = [self coloredGlyphIcon:0xF04B color:[self actionIconColor]];
     if (glyph) return glyph;
     return [self iconWithDrawing:^(CGContextRef ctx) {
         [[UIColor blueColor] setFill];
@@ -210,9 +253,9 @@ static NSString *LTLucideNameForFAGlyph(unichar glyph) {
 }
 
 + (UIImage *)shuffleIcon {
-    UIImage *lucide = [LTLucideIcons iconNamed:@"shuffle" size:30.0f color:[UIColor colorWithRed:0.35f green:0.68f blue:0.88f alpha:1.0f]];
+    UIImage *lucide = [LTLucideIcons iconNamed:@"shuffle" size:30.0f color:[self actionIconColor]];
     if (lucide) return lucide;
-    UIImage *glyph = [self coloredGlyphIcon:0xF074 color:[UIColor colorWithRed:0.35f green:0.68f blue:0.88f alpha:1.0f]];
+    UIImage *glyph = [self coloredGlyphIcon:0xF074 color:[self actionIconColor]];
     if (glyph) return glyph;
     return [self iconWithDrawing:^(CGContextRef ctx) {
         [[UIColor blueColor] setStroke];
@@ -224,9 +267,9 @@ static NSString *LTLucideNameForFAGlyph(unichar glyph) {
 }
 
 + (UIImage *)downloadIcon {
-    UIImage *lucide = [LTLucideIcons iconNamed:@"download" size:30.0f color:[UIColor colorWithRed:0.35f green:0.68f blue:0.88f alpha:1.0f]];
+    UIImage *lucide = [LTLucideIcons iconNamed:@"download" size:30.0f color:[self actionIconColor]];
     if (lucide) return lucide;
-    UIImage *glyph = [self coloredGlyphIcon:0xF019 color:[UIColor colorWithRed:0.35f green:0.68f blue:0.88f alpha:1.0f]];
+    UIImage *glyph = [self coloredGlyphIcon:0xF019 color:[self actionIconColor]];
     if (glyph) return glyph;
     return [self iconWithDrawing:^(CGContextRef ctx) {
         [[UIColor blueColor] setStroke];
@@ -264,10 +307,34 @@ static NSString *LTLucideNameForFAGlyph(unichar glyph) {
     }];
 }
 
-+ (UIImage *)renameIcon {
-    UIImage *lucide = [LTLucideIcons iconNamed:@"pen" size:30.0f color:[UIColor colorWithRed:0.35f green:0.68f blue:0.88f alpha:1.0f]];
++ (UIImage *)removeIcon {
+    UIImage *lucide = [LTLucideIcons iconNamed:@"trash" size:30.0f color:[UIColor colorWithRed:0.85f green:0.32f blue:0.30f alpha:1.0f]];
     if (lucide) return lucide;
-    UIImage *glyph = [self coloredGlyphIcon:0xF303 color:[UIColor colorWithRed:0.35f green:0.68f blue:0.88f alpha:1.0f]];
+    return [self iconWithDrawing:^(CGContextRef ctx) {
+        [[UIColor colorWithRed:0.85f green:0.32f blue:0.30f alpha:1.0f] setStroke];
+        UIBezierPath *can = [UIBezierPath bezierPath];
+        [can moveToPoint:CGPointMake(7, 9)];
+        [can addLineToPoint:CGPointMake(9, 26)];
+        [can addLineToPoint:CGPointMake(23, 26)];
+        [can addLineToPoint:CGPointMake(25, 9)];
+        can.lineWidth = 2.0f; can.lineCapStyle = kCGLineCapRound; [can stroke];
+        UIBezierPath *lid = [UIBezierPath bezierPath];
+        [lid moveToPoint:CGPointMake(5, 9)];
+        [lid addLineToPoint:CGPointMake(27, 9)];
+        lid.lineWidth = 2.0f; lid.lineCapStyle = kCGLineCapRound; [lid stroke];
+        UIBezierPath *handle = [UIBezierPath bezierPath];
+        [handle moveToPoint:CGPointMake(13, 9)];
+        [handle addLineToPoint:CGPointMake(13, 5)];
+        [handle addLineToPoint:CGPointMake(19, 5)];
+        [handle addLineToPoint:CGPointMake(19, 9)];
+        handle.lineWidth = 2.0f; handle.lineCapStyle = kCGLineCapRound; [handle stroke];
+    }];
+}
+
++ (UIImage *)renameIcon {
+    UIImage *lucide = [LTLucideIcons iconNamed:@"pen" size:30.0f color:[self actionIconColor]];
+    if (lucide) return lucide;
+    UIImage *glyph = [self coloredGlyphIcon:0xF303 color:[self actionIconColor]];
     if (glyph) return glyph;
     return [self iconWithDrawing:^(CGContextRef ctx) {
         [[UIColor blueColor] setStroke];
@@ -494,9 +561,9 @@ static NSString *LTLucideNameForFAGlyph(unichar glyph) {
 // its glows to match the artwork. Deliberately coarse: the source is already
 // the ~100px blurred thumbnail, so a small grid is plenty.
 + (NSArray *)dominantColorsFromImage:(UIImage *)image count:(NSUInteger)count {
-    if (!image || count == 0) return @[];
+    if (!image || count == 0) return [NSArray array];
     CGImageRef cgSrc = image.CGImage;
-    if (!cgSrc) return @[];
+    if (!cgSrc) return [NSArray array];
 
     const size_t grid = 32;
     CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
@@ -504,7 +571,7 @@ static NSString *LTLucideNameForFAGlyph(unichar glyph) {
     CGContextRef ctx = CGBitmapContextCreate(buf, grid, grid, 8, grid * 4, cs,
                                              kCGImageAlphaPremultipliedLast | kCGBitmapByteOrderDefault);
     CGColorSpaceRelease(cs);
-    if (!ctx) { free(buf); return @[]; }
+    if (!ctx) { free(buf); return [NSArray array]; }
     CGContextSetInterpolationQuality(ctx, kCGInterpolationMedium);
     CGContextDrawImage(ctx, CGRectMake(0, 0, grid, grid), cgSrc);
     CGContextRelease(ctx);
@@ -517,7 +584,7 @@ static NSString *LTLucideNameForFAGlyph(unichar glyph) {
     double *sumB = (double *)calloc(kBuckets, sizeof(double));
     if (!counts || !sumR || !sumG || !sumB) {
         free(buf); free(counts); free(sumR); free(sumG); free(sumB);
-        return @[];
+        return [NSArray array];
     }
 
     for (size_t i = 0; i < grid * grid; i++) {

@@ -5,7 +5,7 @@
 @end
 
 @interface LTCustomActionSheet : UIView
-@property (nonatomic, weak) id<LTCustomActionSheetDelegate> delegate;
+@property (nonatomic, unsafe_unretained) id<LTCustomActionSheetDelegate> delegate;
 - (instancetype)initWithTitle:(NSString *)title
                 buttonTitles:(NSArray *)buttonTitles
              destructiveIndex:(NSInteger)destructiveIndex;

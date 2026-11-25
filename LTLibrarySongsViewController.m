@@ -7,12 +7,15 @@
 #import "LTModel.h"
 #import "LTLog.h"
 #import "LTTheme.h"
+#import "LTThemedTableView.h"
 
 @interface LTLibrarySongsViewController () <UITableViewDataSource, UITableViewDelegate, UIAlertViewDelegate>
 @property (nonatomic, strong) NSMutableArray *tracks;
 @property (nonatomic, strong) UITableView *tableView;
 @property (nonatomic, assign) NSInteger pendingRemoveRow;
 @property (nonatomic, assign) BOOL ignoreStoreChanges;
+@property (nonatomic, strong) UIBarButtonItem *shuffleBarItem;
+@property (nonatomic, strong) UIBarButtonItem *playAllBarItem;
 @end
 
 @implementation LTLibrarySongsViewController
@@ -29,17 +32,17 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     if ([self respondsToSelector:@selector(setEdgesForExtendedLayout:)]) {
-        self.edgesForExtendedLayout = UIRectEdgeNone;
+        [(id)self setValue:[NSNumber numberWithInteger:0] forKey:@"edgesForExtendedLayout"];
     }
     self.view.backgroundColor = [LTTheme background];
 
-    self.tableView = [[UITableView alloc] initWithFrame:self.view.bounds style:UITableViewStylePlain];
+    self.tableView = [[LTThemedTableView alloc] initWithFrame:self.view.bounds style:UITableViewStylePlain];
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
     self.tableView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     self.tableView.backgroundColor = [LTTheme background];
     if ([self.tableView respondsToSelector:@selector(setSeparatorInset:)]) {
-        self.tableView.separatorInset = UIEdgeInsetsMake(0, 60, 0, 0);
+        if ([self.tableView respondsToSelector:@selector(setSeparatorInset:)]) [self.tableView setValue:[NSValue valueWithUIEdgeInsets:UIEdgeInsetsMake(0, 60, 0, 0)] forKey:@"separatorInset"];
     }
     [self.view addSubview:self.tableView];
 
@@ -51,14 +54,61 @@
                                                                  style:UIBarButtonItemStyleBordered
                                                                 target:self
                                                                 action:@selector(playAllTapped)];
-    self.navigationItem.rightBarButtonItems = @[shuffleItem, playItem];
+    self.shuffleBarItem = shuffleItem;
+    self.playAllBarItem = playItem;
+    // -rightBarButtonItems is iOS 5+; on iOS 4.x use a single custom container.
+    if ([[[UIDevice currentDevice] systemVersion] floatValue] >= 5.0f &&
+        [self.navigationItem respondsToSelector:@selector(setRightBarButtonItems:)]) {
+        [self.navigationItem performSelector:@selector(setRightBarButtonItems:) withObject:@[shuffleItem, playItem]];
+    } else {
+        UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 140, 30)];
+        UIButton *shuffleBtn = [UIButton buttonWithType:UIButtonTypeCustom];
+        shuffleBtn.frame = CGRectMake(0, 0, 64, 30);
+        [shuffleBtn setTitle:@"Shuffle" forState:UIControlStateNormal];
+        [shuffleBtn setTitleColor:[UIColor blackColor] forState:UIControlStateNormal];
+        shuffleBtn.titleLabel.font = [UIFont boldSystemFontOfSize:12];
+        shuffleBtn.backgroundColor = [UIColor colorWithWhite:0.9f alpha:1.0f];
+        shuffleBtn.layer.cornerRadius = 4.0f;
+        [shuffleBtn addTarget:self action:@selector(shuffleAllTapped) forControlEvents:UIControlEventTouchUpInside];
+        shuffleBtn.tag = 1001;
+        UIButton *playBtn = [UIButton buttonWithType:UIButtonTypeCustom];
+        playBtn.frame = CGRectMake(70, 0, 64, 30);
+        [playBtn setTitle:@"Play All" forState:UIControlStateNormal];
+        [playBtn setTitleColor:[UIColor blackColor] forState:UIControlStateNormal];
+        playBtn.titleLabel.font = [UIFont boldSystemFontOfSize:12];
+        playBtn.backgroundColor = [UIColor colorWithWhite:0.9f alpha:1.0f];
+        playBtn.layer.cornerRadius = 4.0f;
+        [playBtn addTarget:self action:@selector(playAllTapped) forControlEvents:UIControlEventTouchUpInside];
+        playBtn.tag = 1002;
+        [container addSubview:shuffleBtn];
+        [container addSubview:playBtn];
+        UIBarButtonItem *custom = [[UIBarButtonItem alloc] initWithCustomView:container];
+        self.navigationItem.rightBarButtonItem = custom;
+#if !__has_feature(objc_arc)
+        [container release];
+        [custom release];
+#endif
+    }
+#if !__has_feature(objc_arc)
+    [shuffleItem release];
+    [playItem release];
+#endif
     [self updateToolbarEnabled];
 }
 
 - (void)updateToolbarEnabled {
     BOOL has = self.tracks.count > 0;
-    for (UIBarButtonItem *item in self.navigationItem.rightBarButtonItems) {
-        item.enabled = has;
+    self.shuffleBarItem.enabled = has;
+    self.playAllBarItem.enabled = has;
+    if ([[[UIDevice currentDevice] systemVersion] floatValue] < 5.0f ||
+        ![self.navigationItem respondsToSelector:@selector(setRightBarButtonItems:)]) {
+        UIView *v = self.navigationItem.rightBarButtonItem.customView;
+        UIButton *s = (UIButton *)[v viewWithTag:1001];
+        UIButton *p = (UIButton *)[v viewWithTag:1002];
+        s.enabled = has;
+        p.enabled = has;
+        s.alpha = has ? 1.0f : 0.4f;
+        p.alpha = has ? 1.0f : 0.4f;
     }
 }
 

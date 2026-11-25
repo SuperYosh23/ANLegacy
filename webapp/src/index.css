@@ -1,0 +1,151 @@
+@import "tailwindcss";
+
+@theme {
+  --color-surface-dim: #141218;
+  --color-surface: #141218;
+  --color-surface-bright: #3B383E;
+  --color-surface-container-lowest: #0F0D13;
+  --color-surface-container-low: #1D1B20;
+  --color-surface-container: #211F26;
+  --color-surface-container-high: #2B2930;
+  --color-surface-container-highest: #36343B;
+
+  --color-primary: #FF8A9B;
+  --color-on-primary: #561E30;
+  --color-primary-container: #7B354A;
+  --color-on-primary-container: #FFD9DF;
+
+  --color-secondary: #FFB4A2;
+  --color-on-secondary: #49280E;
+  --color-secondary-container: #6B3D20;
+  --color-on-secondary-container: #FFDBD0;
+
+  --color-tertiary: #B1DC7C;
+  --color-on-tertiary: #233A00;
+  --color-tertiary-container: #365300;
+  --color-on-tertiary-container: #CCF996;
+
+  --color-error: #FFB4AB;
+  --color-on-error: #561E19;
+  --color-error-container: #7C362E;
+  --color-on-error-container: #FFDAD6;
+
+  --color-on-surface: #E6E0E9;
+  --color-on-surface-variant: #CAC4D0;
+  --color-outline: #938F99;
+  --color-outline-variant: #49454F;
+  --color-scrim: #000000;
+}
+
+button { cursor: pointer; }
+
+body {
+  margin: 0;
+  background: var(--color-surface-dim, #141218);
+  color: #E6E0E9;
+  font-family: 'Google Sans Flex', system-ui, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+[data-oled="true"] {
+  --color-surface-dim: #000000 !important;
+  --color-surface: #000000 !important;
+}
+
+[data-oled="true"] [data-oled-chrome] {
+  background-color: #000000 !important;
+}
+
+[data-theme="light"] {
+  --color-surface-dim: #FEF7FF;
+  --color-surface: #FEF7FF;
+  --color-surface-container: #F0E9F1;
+  --color-surface-container-high: #E6E0E9;
+  --color-surface-container-highest: #DCD6DE;
+  --color-primary: #B8475E;
+  --color-on-primary: #FFFFFF;
+  --color-primary-container: #FFD9DF;
+  --color-on-primary-container: #3E0020;
+  --color-on-surface: #1D1B20;
+  --color-on-surface-variant: #49454F;
+  --color-outline: #79747E;
+  --color-outline-variant: #CAC4D0;
+  --color-secondary: #B85C3E;
+  --color-on-secondary: #FFFFFF;
+  --color-tertiary: #4F7B1A;
+  --color-error: #BA1A1A;
+  --color-error-container: #FFDAD6;
+  --color-on-error-container: #410002;
+  --color-scrim: #000000;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes fadeOut {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes pulseGlow {
+  0%, 100% { box-shadow: 0 0 0 rgba(255, 138, 155, 0); }
+  50% { box-shadow: 0 0 16px rgba(255, 138, 155, 0.4); }
+}
+
+@keyframes slideUpFromBottom {
+  from { opacity: 0; transform: translateY(100%); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideDownToBottom {
+  from { opacity: 1; transform: translateY(0); }
+  to { opacity: 0; transform: translateY(100%); }
+}
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideUpOut {
+  from { opacity: 1; transform: translateY(0); }
+  to { opacity: 0; transform: translateY(-16px); }
+}
+
+.animate-slideUpOut { animation: slideUpOut 0.15s cubic-bezier(0.3, 0, 0.8, 0.15) forwards; }
+
+@keyframes ripple {
+  from { transform: scale(0); opacity: 0.4; }
+  to { transform: scale(4); opacity: 0; }
+}
+
+.animate-ripple { animation: ripple 0.4s ease-out forwards; }
+.animate-ripple-slow { animation: ripple 0.6s ease-out forwards; }
+
+.animate-fadeIn { animation: fadeIn 0.4s cubic-bezier(0.05, 0.7, 0.1, 1); }
+.animate-fadeOut { animation: fadeOut 0.2s cubic-bezier(0.3, 0, 0.8, 0.15) forwards; }
+.animate-slideUp { animation: slideUp 0.35s cubic-bezier(0.05, 0.7, 0.1, 1); }
+.animate-slideDown { animation: slideDown 0.35s cubic-bezier(0.05, 0.7, 0.1, 1); }
+.animate-scaleIn { animation: scaleIn 0.35s cubic-bezier(0.05, 0.7, 0.1, 1); }
+.animate-pulseGlow { animation: pulseGlow 2s cubic-bezier(0.2, 0, 0, 1) infinite; }
+.animate-slideUpFromBottom { animation: slideUpFromBottom 0.4s cubic-bezier(0.05, 0.7, 0.1, 1); }
+.animate-slideDownToBottom { animation: slideDownToBottom 0.2s cubic-bezier(0.3, 0, 0.8, 0.15) forwards; }
+.animate-fadeInUp { animation: fadeInUp 0.35s cubic-bezier(0.05, 0.7, 0.1, 1) both; }

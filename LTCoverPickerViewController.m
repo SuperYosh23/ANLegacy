@@ -1,4 +1,6 @@
 #import "LTCoverPickerViewController.h"
+#import "LTTheme.h"
+#import "LTCardNavBar.h"
 #import "LTLog.h"
 #import <AssetsLibrary/AssetsLibrary.h>
 
@@ -21,14 +23,14 @@
 #pragma mark - Photo Grid (forward declaration)
 
 @interface LTCoverPickerGrid : UIViewController
-@property (nonatomic, weak) id<LTCoverPickerDelegate> delegate;
+@property (nonatomic, unsafe_unretained) id<LTCoverPickerDelegate> delegate;
 @property (nonatomic, strong) ALAssetsGroup *group;
 @end
 
 #pragma mark - Album List
 
 @interface LTCoverPickerAlbumList : UITableViewController
-@property (nonatomic, weak) id<LTCoverPickerDelegate> delegate;
+@property (nonatomic, unsafe_unretained) id<LTCoverPickerDelegate> delegate;
 @property (nonatomic, strong) ALAssetsLibrary *library;
 @property (nonatomic, strong) NSMutableArray *albums;
 @end
@@ -55,11 +57,11 @@
 }
 
 - (UIStatusBarStyle)preferredStatusBarStyle {
-    return UIStatusBarStyleLightContent;
+    return (UIStatusBarStyle)1; /* UIStatusBarStyleLightContent */
 }
 
 - (void)loadAlbums {
-    __weak LTCoverPickerAlbumList *weakSelf = self;
+    __unsafe_unretained LTCoverPickerAlbumList *weakSelf = self;
     // Photos album
     [self.library enumerateGroupsWithTypes:ALAssetsGroupSavedPhotos
                                 usingBlock:^(ALAssetsGroup *group, BOOL *stop) {
@@ -161,11 +163,11 @@
 }
 
 - (UIStatusBarStyle)preferredStatusBarStyle {
-    return UIStatusBarStyleLightContent;
+    return (UIStatusBarStyle)1; /* UIStatusBarStyleLightContent */
 }
 
 - (void)loadPhotos {
-    __weak LTCoverPickerGrid *weakSelf = self;
+    __unsafe_unretained LTCoverPickerGrid *weakSelf = self;
     [self.group enumerateAssetsWithOptions:NSEnumerationReverse
                                 usingBlock:^(ALAsset *result, NSUInteger index, BOOL *stop) {
         if (!result) return;
@@ -255,11 +257,25 @@
     LTCoverPickerAlbumList *albumList = [[LTCoverPickerAlbumList alloc] initWithStyle:UITableViewStylePlain];
     albumList.delegate = delegate;
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:albumList];
-    nav.navigationBar.barStyle = UIBarStyleBlack;
-    nav.navigationBar.translucent = NO;
-    nav.navigationBar.barTintColor = [UIColor colorWithRed:0.11f green:0.11f blue:0.11f alpha:1.0f];
-    nav.navigationBar.tintColor = [UIColor colorWithRed:0.35f green:0.68f blue:0.88f alpha:1.0f];
-    nav.navigationBar.titleTextAttributes = @{UITextAttributeTextColor: [UIColor whiteColor]};
+    if ([LTTheme isModern]) {
+        // The Material 3 top app bar; it sets its own tint and title colour.
+        [LTCardNavBar applyModernStyleToNavigationBar:nav.navigationBar];
+    } else {
+        nav.navigationBar.barStyle = UIBarStyleBlack;
+        nav.navigationBar.translucent = NO;
+        [LTTheme setBarTintColor:[UIColor colorWithRed:0.11f green:0.11f blue:0.11f alpha:1.0f] onBar:nav.navigationBar];
+        [LTTheme setTintColor:[UIColor colorWithRed:0.35f green:0.68f blue:0.88f alpha:1.0f] onView:nav.navigationBar];
+        // titleTextAttributes is iOS 5+, and the older UITextAttribute* keys are
+        // weak-linked on iOS 4 (reading them there faults), so only touch either
+        // when the bar actually supports title attributes.
+        if ([nav.navigationBar respondsToSelector:@selector(setTitleTextAttributes:)]) {
+            if ([nav.navigationBar respondsToSelector:@selector(setBarTintColor:)]) {
+                nav.navigationBar.titleTextAttributes = @{NSForegroundColorAttributeName: [UIColor whiteColor]};
+            } else {
+                nav.navigationBar.titleTextAttributes = @{UITextAttributeTextColor: [UIColor whiteColor]};
+            }
+        }
+    }
     [viewController presentViewController:nav animated:YES completion:nil];
 }
 

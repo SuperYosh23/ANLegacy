@@ -1,3 +1,6 @@
+#import "LTPeekCoordinator.h"
+#import "LTTheme.h"
+#import "LTPlaylistPeekViewController.h"
 #import "LTSplitContainerViewController.h"
 #import "LTTabBarController.h"
 #import "LTGraphics.h"
@@ -6,6 +9,7 @@
 #import "LTYouTubeClient.h"
 #import "LTLocalPlaylistDetailViewController.h"
 #import <QuartzCore/QuartzCore.h>
+#import "LTTransitionSettings.h"
 
 static const CGFloat kSidebarWidth = 260.0f;
 static const CGFloat kSidebarRailWidth = 56.0f;
@@ -26,6 +30,7 @@ typedef NS_ENUM(NSInteger, LTSidebarMode) {
 @property (nonatomic, strong) NSMutableArray *sidebarItemTitles;
 @property (nonatomic, strong) NSMutableArray *sidebarPlaylistButtons;
 @property (nonatomic, strong) UILabel *sidebarPlaylistsHeaderLabel;
+@property (nonatomic, strong) LTPeekCoordinator *peekCoordinator;
 @property (nonatomic, strong) UIScrollView *sidebarPlaylistsScrollView;
 @property (nonatomic, assign) BOOL landscape;
 @property (nonatomic, assign) LTSidebarMode currentMode;
@@ -96,7 +101,7 @@ typedef NS_ENUM(NSInteger, LTSidebarMode) {
     LTTrack *first = [playlist.tracks objectAtIndex:0];
     if (!first.thumbnailURL.length) return;
     NSString *artURL = [[LTYouTubeClient sharedClient] highResThumbnailURL:first.thumbnailURL];
-    __weak UIButton *weakButton = button;
+    __unsafe_unretained UIButton *weakButton = button;
     [[LTYouTubeClient sharedClient] loadImageWithURL:artURL completion:^(UIImage *image) {
         UIImage *thumb = [self styledSidebarThumbnail:image];
         if (!thumb) return;
@@ -158,7 +163,7 @@ typedef NS_ENUM(NSInteger, LTSidebarMode) {
                                                  name:LTPlaylistsDidChangeNotification
                                                object:nil];
 
-    __weak LTSplitContainerViewController *weakSelf = self;
+    __unsafe_unretained LTSplitContainerViewController *weakSelf = self;
     self.tabController.selectionDidChange = ^(NSInteger index) {
         __strong LTSplitContainerViewController *strongSelf = weakSelf;
         if (!strongSelf) return;
@@ -168,6 +173,19 @@ typedef NS_ENUM(NSInteger, LTSidebarMode) {
 
     [self layoutChildrenAnimated:NO];
     [self setSidebarSelection:(NSInteger)self.tabController.selectedIndex];
+    // 3D Touch peek on the sidebar playlist buttons; a no-op below iOS 9.
+    __unsafe_unretained LTSplitContainerViewController *peekSelf = self;
+    self.peekCoordinator = [[LTPeekCoordinator alloc] initWithOwner:self
+                                                      sourceView:self.sidebarPlaylistsScrollView
+                                                   peekProvider:^UIViewController *(CGPoint point) {
+        LTLocalPlaylist *playlist = [peekSelf peekPlaylistAtPoint:point];
+        if (!playlist) return nil;
+        return [[LTPlaylistPeekViewController alloc] initWithPlaylist:playlist];
+    } commit:^(UIViewController *peek) {
+        if (![peek isKindOfClass:[LTPlaylistPeekViewController class]]) return;
+        [peekSelf peekCommitPlaylist:[(LTPlaylistPeekViewController *)peek playlist]];
+    }];
+    [self.peekCoordinator registerPreview];
 }
 
 - (void)viewDidLayoutSubviews {
@@ -175,15 +193,17 @@ typedef NS_ENUM(NSInteger, LTSidebarMode) {
     [self layoutChildrenAnimated:NO];
 }
 
+#if __IPHONE_OS_VERSION_MAX_ALLOWED >= 80000
 - (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
     [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
     [coordinator animateAlongsideTransition:^(id<UIViewControllerTransitionCoordinatorContext> context) {
         [self layoutChildrenAnimated:NO];
     } completion:nil];
 }
+#endif
 
-- (UIInterfaceOrientationMask)supportedInterfaceOrientations {
-    return UIInterfaceOrientationMaskAll;
+- (NSUInteger)supportedInterfaceOrientations {
+    return (NSUInteger)UIInterfaceOrientationMaskAll;
 }
 
 - (BOOL)shouldAutorotate {
@@ -255,7 +275,8 @@ typedef NS_ENUM(NSInteger, LTSidebarMode) {
 
 - (UIFont *)niceSidebarFont {
     if ([UIFont respondsToSelector:@selector(systemFontOfSize:weight:)]) {
-        return [UIFont systemFontOfSize:15.0f weight:UIFontWeightSemibold];
+        if ([UIFont respondsToSelector:@selector(systemFontOfSize:weight:)]) return [UIFont boldSystemFontOfSize:15.0f];
+        return [UIFont boldSystemFontOfSize:15.0f];
     }
     return [UIFont boldSystemFontOfSize:15.0f];
 }
@@ -271,11 +292,17 @@ typedef NS_ENUM(NSInteger, LTSidebarMode) {
     UIColor *selectedColor = [self accentColor];
 
     UIImage *normalIcon = [self sidebarIconImage:glyph tint:normalColor];
-    UIImage *templateIcon = [[self sidebarIconImage:glyph tint:selectedColor] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    UIImage *selectedIcon = [self sidebarIconImage:glyph tint:selectedColor];
+    // -imageWithRenderingMode: arrived in iOS 7. Without it the icon is
+    // already drawn in the accent colour, so it is used as it is.
+    UIImage *templateIcon = selectedIcon;
+    if ([selectedIcon respondsToSelector:@selector(imageWithRenderingMode:)]) {
+        if ([selectedIcon respondsToSelector:@selector(imageWithRenderingMode:)]) templateIcon = [selectedIcon performSelector:@selector(imageWithRenderingMode:) withObject:@(2)]; else templateIcon = selectedIcon;
+    }
     [button setImage:normalIcon forState:UIControlStateNormal];
     [button setImage:templateIcon forState:UIControlStateSelected];
-    button.imageView.tintColor = selectedColor;
-    button.tintColor = selectedColor;
+    [LTTheme setTintColor:selectedColor onView:button.imageView];
+    [LTTheme setTintColor:selectedColor onView:button];
 
     [button setTitle:title forState:UIControlStateNormal];
     [button setTitleColor:normalColor forState:UIControlStateNormal];
@@ -372,7 +399,7 @@ typedef NS_ENUM(NSInteger, LTSidebarMode) {
         // snaps the `hidden` flags to the destination state, which would kill
         // the fade, so visibility is restored up front and rows are only hidden
         // after the fade-out actually completes.
-        [UIView animateWithDuration:0.32f
+        [LTTransitionSettings animateWithDuration:0.32f
                               delay:0.0f
                             options:UIViewAnimationOptionCurveEaseInOut
                          animations:updates
@@ -392,7 +419,7 @@ typedef NS_ENUM(NSInteger, LTSidebarMode) {
                 button.alpha = 0.0f;
             }
         }
-        [UIView animateWithDuration:0.16f
+        [LTTransitionSettings animateWithDuration:0.16f
                               delay:0.08f
                             options:UIViewAnimationOptionCurveEaseIn
                          animations:^{
@@ -527,6 +554,30 @@ typedef NS_ENUM(NSInteger, LTSidebarMode) {
         button.imageEdgeInsets = UIEdgeInsetsMake(0.0f, 18.0f, 0.0f, 0.0f);
         button.titleEdgeInsets = UIEdgeInsetsMake(0.0f, 24.0f, 0.0f, 0.0f);
         [button setBackgroundImage:[self selectedPillImage] forState:UIControlStateSelected];
+    }
+}
+#pragma mark - 3D Touch peek
+
+// The sidebar is a scroll view of tagged buttons rather than a table, so the
+// pressed button is found by hit-testing instead of by index path.
+- (LTLocalPlaylist *)peekPlaylistAtPoint:(CGPoint)point {
+    UIView *hit = [self.sidebarPlaylistsScrollView hitTest:point withEvent:nil];
+    while (hit && ![hit isKindOfClass:[UIButton class]]) hit = hit.superview;
+    if (!hit) return nil;
+    NSUInteger tag = ((UIButton *)hit).tag;
+    if (tag < kSidebarPlaylistsTagBase) return nil;
+    NSUInteger playlistIndex = tag - kSidebarPlaylistsTagBase;
+    NSArray *playlists = [[LTPlaylistStore sharedStore] playlists];
+    if (playlistIndex >= playlists.count) return nil;
+    return [playlists objectAtIndex:playlistIndex];
+}
+
+- (void)peekCommitPlaylist:(LTLocalPlaylist *)playlist {
+    if (!playlist.identifier.length) return;
+    LTLocalPlaylistDetailViewController *detail = [[LTLocalPlaylistDetailViewController alloc] initWithPlaylist:playlist];
+    UINavigationController *nav = (UINavigationController *)self.tabController.selectedViewController;
+    if ([nav isKindOfClass:[UINavigationController class]]) {
+        [nav pushViewController:detail animated:YES];
     }
 }
 

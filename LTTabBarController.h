@@ -1,4 +1,6 @@
-@import UIKit;
+#import <UIKit/UIKit.h>
+
+#import <UIKit/UIKit.h>
 
 @interface LTTabBarController : UITabBarController
 

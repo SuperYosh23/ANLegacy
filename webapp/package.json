@@ -1,0 +1,30 @@
+{
+  "name": "legacymusic-webapp",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/legacy-bundle.mjs",
+    "dev": "vite --config vite.config.mobile.js"
+  },
+  "dependencies": {
+    "@alerix/m3-loading-indicator": "^1.0.5",
+    "lucide-react": "^1.22.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@babel/core": "^8.0.7",
+    "@babel/plugin-transform-runtime": "^8.0.6",
+    "@babel/preset-env": "^8.0.7",
+    "@babel/runtime": "^8.0.7",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.3",
+    "autoprefixer": "^10.5.2",
+    "esbuild": "^0.28.2",
+    "postcss": "^8.5.16",
+    "tailwindcss-v3": "npm:tailwindcss@^3.4.19",
+    "vite": "^8.1.1"
+  }
+}

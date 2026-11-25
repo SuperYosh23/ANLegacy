@@ -1,4 +1,6 @@
 #import "LTStatsViewController.h"
+#import "LTTraitCompat.h"
+#import "LTCardControls.h"
 #import "LTPlaylistStore.h"
 #import "LTPlayerController.h"
 #import "LTTabBarController.h"
@@ -7,6 +9,7 @@
 #import "LTStatsDetailViewController.h"
 #import "LTSimpleCell.h"
 #import "LTTheme.h"
+#import "LTThemedTableView.h"
 
 @interface LTStatsViewController () <UITableViewDataSource, UITableViewDelegate>
 @end
@@ -35,13 +38,13 @@ static NSString *LTFormatDuration(NSTimeInterval seconds) {
 - (void)viewDidLoad {
     [super viewDidLoad];
     if ([self respondsToSelector:@selector(setEdgesForExtendedLayout:)]) {
-        self.edgesForExtendedLayout = UIRectEdgeNone;
+        [(id)self setValue:[NSNumber numberWithInteger:0] forKey:@"edgesForExtendedLayout"];
     }
     self.title = @"Listening Stats";
     self.view.backgroundColor = [LTTheme groupedBackground];
 
     CGRect bounds = self.view.bounds;
-    _tableView = [[UITableView alloc] initWithFrame:CGRectMake(0, 0, bounds.size.width, bounds.size.height)
+    _tableView = [[LTThemedTableView alloc] initWithFrame:CGRectMake(0, 0, bounds.size.width, bounds.size.height)
                                               style:UITableViewStyleGrouped];
     _tableView.dataSource = self;
     _tableView.delegate = self;
@@ -64,16 +67,31 @@ static NSString *LTFormatDuration(NSTimeInterval seconds) {
     for (NSInteger i = 0; i < 3; i++) {
         CGFloat x = margin + (CGFloat)i * (panelW + gap);
         UIView *card = [[UIView alloc] initWithFrame:CGRectMake(x, 8, panelW, 80)];
-        card.backgroundColor = [UIColor colorWithRed:0.07f green:0.33f blue:0.68f alpha:1.0f];
-        card.layer.cornerRadius = 10.0f;
+        // The cards take the theme's accent colour, so the modern themes get the
+        // amber rather than the blue the native theme has always used.
+        UIColor *cardColour = [LTTheme isModern]
+            ? [LTTheme accent]
+            : [UIColor colorWithRed:0.07f green:0.33f blue:0.68f alpha:1.0f];
+        card.backgroundColor = cardColour;
+        card.layer.cornerRadius = [LTTheme cornerRadius];
         card.clipsToBounds = YES;
 
         CAGradientLayer *gradient = [CAGradientLayer layer];
         gradient.frame = card.bounds;
-        gradient.colors = @[
-            (id)[UIColor colorWithRed:0.05f green:0.48f blue:0.9f alpha:1.0f].CGColor,
-            (id)[UIColor colorWithRed:0.08f green:0.28f blue:0.55f alpha:1.0f].CGColor,
-        ];
+        if ([LTTheme isModern]) {
+            // A darker version of the accent at the bottom of the gradient.
+            // (Setting an alpha and then another one does not darken anything -
+            // the second replaces the first, and both stops end up identical.)
+            gradient.colors = @[
+                (id)[[LTTheme shade:cardColour by:1.0f] CGColor],
+                (id)[[LTTheme shade:cardColour by:0.68f] CGColor],
+            ];
+        } else {
+            gradient.colors = @[
+                (id)[UIColor colorWithRed:0.05f green:0.48f blue:0.9f alpha:1.0f].CGColor,
+                (id)[UIColor colorWithRed:0.08f green:0.28f blue:0.55f alpha:1.0f].CGColor,
+            ];
+        }
         [card.layer insertSublayer:gradient atIndex:0];
 
         UILabel *valueLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 10, panelW, 26)];
@@ -108,7 +126,7 @@ static NSString *LTFormatDuration(NSTimeInterval seconds) {
     [self.view addSubview:_tableView];
 }
 
-- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+- (void)traitCollectionDidChange:(id)previousTraitCollection {
     [super traitCollectionDidChange:previousTraitCollection];
     self.view.backgroundColor = [LTTheme groupedBackground];
     _tableView.backgroundColor = [LTTheme groupedBackground];

@@ -78,7 +78,7 @@ static const NSTimeInterval LTSyncIdleTimeout = 120.0;
     [_netThread start];
 
     // Safety net: stop after the idle timeout with no activity.
-    __weak LTSyncServer *weakSelf = self;
+    __unsafe_unretained LTSyncServer *weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(LTSyncIdleTimeout * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         LTSyncServer *strongSelf = weakSelf;
         if (!strongSelf) return;
@@ -102,7 +102,7 @@ static const NSTimeInterval LTSyncIdleTimeout = 120.0;
     }
     // Wake the publish thread so its runloop exits and it can tear down the
     // service from the thread it was scheduled on.
-    if (_netThread && !_netThread.finished) {
+    if (_netThread && ![_netThread isFinished]) {
         [self performSelector:@selector(netThreadNoop) onThread:_netThread withObject:nil waitUntilDone:NO];
     }
     LTLog(@"SYNC server stopped");
@@ -133,7 +133,7 @@ static const NSTimeInterval LTSyncIdleTimeout = 120.0;
     LTLog(@"SYNC published %@ port %ld", sender.name.length ? sender.name : @"(unnamed)", (long)sender.port);
 }
 
-- (void)netService:(NSNetService *)sender didNotPublish:(NSDictionary<NSString *, NSNumber *> *)errorDict {
+- (void)netService:(NSNetService *)sender didNotPublish:(NSDictionary *)errorDict {
     LTLog(@"SYNC publish failed %@", errorDict);
 }
 
@@ -244,8 +244,8 @@ static const NSTimeInterval LTSyncIdleTimeout = 120.0;
     NSString *requestLine = [lines count] ? [lines objectAtIndex:0] : @"";
     NSArray *parts = [requestLine componentsSeparatedByString:@" "];
     if (parts.count < 2) return NO;
-    *method = parts[0];
-    *path = parts[1];
+    *method = [parts objectAtIndex:0];
+    *path = [parts objectAtIndex:1];
 
     NSInteger contentLength = 0;
     for (NSString *line in lines) {

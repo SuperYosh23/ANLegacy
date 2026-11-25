@@ -1,15 +1,32 @@
 #import "LTDebugMenuViewController.h"
 #import "LTAppDelegate.h"
 #import "LTDebugSettings.h"
+#import "LTTheme.h"
+#import <QuartzCore/QuartzCore.h>
+#import "LTThemedTableView.h"
+
+// Not declared in these SDKs; the call site is guarded by respondsToSelector:.
+@interface CADisplayLink (LTFPS)
+- (void)setPreferredFramesPerSecond:(NSInteger)framesPerSecond;
+@end
 
 typedef NS_ENUM(NSInteger, LTDebugSection) {
     LTDebugSectionDisplay = 0,
+    LTDebugSectionDiagnostics,
 };
 
 @interface LTDebugMenuViewController () <UITableViewDataSource, UITableViewDelegate>
 @property (nonatomic, strong) UITableView *tableView;
 @property (nonatomic, strong) UISwitch *nonWideSwitch;
 @property (nonatomic, strong) UISwitch *wideSwitch;
+// Frame counting. 3GS-class hardware is where every regression in this app has
+// shown up, and until now the only way to catch one was to notice stutter by
+// hand. preferredFramesPerSecond is not declared in these SDKs, so it is set
+// reflectively.
+@property (nonatomic, strong) CADisplayLink *fpsLink;
+@property (nonatomic, assign) NSInteger fpsFrames;
+@property (nonatomic, strong) NSDate *fpsStart;
+@property (nonatomic, assign) CGFloat fpsValue;
 @end
 
 @implementation LTDebugMenuViewController
@@ -17,13 +34,14 @@ typedef NS_ENUM(NSInteger, LTDebugSection) {
 - (void)viewDidLoad {
     [super viewDidLoad];
     if ([self respondsToSelector:@selector(setEdgesForExtendedLayout:)]) {
-        self.edgesForExtendedLayout = UIRectEdgeNone;
+        [(id)self setValue:[NSNumber numberWithInteger:0] forKey:@"edgesForExtendedLayout"];
     }
     self.title = @"Debug";
     self.view.backgroundColor = [UIColor groupTableViewBackgroundColor];
+    [self startFpsCounting];
 
     CGRect bounds = self.view.bounds;
-    self.tableView = [[UITableView alloc] initWithFrame:CGRectMake(0, 0, bounds.size.width, bounds.size.height)
+    self.tableView = [[LTThemedTableView alloc] initWithFrame:CGRectMake(0, 0, bounds.size.width, bounds.size.height)
                                                   style:UITableViewStyleGrouped];
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
@@ -63,12 +81,37 @@ typedef NS_ENUM(NSInteger, LTDebugSection) {
 
 #pragma mark - UITableViewDataSource
 
+- (void)startFpsCounting {
+    self.fpsLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(fpsTick:)];
+    if ([self.fpsLink respondsToSelector:@selector(setPreferredFramesPerSecond:)]) {
+        [self.fpsLink setPreferredFramesPerSecond:60];
+    }
+    [self.fpsLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+    self.fpsStart = [NSDate date];
+}
+
+- (void)fpsTick:(CADisplayLink *)link {
+    self.fpsFrames++;
+    NSTimeInterval elapsed = -[self.fpsStart timeIntervalSinceNow];
+    // Sample over a second so the number is readable rather than jittery.
+    if (elapsed < 1.0) return;
+    self.fpsValue = (CGFloat)((double)self.fpsFrames / elapsed);
+    self.fpsFrames = 0;
+    self.fpsStart = [NSDate date];
+    [self.tableView reloadData];
+}
+
+- (void)dealloc {
+    [self.fpsLink invalidate];
+}
+
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
     return 1;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
     if (section == LTDebugSectionDisplay) return @"Display";
+    if (section == LTDebugSectionDiagnostics) return @"Diagnostics";
     return @"";
 }
 
@@ -78,7 +121,7 @@ typedef NS_ENUM(NSInteger, LTDebugSection) {
     if (!win) win = [(LTAppDelegate *)[[UIApplication sharedApplication] delegate] window];
     UIScreen *scr = [UIScreen mainScreen];
     CGSize native = CGSizeZero;
-    if ([scr respondsToSelector:@selector(nativeBounds)]) native = scr.nativeBounds.size;
+    if ([scr respondsToSelector:@selector(nativeBounds)]) { NSValue *v = [scr valueForKey:@"nativeBounds"]; native = [v CGRectValue].size; }
     UIEdgeInsets ins = UIEdgeInsetsZero;
 #if defined(__IPHONE_11_0) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 110000
     if ([win respondsToSelector:@selector(safeAreaInsets)]) ins = win.safeAreaInsets;
@@ -101,6 +144,7 @@ typedef NS_ENUM(NSInteger, LTDebugSection) {
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (section == LTDebugSectionDisplay) return 2;
+    if (section == LTDebugSectionDiagnostics) return 1;
     return 0;
 }
 
@@ -113,8 +157,13 @@ typedef NS_ENUM(NSInteger, LTDebugSection) {
     cell.accessoryView = nil;
     cell.accessoryType = UITableViewCellAccessoryNone;
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
-    cell.textLabel.textColor = [UIColor blackColor];
-    if (indexPath.section == LTDebugSectionDisplay && indexPath.row == 0) {
+    cell.textLabel.textColor = [LTTheme text];
+    if (indexPath.section == LTDebugSectionDiagnostics) {
+        cell.textLabel.text = @"Frame Rate";
+        cell.detailTextLabel.text = self.fpsLink
+            ? [NSString stringWithFormat:@"%.0f fps", self.fpsValue]
+            : @"paused";
+    } else if (indexPath.section == LTDebugSectionDisplay && indexPath.row == 0) {
         cell.textLabel.text = @"Force Non-Widescreen Mode";
         cell.accessoryView = [self nonWideSwitch];
     } else if (indexPath.section == LTDebugSectionDisplay && indexPath.row == 1) {

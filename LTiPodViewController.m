@@ -10,6 +10,103 @@
 #import "LTHaptics.h"
 #import <math.h>
 #import <AudioToolbox/AudioToolbox.h>
+#import "LTTransitionSettings.h"
+
+// Height of the blue gradient bar across the top of the LCD. Everything that
+// draws inside the LCD is laid out below this, so the bar is never covered.
+static const CGFloat LTiPodTitleBarHeight = 20.0f;
+
+// The bar's gradient, sampled from the classic iPod chrome: a very light blue
+// fading down to a muted slate. Named colours so the intent stays readable.
+static const CGFloat LTiPodBarTopR = 0.878f;     // #e0eef8
+static const CGFloat LTiPodBarTopG = 0.933f;
+static const CGFloat LTiPodBarTopB = 0.973f;
+static const CGFloat LTiPodBarBottomR = 0.584f;  // #95abbf
+static const CGFloat LTiPodBarBottomG = 0.671f;
+static const CGFloat LTiPodBarBottomB = 0.749f;
+
+// Ink for the title text and the play/pause + battery glyphs. Dark slate, which
+// reads clearly against both ends of the gradient above.
+static UIColor *LTiPodBarInkColor(void) {
+    return [UIColor colorWithRed:0.15f green:0.22f blue:0.31f alpha:1.0f];
+}
+
+// Battery charge fill: pale green at the top deepening to a solid green.
+// Top    #cbeab3
+// Bottom #07732f
+static const CGFloat LTiPodBatteryFillTopR = 0.796f;     // 203
+static const CGFloat LTiPodBatteryFillTopG = 0.918f;     // 234
+static const CGFloat LTiPodBatteryFillTopB = 0.702f;     // 179
+static const CGFloat LTiPodBatteryFillBottomR = 0.027f;  // 7
+static const CGFloat LTiPodBatteryFillBottomG = 0.451f;  // 115
+static const CGFloat LTiPodBatteryFillBottomB = 0.184f;  // 47
+
+// Play/pause glyph: radial, lighter in the middle.
+// Centre     #a8c3e2
+// Outer edge #2163ac
+static const CGFloat LTiPodPlayCentreR = 0.384f;   // #62a4f1 (98,164,241)
+static const CGFloat LTiPodPlayCentreG = 0.643f;
+static const CGFloat LTiPodPlayCentreB = 0.945f;
+static const CGFloat LTiPodPlayEdgeR = 0.318f;     // #5184c8 (81,132,200)
+static const CGFloat LTiPodPlayEdgeG = 0.518f;
+static const CGFloat LTiPodPlayEdgeB = 0.784f;
+
+// Draw `path` filled with a vertical linear gradient running between the two
+// given colours over the path's bounding box.
+static void LTiPodFillVerticalGradient(UIBezierPath *path,
+                                       CGFloat r0, CGFloat g0, CGFloat b0,
+                                       CGFloat r1, CGFloat g1, CGFloat b1) {
+    CGContextRef ctx = UIGraphicsGetCurrentContext();
+    if (!ctx) return;
+    CGRect box = path.bounds;
+    CGFloat colors[8] = { r0, g0, b0, 1.0f, r1, g1, b1, 1.0f };
+    CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+    CGGradientRef gradient = CGGradientCreateWithColorComponents(space, colors, NULL, 2);
+    if (!gradient) { CGColorSpaceRelease(space); return; }
+    // Clip to the shape first, otherwise the gradient paints a rectangle.
+    CGContextSaveGState(ctx);
+    [path addClip];
+    CGContextDrawLinearGradient(ctx, gradient,
+                                CGPointMake(0.0f, CGRectGetMaxY(box)),
+                                CGPointMake(0.0f, CGRectGetMinY(box)), 0);
+    CGContextRestoreGState(ctx);
+    CGGradientRelease(gradient);
+    CGColorSpaceRelease(space);
+}
+
+// Draw `path` filled with a radial gradient running from `centre` out to the
+// bounding box's edge. Used for the play/pause glyph.
+static void LTiPodFillRadialGradient(UIBezierPath *path,
+                                     BOOL centered,
+                                     CGFloat r0, CGFloat g0, CGFloat b0,
+                                     CGFloat r1, CGFloat g1, CGFloat b1) {
+    CGContextRef ctx = UIGraphicsGetCurrentContext();
+    if (!ctx) return;
+    CGRect box = path.bounds;
+    // Bias the centre left so the radial glow sits on the shape rather than in its middle‑right.
+    CGFloat cx = centered ? CGRectGetMidX(box) : (CGRectGetMinX(box) + 0.35f * CGRectGetWidth(box));
+    CGFloat cy = CGRectGetMidY(box);
+    // Radius to the farthest corner, so the outer colour is actually reached at
+    // the edge of the glyph rather than being clipped off mid-shape.
+    CGFloat dx = MAX((CGFloat)fabs(box.origin.x - cx), (CGFloat)fabs(CGRectGetMaxX(box) - cx));
+    CGFloat dy = MAX((CGFloat)fabs(box.origin.y - cy), (CGFloat)fabs(CGRectGetMaxY(box) - cy));
+    CGFloat radius = (CGFloat)sqrt((double)(dx * dx + dy * dy));
+    if (radius < 0.5f) radius = 0.5f;
+
+    CGFloat colors[8] = { r0, g0, b0, 1.0f, r1, g1, b1, 1.0f };
+    CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+    CGGradientRef gradient = CGGradientCreateWithColorComponents(space, colors, NULL, 2);
+    if (!gradient) { CGColorSpaceRelease(space); return; }
+    CGContextSaveGState(ctx);
+    [path addClip];
+    CGContextDrawRadialGradient(ctx, gradient,
+                                CGPointMake(cx, cy), 0.0f,
+                                CGPointMake(cx, cy), radius,
+                                kCGGradientDrawsBeforeStartLocation | kCGGradientDrawsAfterEndLocation);
+    CGContextRestoreGState(ctx);
+    CGGradientRelease(gradient);
+    CGColorSpaceRelease(space);
+}
 #import <dlfcn.h>
 #import <MediaPlayer/MediaPlayer.h>
 
@@ -147,8 +244,7 @@ typedef NS_ENUM(NSInteger, LTiPodAction) {
 @property (nonatomic, assign) LTiPodAction action;
 @property (nonatomic, assign) NSInteger playIndex;
 @property (nonatomic, strong) NSArray *tracks;
-@property (nonatomic, assign) BOOL nowPlayingRow; // left icon shows play symbol
-@property (nonatomic, assign) unichar faIcon;      // Font Awesome glyph for the row (0 = music note)
+@property (nonatomic, assign) BOOL nowPlayingRow;
 - (instancetype)initWithTitle:(NSString *)title subtitle:(NSString *)subtitle action:(LTiPodAction)action;
 @end
 
@@ -159,7 +255,6 @@ typedef NS_ENUM(NSInteger, LTiPodAction) {
         _subtitle = subtitle;
         _action = action;
         _playIndex = 0;
-        _faIcon = 0xF001; // music note
     }
     return self;
 }
@@ -196,7 +291,7 @@ typedef NS_ENUM(NSInteger, LTiPodAction) {
 @property (nonatomic, assign) BOOL showsChevrons;      // trailing ">" for submenu rows
 @property (nonatomic, readonly) NSInteger selectedIndex;
 + (CGFloat)rowHeight;
-+ (NSInteger)visibleRows;
+- (NSInteger)visibleRows;
 - (void)setContentOffsetImmediate:(CGFloat)offset;
 - (void)snapSelection;
 @end
@@ -239,16 +334,123 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
 @end
 
 @interface LTiPodWheelView : UIView
-@property (nonatomic, weak) id<LTiPodWheelDelegate> delegate;
+@property (nonatomic, unsafe_unretained) id<LTiPodWheelDelegate> delegate;
 @property (nonatomic, assign) BOOL showsPauseIcon; // play/pause button glyph state
 @end
 
+// Right-hand side of the title bar: transport state + battery, like the real
+// 5G title bar (which showed them on every menu, not just Now Playing).
+@interface LTiPodTitleStatusView : UIView
+@property (nonatomic, assign) BOOL playing;
+@end
+
+@implementation LTiPodTitleStatusView
+
+- (void)setPlaying:(BOOL)playing {
+    if (_playing == playing) return;
+    _playing = playing;
+    [self setNeedsDisplay];
+}
+
+- (void)drawRect:(CGRect)rect {
+    CGFloat h = self.bounds.size.height;
+    CGFloat w = self.bounds.size.width;
+    CGFloat cy = h / 2.0f;
+
+    // Play/pause glyph, anchored to the far left of the bar. Filled with a
+    // radial gradient: lighter in the middle, deepening to blue at the edge.
+    CGFloat gx = 5.0f;
+    CGFloat gs = MIN(11.0f, h - 8.0f);
+    if (gs < 4.0f) gs = 4.0f;
+    // Slate rather than white: the bar behind these glyphs is now a pale
+    // gradient, and white on #e0eef8 is effectively invisible.
+    if (_playing) {
+        UIBezierPath *pause = [UIBezierPath bezierPath];
+        [pause appendPath:[UIBezierPath bezierPathWithRect:CGRectMake(gx, cy - gs / 2.0f, gs * 0.32f, gs)]];
+        [pause appendPath:[UIBezierPath bezierPathWithRect:CGRectMake(gx + gs * 0.68f, cy - gs / 2.0f, gs * 0.32f, gs)]];
+        LTiPodFillRadialGradient(pause, YES,
+                                 LTiPodPlayCentreR, LTiPodPlayCentreG, LTiPodPlayCentreB,
+                                 LTiPodPlayEdgeR, LTiPodPlayEdgeG, LTiPodPlayEdgeB);
+    } else {
+        UIBezierPath *tri = [UIBezierPath bezierPath];
+        [tri moveToPoint:CGPointMake(gx, cy - gs / 2.0f)];
+        [tri addLineToPoint:CGPointMake(gx + gs, cy)];
+        [tri addLineToPoint:CGPointMake(gx, cy + gs / 2.0f)];
+        [tri closePath];
+        LTiPodFillRadialGradient(tri, NO,
+                                 LTiPodPlayCentreR, LTiPodPlayCentreG, LTiPodPlayCentreB,
+                                 LTiPodPlayEdgeR, LTiPodPlayEdgeG, LTiPodPlayEdgeB);
+    }
+
+    // Battery, anchored to the far right of the bar. The view now spans the
+    // full bar width, so `w` is the bar's right edge.
+    CGFloat bw = 18.0f, bh = 9.0f;
+    CGFloat bx = w - bw - 5.0f;
+    CGFloat by = cy - bh / 2.0f;
+    // Only draw it if it would not collide with the play glyph (very narrow
+    // bars, e.g. in a split layout).
+    if (bx < gx + gs + 6.0f) return;
+
+    UIBezierPath *shell = [UIBezierPath bezierPathWithRoundedRect:CGRectMake(bx, by, bw, bh)
+                                                      cornerRadius:1.6f];
+    [LTiPodBarInkColor() setStroke];
+    shell.lineWidth = 1.0f;
+    [shell stroke];
+
+    UIBezierPath *nub = [UIBezierPath bezierPathWithRoundedRect:CGRectMake(bx + bw + 0.5f, cy - 2.0f, 1.6f, 4.0f)
+                                                    cornerRadius:0.8f];
+    [LTiPodBarInkColor() setFill];
+    [nub fill];
+
+    float level = [UIDevice currentDevice].batteryLevel;
+    if (level < 0.0f) level = 1.0f;
+    CGFloat inner = (bw - 3.0f) * level;
+    if (inner > 0.5f) {
+        UIBezierPath *fillPath =
+            [UIBezierPath bezierPathWithRoundedRect:CGRectMake(bx + 1.5f, by + 1.5f, inner, bh - 3.0f)
+                                        cornerRadius:0.8f];
+        // Battery charge: top pale green → bottom solid green (reversed from before)
+        LTiPodFillVerticalGradient(fillPath,
+                                   LTiPodBatteryFillBottomR, LTiPodBatteryFillBottomG, LTiPodBatteryFillBottomB,
+                                   LTiPodBatteryFillTopR, LTiPodBatteryFillTopG, LTiPodBatteryFillTopB);
+    }
+}
+
+@end
+
 // ------------------------------------------------------------------ Main ----
+
+@interface LTiPodTitleBarView : UIView
+@end
+
+@implementation LTiPodTitleBarView
+
+- (void)drawRect:(CGRect)rect {
+    CGContextRef ctx = UIGraphicsGetCurrentContext();
+    if (!ctx) return;
+    CGFloat colors[8] = {
+        LTiPodBarTopR, LTiPodBarTopG, LTiPodBarTopB, 1.0f,
+        LTiPodBarBottomR, LTiPodBarBottomG, LTiPodBarBottomB, 1.0f,
+    };
+    CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+    CGGradientRef gradient = CGGradientCreateWithColorComponents(space, colors, NULL, 2);
+    if (gradient) {
+        CGContextDrawLinearGradient(ctx, gradient,
+                                    CGPointMake(0.0f, 0.0f),
+                                    CGPointMake(0.0f, rect.size.height), 0);
+        CGGradientRelease(gradient);
+    }
+    CGColorSpaceRelease(space);
+}
+
+@end
 
 @interface LTiPodViewController () <LTiPodWheelDelegate>
 @property (nonatomic, strong) UIView *screenPanel;    // black plastic bezel around LCD
 @property (nonatomic, strong) UIView *listHost;       // contains title bar + list/nowPlaying
 @property (nonatomic, strong) UILabel *titleLabel;
+@property (nonatomic, strong) UIView *titleBarView;
+@property (nonatomic, strong) LTiPodTitleStatusView *titleStatusView;
 @property (nonatomic, strong) LTiPodListView *listView;
 @property (nonatomic, strong) LTiPodNowPlayingView *nowPlayingView;
 @property (nonatomic, strong) LTiPodSearchView *searchView;
@@ -310,11 +512,14 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
     window.rootViewController = newRoot;
     [LTAppDelegate applyDisplayModeAnimated:NO];
 
+    // Spin up the vibration motor so the first scroll click feels instantaneous.
+    [LTHaptics prewarm];
+
     if (snap && animated) {
         UIImageView *overlay = [[UIImageView alloc] initWithImage:snap];
         overlay.frame = oldView.bounds;
         [window addSubview:overlay];
-        [UIView animateWithDuration:0.35f
+        [LTTransitionSettings animateWithDuration:0.35f
             animations:^{ overlay.alpha = 0.0f; }
             completion:^(BOOL finished) { [overlay removeFromSuperview]; }];
     }
@@ -335,7 +540,7 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
 - (void)viewDidLoad {
     [super viewDidLoad];
     if ([self respondsToSelector:@selector(setEdgesForExtendedLayout:)]) {
-        self.edgesForExtendedLayout = UIRectEdgeNone;
+        [(id)self setValue:[NSNumber numberWithInteger:0] forKey:@"edgesForExtendedLayout"];
     }
     // Continuous graphite housing behind the LCD and click wheel, so the wheel
     // square visually disappears into the body instead of reading as a box.
@@ -349,6 +554,7 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
 
     self.listHost = [[UIView alloc] initWithFrame:CGRectZero];
     self.listHost.backgroundColor = [UIColor whiteColor];
+    self.listHost.clipsToBounds = YES;  // pane slides must stay inside the LCD
     [self.screenPanel addSubview:self.listHost];
 
     self.wheelView = [[LTiPodWheelView alloc] initWithFrame:CGRectZero];
@@ -356,6 +562,7 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
     [self.view addSubview:self.wheelView];
 
     [self buildTitleBarInHost];
+    [self startBatteryMonitoring];
     self.paneStack = [NSMutableArray array];
     [self pushRootPane];
 
@@ -369,6 +576,26 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
     LTPlayerController *player = [LTPlayerController sharedController];
     self.wheelView.showsPauseIcon = player.isPlaying;
     [self.wheelView setNeedsDisplay];
+    self.titleStatusView.playing = player.isPlaying;
+}
+
+// Battery level is only reported by UIDevice when monitoring is enabled; without
+// this, -batteryLevel stays at its initial value and the icon never moves.
+- (void)startBatteryMonitoring {
+    [UIDevice currentDevice].batteryMonitoringEnabled = YES;
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(batteryLevelDidChange:)
+                                                 name:UIDeviceBatteryLevelDidChangeNotification
+                                               object:nil];
+    [self refreshBatteryIndicator];
+}
+
+- (void)batteryLevelDidChange:(NSNotification *)note {
+    [self refreshBatteryIndicator];
+}
+
+- (void)refreshBatteryIndicator {
+    [self.titleStatusView setNeedsDisplay];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -408,16 +635,20 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
     CGFloat usableH = h - topInset - bottomInset;
     if (usableH < 1.0f) usableH = h;
 
-    CGFloat screenTop = topInset + roundf(usableH * 0.04f);
-    CGFloat screenH = roundf(usableH * 0.33f);
-    CGFloat screenX = roundf(w * 0.05f);
-    CGFloat screenW = w - screenX * 2.0f;
+    // Display locked to 1136x640 (classic LCD resolution), scaled down to fit.
+    CGFloat baseW = 1136.0f, baseH = 640.0f;
+    CGFloat scale = MIN((w - w * 0.08f) / baseW, (usableH * 0.78f) / baseH);
+    if (scale > 1.0f) scale = 1.0f; // never scale up beyond native; only down
+    CGFloat screenW = roundf(baseW * scale);
+    CGFloat screenH = roundf(baseH * scale);
+    CGFloat screenX = roundf((w - screenW) / 2.0f);
+    CGFloat screenTop = topInset + roundf(usableH * 0.03f);
     self.screenPanel.frame = CGRectMake(screenX, screenTop, screenW, screenH);
-    self.listHost.frame = CGRectInset(self.screenPanel.bounds, 3.0f, 3.0f);
+    self.listHost.frame = CGRectInset(self.screenPanel.bounds, 4.0f, 4.0f);
 
-    CGFloat wheelD = roundf(usableH * 0.50f);
-    CGFloat wheelY = screenTop + screenH + roundf(usableH * 0.03f);
+    CGFloat wheelD = roundf(usableH * 0.46f);
     CGFloat wheelBottomLimit = h - bottomInset - roundf(usableH * 0.03f);
+    CGFloat wheelY = wheelBottomLimit - wheelD;
     if (wheelY + wheelD > wheelBottomLimit) {
         wheelD = wheelBottomLimit - wheelY;
     }
@@ -431,18 +662,49 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
 
 #pragma mark - Title bar (inside the LCD)
 
+// Draws the bar's background gradient. A dedicated view rather than a CAGradient
+// layer so it works identically back to iOS 6, where CAGradientLayer's
+// locations/colors behave differently and needs more scaffolding than it saves.
+
 - (void)buildTitleBarInHost {
+    // The bar draws its own gradient; the label and status indicators are
+    // transparent overlays on top of it, so neither can leave a flat gap.
+    self.titleBarView = [[LTiPodTitleBarView alloc] initWithFrame:CGRectZero];
+    self.titleBarView.backgroundColor = [UIColor clearColor];
+    self.titleBarView.opaque = NO;
+    [self.listHost addSubview:self.titleBarView];
+
     self.titleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
-    self.titleLabel.backgroundColor = [UIColor colorWithRed:0.13f green:0.32f blue:0.58f alpha:1.0f];
-    self.titleLabel.textColor = [UIColor whiteColor];
+    self.titleLabel.backgroundColor = [UIColor clearColor];
+    // Slate, to stay legible on the pale gradient.
+    self.titleLabel.textColor = LTiPodBarInkColor();
     self.titleLabel.font = [UIFont boldSystemFontOfSize:12.0f];
     self.titleLabel.textAlignment = NSTextAlignmentCenter;
     [self.listHost addSubview:self.titleLabel];
+
+    self.titleStatusView = [[LTiPodTitleStatusView alloc] initWithFrame:CGRectZero];
+    self.titleStatusView.backgroundColor = [UIColor clearColor];
+    self.titleStatusView.opaque = NO;
+    [self.listHost addSubview:self.titleStatusView];
 }
 
 - (void)layoutTitleBarInHost {
     CGRect host = self.listHost.bounds;
-    self.titleLabel.frame = CGRectMake(0, 0, host.size.width, 20.0f);
+    CGFloat h = LTiPodTitleBarHeight;
+    self.titleBarView.frame = CGRectMake(0.0f, 0.0f, host.size.width, h);
+    // The status view spans the full bar so it can anchor the play/pause glyph
+    // to the far left and the battery to the far right.
+    self.titleStatusView.frame = CGRectMake(0.0f, 0.0f, host.size.width, h);
+    // The title is centred, but inset far enough on both sides that a long
+    // title cannot run under either glyph. Symmetric insets keep it truly
+    // centred rather than merely looking centred.
+    CGFloat inset = 26.0f;
+    self.titleLabel.frame = CGRectMake(inset, 0.0f, host.size.width - inset * 2.0f, h);
+    // Re-assert the bar's z-order: panes are added as siblings after it, and
+    // this is what keeps the bar visible across screen changes.
+    [self.listHost bringSubviewToFront:self.titleBarView];
+    [self.listHost bringSubviewToFront:self.titleLabel];
+    [self.listHost bringSubviewToFront:self.titleStatusView];
 }
 
 - (void)setLCDTitle:(NSString *)title {
@@ -459,28 +721,26 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
 
 - (LTiPodPane *)mainMenuPane {
     LTiPodPane *pane = [[LTiPodPane alloc] init];
-    pane.title = @"audioNINJA";
+    pane.title = @"iPod";
     NSMutableArray *items = [NSMutableArray array];
 
     LTPlayerController *player = [LTPlayerController sharedController];
     LTTrack *current = [player currentTrack];
     BOOL nowPlayingAvailable = current && [player.queue count] > 0;
 
+    // Order mirrors the 5G main menu (Music / Extras / Shuffle Songs / Settings).
+    // There are no Photos or Videos equivalents in this app.
     [items addObject:[LTiPodItem submenu:@"Music"]];
+
+    LTiPodItem *extras = [LTiPodItem submenu:@"Extras"];
+    [items addObject:extras];
 
     LTiPodItem *shuffle = [[LTiPodItem alloc] initWithTitle:@"Shuffle Songs"
                                                     subtitle:nil
                                                      action:LTiPodActionShuffleAll];
-    shuffle.faIcon = 0xF074; // shuffle
     [items addObject:shuffle];
 
-    LTiPodItem *settings = [LTiPodItem submenu:@"Settings"];
-    settings.faIcon = 0xF013; // gear
-    [items addObject:settings];
-
-    LTiPodItem *searchRow = [LTiPodItem submenu:@"Search"];
-    searchRow.faIcon = 0xF002; // magnifying glass
-    [items addObject:searchRow];
+    [items addObject:[LTiPodItem submenu:@"Settings"]];
 
     // Now Playing only appears once there is an active track, at the bottom.
     if (nowPlayingAvailable) {
@@ -492,6 +752,18 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
         np.nowPlayingRow = YES;
         [items addObject:np];
     }
+    pane.items = items;
+    return pane;
+}
+
+// The 5G had a real "Extras" level (Clocks, Games, Contacts, ...). Ours holds
+// the app-level extras that have no other home in the menu; About stays under
+// Settings, which is where the 5G put it.
+- (LTiPodPane *)extrasPane {
+    LTiPodPane *pane = [[LTiPodPane alloc] init];
+    pane.title = @"Extras";
+    NSMutableArray *items = [NSMutableArray array];
+    [items addObject:[LTiPodItem submenu:@"Search"]];
     pane.items = items;
     return pane;
 }
@@ -644,7 +916,7 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
 
 #pragma mark - Presenting panes
 
-- (void)presentPane:(LTiPodPane *)pane {
+- (void)prepareForListPane:(LTiPodPane *)pane {
     [self setLCDTitle:pane.title];
     [self stopClock];
     self.showingNowPlaying = NO;
@@ -660,17 +932,71 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
         self.listView = [[LTiPodListView alloc] initWithFrame:CGRectZero];
         [self.listHost addSubview:self.listView];
     }
-    self.listView.items = pane.items;
     self.listView.contentOffset = 0.0f;
-    self.listView.showsChevrons = YES;
 
-    // Titles with submenus get a trailing chevron; plain songs don't.
     BOOL songsOnly = YES;
     for (LTiPodItem *item in pane.items) {
         if (item.action != LTiPodActionPlay) { songsOnly = NO; break; }
     }
     self.listView.showsChevrons = !songsOnly && !pane.isInfo;
+}
+
+- (void)presentPane:(LTiPodPane *)pane {
+    [self prepareForListPane:pane];
+    self.listView.items = pane.items;
+    self.listView.contentOffset = 0.0f;
     [self layoutContent];
+}
+
+- (void)slideToPane:(LTiPodPane *)pane forward:(BOOL)forward {
+    // Slide within the content area only. Using the full host rect here made the
+    // incoming pane cover the title bar, so the bar vanished on every screen
+    // change.
+    CGRect b = [self contentRectInHost];
+    if (CGRectIsEmpty(b)) { [self presentPane:pane]; return; }
+
+    [self prepareForListPane:pane];
+
+    LTiPodListView *outgoing = self.listView;
+
+    BOOL songsOnly = YES;
+    for (LTiPodItem *item in pane.items) {
+        if (item.action != LTiPodActionPlay) { songsOnly = NO; break; }
+    }
+
+    LTiPodListView *incoming = [[LTiPodListView alloc] initWithFrame:
+                                forward ? CGRectOffset(b, b.size.width, 0.0f) : b];
+    incoming.items = pane.items;
+    incoming.showsChevrons = !songsOnly && !pane.isInfo;
+    [self.listHost addSubview:incoming];
+
+    [self setLCDTitle:pane.title];
+    self.listView = incoming;
+
+    if (forward) {
+        outgoing.frame = b;
+        [LTTransitionSettings animateWithDuration:0.22f
+                              delay:0.0f
+                            options:UIViewAnimationOptionCurveEaseOut
+                         animations:^{
+            incoming.frame = b;
+            outgoing.frame = CGRectOffset(b, -b.size.width, 0.0f);
+        } completion:^(BOOL finished) {
+            [outgoing removeFromSuperview];
+        }];
+    } else {
+        // Going backward: new pane slides in from the left, old pane exits right.
+        incoming.frame = CGRectOffset(b, -b.size.width, 0.0f);
+        [LTTransitionSettings animateWithDuration:0.22f
+                              delay:0.0f
+                            options:UIViewAnimationOptionCurveEaseOut
+                         animations:^{
+            incoming.frame = b;
+            outgoing.frame = CGRectOffset(b, b.size.width, 0.0f);
+        } completion:^(BOOL finished) {
+            [outgoing removeFromSuperview];
+        }];
+    }
 }
 
 - (void)presentSearchScreen {
@@ -767,7 +1093,7 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
     if (!query.length) return;
     self.searchView.loading = YES;
     [self.searchView setNeedsDisplay];
-    __weak LTiPodViewController *weakSelf = self;
+    __unsafe_unretained LTiPodViewController *weakSelf = self;
     // Same as the "Songs" tab in the main interface (YouTube Music search).
     [[LTYouTubeClient sharedClient] searchWithQuery:query type:@"songs" completion:^(NSArray *tracks, NSError *error) {
         LTiPodViewController *strongSelf = weakSelf;
@@ -811,12 +1137,24 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
 }
 
 - (void)layoutContent {
-    CGRect host = self.listHost.bounds;
-    CGFloat top = 20.0f; // below the title bar
-    CGRect content = CGRectMake(0, top, host.size.width, host.size.height - top);
+    CGRect content = [self contentRectInHost];
     self.listView.frame = content;
     self.nowPlayingView.frame = content;
     self.searchView.frame = content;
+    // Re-assert the bar's z-order and frame: panes are added as siblings after
+    // it, and layoutTitleBarInHost: also brings it back to the front.
+    [self layoutTitleBarInHost];
+}
+
+// The area below the title bar where lists, search and now-playing live.
+//
+// Everything that occupies the LCD must use this rect rather than the whole
+// host: panes are added as siblings of the title bar inside listHost, so a pane
+// sized to the full host is drawn *over* the bar and hides it. The bar is 20pt.
+- (CGRect)contentRectInHost {
+    CGRect host = self.listHost.bounds;
+    CGFloat top = LTiPodTitleBarHeight;
+    return CGRectMake(0.0f, top, host.size.width, host.size.height - top);
 }
 
 #pragma mark - Actions
@@ -832,6 +1170,10 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
             }
             if ([item.title isEqualToString:@"Settings"]) {
                 [self pushPane:[self settingsPane]];
+                return;
+            }
+            if ([item.title isEqualToString:@"Extras"] && !item.tracks.count) {
+                [self pushPane:[self extrasPane]];
                 return;
             }
             if ([item.title isEqualToString:@"Now Playing"]) {
@@ -923,12 +1265,10 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
     LTiPodItem *lib = [[LTiPodItem alloc] initWithTitle:@"Library"
                                                subtitle:nil
                                                 action:LTiPodActionSearchLibrary];
-    lib.faIcon = 0xF02D; // book
     [items addObject:lib];
     LTiPodItem *yt = [[LTiPodItem alloc] initWithTitle:@"YouTube"
                                               subtitle:nil
                                                action:LTiPodActionSearchYouTube];
-    yt.faIcon = 0xF144; // play-circle
     [items addObject:yt];
     pane.items = items;
     return pane;
@@ -945,7 +1285,7 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
     } else if (pane.isSearch) {
         [self presentSearchScreen];
     } else {
-        [self presentPane:pane];
+        [self slideToPane:pane forward:YES];
     }
 }
 
@@ -958,7 +1298,7 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
     } else if (pane.isSearch) {
         [self presentSearchScreen];
     } else {
-        [self presentPane:pane];
+        [self slideToPane:pane forward:NO];
     }
     if (self.paneStack.count == 1) [self refreshMainMenuTile];
 }
@@ -1008,7 +1348,7 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
     [self.nowPlayingView setNeedsDisplay];
 
     [self.volumeModeTimer invalidate];
-    __weak LTiPodViewController *weakSelf = self;
+    __unsafe_unretained LTiPodViewController *weakSelf = self;
     self.volumeModeTimer = [NSTimer scheduledTimerWithTimeInterval:0.9f
                                                             target:weakSelf
                                                           selector:@selector(volumeModeExpired:)
@@ -1036,8 +1376,8 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
         AudioServicesDisposeSystemSoundID(self.scrollClickID);
         self.scrollClickID = 0;
     }
-    NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"scrollclick.wav"];
-    LTWriteToneWAV(path, 2400.0, 0.65, 3300.0, 0.35, 90.0, 0.045);
+    NSString *path = [[NSBundle mainBundle] pathForResource:@"click" ofType:@"wav"];
+    if (!path) path = @"/tmp/click.wav";  // fallback for transition
     if (AudioServicesCreateSystemSoundID((__bridge CFURLRef)[NSURL fileURLWithPath:path], &_scrollClickID) == kAudioServicesNoError) {
         AudioServicesPlaySystemSound(self.scrollClickID); // warm up lazy audio stack
     }
@@ -1094,10 +1434,25 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
     // so effects never precede the visible indicator.
     NSInteger row = (NSInteger)floorf(offset / [LTiPodListView rowHeight]);
     if (row < 0) row = 0;
-    if (row == self.lastClickRow) return;
+    NSInteger maxRow = (NSInteger)[self.listView.items count] - 1;
+    if (row > maxRow) row = maxRow;
+// If the wheel moved fast enough to cross multiple rows in one event,
+    // fire one haptic/click for *each* row boundary crossed, but cap it to
+    // avoid a runaway loop on a massive scroll jump.
+    NSInteger from = self.lastClickRow;
+    NSInteger to = row;
+    if (from == to) return;
+    if (from == to) return;
+    NSInteger maxSteps = 20; // safety cap: never fire more than 20 haptics per call
+    NSInteger steps = labs(to - from);
+    if (steps > maxSteps) steps = maxSteps;
+    for (NSInteger i = 0; i < steps; i++) {
+        NSInteger r = from + (i + 1) * ((to > from) ? 1 : -1);
+        self.lastClickRow = r;
+        if ([self clickSoundEnabled]) AudioServicesPlaySystemSound(self.scrollClickID);
+        // Vibration removed for scrolling; kept for button presses only
+    }
     self.lastClickRow = row;
-    if ([self clickSoundEnabled]) AudioServicesPlaySystemSound(self.scrollClickID);
-    if ([self vibesEnabled]) [LTHaptics pulse];
 }
 
 - (CGFloat)maxContentOffset {
@@ -1119,7 +1474,7 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
     if (v > 420.0f) v = 420.0f;
     if (v < -420.0f) v = -420.0f;
     self.momentumVelocity = v;
-    __weak LTiPodViewController *weakSelf = self;
+    __unsafe_unretained LTiPodViewController *weakSelf = self;
     self.momentumTimer = [NSTimer scheduledTimerWithTimeInterval:1.0f / 30.0f
                                                           target:weakSelf
                                                         selector:@selector(momentumTick:)
@@ -1160,7 +1515,7 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
     if (fabs(nextVelocity) < 6.0f) {
         [self.momentumTimer invalidate];
         self.momentumTimer = nil;
-        CGFloat snapped = roundf(current / rowH) * rowH;
+        CGFloat snapped = floorf(current / rowH) * rowH;
         if (snapped < 0.0f) snapped = 0.0f;
         if (snapped > maxOffset) snapped = maxOffset;
         [self.listView setContentOffsetImmediate:snapped];
@@ -1203,7 +1558,7 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
     }
     // Go through the shared client so iPod art uses the same disk cache and
     // letterbox-stripping crop as every other artwork surface in the app.
-    __weak LTiPodViewController *weakSelf = self;
+    __unsafe_unretained LTiPodViewController *weakSelf = self;
     [[LTYouTubeClient sharedClient] loadImageWithURL:urlString completion:^(UIImage *image) {
         LTiPodViewController *strongSelf = weakSelf;
         if (!strongSelf) return;
@@ -1224,7 +1579,7 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
 
 - (void)startClock {
     if (self.clockTimer) return;
-    __weak LTiPodViewController *weakSelf = self;
+    __unsafe_unretained LTiPodViewController *weakSelf = self;
     self.clockTimer = [NSTimer scheduledTimerWithTimeInterval:0.5f target:weakSelf
                                                      selector:@selector(clockTick:) userInfo:nil repeats:YES];
 }
@@ -1278,6 +1633,14 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
         }
     }
     [self.listView setNeedsDisplay];
+}
+
+- (BOOL)shouldAutorotate {
+    return NO;
+}
+
+- (NSUInteger)supportedInterfaceOrientations {
+    return UIInterfaceOrientationMaskPortrait;
 }
 
 #pragma mark - LTiPodWheelDelegate
@@ -1352,7 +1715,15 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
 @implementation LTiPodListView
 
 + (CGFloat)rowHeight { return 24.0f; }
-+ (NSInteger)visibleRows { return 4; }
+
+// Derived from the real height so the taller 5G-style LCD shows the extra rows,
+// the way the 320x240 panel did (the classic's 160x160 fitted four).
+- (NSInteger)visibleRows {
+    CGFloat h = self.bounds.size.height;
+    if (h <= 0.0f) return 1;
+    NSInteger rows = (NSInteger)floorf(h / [[self class] rowHeight]);
+    return rows < 1 ? 1 : rows;
+}
 
 - (instancetype)initWithFrame:(CGRect)frame {
     if ((self = [super initWithFrame:frame])) {
@@ -1381,8 +1752,8 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
 
 - (CGFloat)maxScrollOffset {
     NSInteger count = (NSInteger)_items.count;
-    if (count <= [LTiPodListView visibleRows]) return 0;
-    return ((CGFloat)(count - [LTiPodListView visibleRows])) * [LTiPodListView rowHeight];
+    if (count <= [self visibleRows]) return 0;
+    return ((CGFloat)(count - [self visibleRows])) * [LTiPodListView rowHeight];
 }
 
 - (void)setContentOffsetImmediate:(CGFloat)offset {
@@ -1397,7 +1768,7 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
 
 - (void)snapSelection {
     CGFloat rowH = [LTiPodListView rowHeight];
-    CGFloat snapped = roundf(_contentOffset / rowH) * rowH;
+    CGFloat snapped = floorf(_contentOffset / rowH) * rowH;
     [self setContentOffsetImmediate:snapped];
 }
 
@@ -1446,20 +1817,16 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
         UIColor *dimColor  = highlighted ? [UIColor colorWithWhite:0.8f alpha:1.0f]
                                          : [UIColor colorWithWhite:0.35f alpha:1.0f];
 
-        CGFloat x = 4.0f;
-        CGContextSaveGState(ctx);
-        [textColor set];
-        [self drawLeftIconForItem:item inRect:CGRectMake(x, itemY + 3.0f, 14.0f, 14.0f)];
-        CGContextRestoreGState(ctx);
-        x += 18.0f;
-
-        UIFont *font = [UIFont boldSystemFontOfSize:11.0f];
+        // The 5G list is text-only: no per-row icons, regular-weight label, and
+        // the right-hand detail is always visible rather than only when selected.
+        CGFloat x = 6.0f;
+        UIFont *font = [UIFont systemFontOfSize:12.0f];
         [textColor set];
         [item.title drawAtPoint:CGPointMake(x, itemY + 5.0f) withFont:font];
 
-        CGFloat right = w - (_showsChevrons ? 14.0f : 4.0f);
-        if (item.subtitle.length && highlighted) {
-            UIFont *small = [UIFont systemFontOfSize:9.0f];
+        CGFloat right = w - (_showsChevrons ? 14.0f : 6.0f);
+        if (item.subtitle.length) {
+            UIFont *small = [UIFont systemFontOfSize:10.0f];
             float sw = [item.subtitle sizeWithFont:small].width;
             if (sw + x < right - 4.0f) {
                 [dimColor set];
@@ -1480,40 +1847,6 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
             }
         }
     }
-}
-
-- (void)drawLeftIconForItem:(LTiPodItem *)item inRect:(CGRect)rect {
-    UIFont *fa = LTiPodFAFont(12.0f);
-    if (fa) {
-        unichar ch = item.nowPlayingRow ? (unichar)0xF04B : item.faIcon; // play / per-item
-        if (!ch) ch = (unichar)0xF001;
-        NSString *s = [NSString stringWithFormat:@"%C", ch];
-        CGSize sz = [s sizeWithFont:fa];
-        [s drawAtPoint:CGPointMake(rect.origin.x + (rect.size.width - sz.width) / 2.0f - 1.0f,
-                                   rect.origin.y + (rect.size.height - sz.height) / 2.0f)
-               withFont:fa];
-        return;
-    }
-    CGContextRef ctx = UIGraphicsGetCurrentContext();
-    CGFloat x = rect.origin.x + 3.0f;
-    CGFloat y = rect.origin.y + 9.0f;
-    if (item.nowPlayingRow) {
-        CGFloat yy = rect.origin.y + rect.size.height / 2.0f;
-        CGContextMoveToPoint(ctx, rect.origin.x + 1.0f, yy - 5.0f);
-        CGContextAddLineToPoint(ctx, rect.origin.x + 6.0f, yy - 1.0f);
-        CGContextAddLineToPoint(ctx, rect.origin.x + 1.0f, yy + 4.0f);
-        CGContextClosePath(ctx);
-        CGContextFillPath(ctx);
-        return;
-    }
-    CGContextSetLineWidth(ctx, 1.0f);
-    CGContextFillEllipseInRect(ctx, CGRectMake(x, y - 1.5f, 3.0f, 3.0f));
-    CGContextFillEllipseInRect(ctx, CGRectMake(x + 5.0f, y - 1.5f, 3.0f, 3.0f));
-    CGContextMoveToPoint(ctx, x + 3.5f, y + 1.0f);
-    CGContextAddLineToPoint(ctx, x + 3.5f, y - 8.0f);
-    CGContextAddLineToPoint(ctx, x + 8.0f, y - 9.0f);
-    CGContextAddLineToPoint(ctx, x + 8.0f, y - 1.0f);
-    CGContextStrokePath(ctx);
 }
 
 @end
@@ -1778,7 +2111,7 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
 }
 
 - (CGFloat)buttonRadius {
-    return (wheelR + [self selectRadius]) / 2.0f * 0.9f;
+    return wheelR * 0.88f;
 }
 
 - (void)drawRect:(CGRect)rect {
@@ -1812,28 +2145,30 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
     CGFloat br = [self buttonRadius];
     UIFont *fa = LTiPodFAFont(16.0f);
 
-    // Menu (top, red text).
-    [[UIColor colorWithRed:0.95f green:0.35f blue:0.30f alpha:1.0f] set];
-    [@"MENU" drawAtPoint:CGPointMake(centerX - 17.0f, centerY - br - 11.0f)
+    // Menu (top, white text) — centered on touch point.
+    [[UIColor whiteColor] set];
+    [@"MENU" drawAtPoint:CGPointMake(centerX - 17.0f, centerY - br - 8.0f)
                 withFont:[UIFont boldSystemFontOfSize:10.0f]];
 
     if (fa) {
-        // Previous (left): fa-step-backward.
+        // Previous (back) — left.
         [[UIColor colorWithWhite:0.92f alpha:1.0f] set];
         NSString *prev = [NSString stringWithFormat:@"%C", (unichar)0xF048];
         CGSize psz = [prev sizeWithFont:fa];
-        [prev drawAtPoint:CGPointMake(centerX - br - psz.width - 6.0f, centerY - psz.height / 2.0f - 1.0f) withFont:fa];
+        [prev drawAtPoint:CGPointMake(centerX - br - psz.width / 2.0f, centerY - psz.height / 2.0f) withFont:fa];
 
-        // Play/pause (bottom).
-        unichar pp = self.showsPauseIcon ? (unichar)0xF04C : (unichar)0xF04B;
-        NSString *play = [NSString stringWithFormat:@"%C", pp];
+        // Play/pause (bottom) — show BOTH icons side by side.
+        NSString *play = [NSString stringWithFormat:@"%C", (unichar)0xF04B];
+        NSString *pause = [NSString stringWithFormat:@"%C", (unichar)0xF04C];
         CGSize qsz = [play sizeWithFont:fa];
-        [play drawAtPoint:CGPointMake(centerX - qsz.width / 2.0f + 1.0f, centerY + br - qsz.height - 4.0f) withFont:fa];
+        CGFloat ppY = centerY + br - qsz.height / 2.0f + 2.0f;
+        [play drawAtPoint:CGPointMake(centerX - qsz.width - 1.0f, ppY) withFont:fa];
+        [pause drawAtPoint:CGPointMake(centerX + 1.0f, ppY) withFont:fa];
 
-        // Next (right): fa-step-forward.
+        // Next — right.
         NSString *next = [NSString stringWithFormat:@"%C", (unichar)0xF051];
         CGSize nsz = [next sizeWithFont:fa];
-        [next drawAtPoint:CGPointMake(centerX + br + 2.0f, centerY - nsz.height / 2.0f - 1.0f) withFont:fa];
+        [next drawAtPoint:CGPointMake(centerX + br - nsz.width / 2.0f, centerY - nsz.height / 2.0f) withFont:fa];
     }
 }
 
@@ -1844,16 +2179,16 @@ typedef NS_ENUM(NSInteger, LTiPodWheelButton) {
     if (dist <= [self selectRadius]) return LTiPodWheelButtonSelect;
     if (dist > wheelR) return LTiPodWheelButtonNone;
 
-    // Nearest of the four button centers; within 26pt counts as a tap.
+    // Nearest of the four button centers; within 40pt counts as a tap.
     CGFloat br = [self buttonRadius];
     CGFloat candidates[4][2] = {
-        {0, -br},  // menu
-        {-br, 0},  // previous
-        {0, br},   // play/pause
-        {br, 0},   // next
+        {0, -br},   // menu (top)
+        {-br, 0},   // previous / back (left)
+        {0, br},    // play/pause (bottom)
+        {br, 0},    // next (right)
     };
     NSInteger best = -1;
-    CGFloat bestD = 26.0f;
+    CGFloat bestD = 40.0f;
     for (NSInteger i = 0; i < 4; i++) {
         CGFloat ddx = dx - candidates[i][0];
         CGFloat ddy = dy - candidates[i][1];
